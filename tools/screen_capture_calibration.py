@@ -1,8 +1,6 @@
 #%%
 # !pip install opencv-python mss pygetwindow pytesseract
 
-
-#%%
 import cv2
 import numpy as np
 import mss
@@ -44,7 +42,7 @@ show_red_textFilter =True
 
 # load filter values from json file if exists
 try:    
-    with open("filter_values.json", "r") as f:
+    with open("../config/filter_values.json", "r") as f:
         base_values = json.load(f)
 except FileNotFoundError:
     base_values = {

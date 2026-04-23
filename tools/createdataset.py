@@ -102,9 +102,9 @@ data_set = [
 
 
 # remove dataset folder if it exists to start fresh
-if os.path.exists("dataset"):
+if os.path.exists("../dataset"):
     import shutil
-    shutil.rmtree("dataset")
+    shutil.rmtree("../dataset")
 
 if __name__ == "__main__":
 

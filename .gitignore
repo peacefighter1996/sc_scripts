@@ -1,3 +1,6 @@
 data.csv
 data/geoscout.csv
 .venv/
+dataset/
+data/
+imgui.ini

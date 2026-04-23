@@ -23,6 +23,7 @@ import pytesseract
 import concurrent.futures
 import time
 import tensorflow as tf
+from collections import deque
 
 import numpy as np
 from PIL import Image
@@ -50,6 +51,9 @@ SELECTED_SCREEN = 2  # 1 for primary, 2 for secondary (if using screen capture m
 
 DISPLAY_INFO_READER_MODEL_LOCATION = "data/best_pareto_model.keras"
 DISPLAY_INFO_READER_MODEL_LABELS = "data/label_map.json"
+
+TARGET_HZ = 30.0
+FRAME_TIME = 1.0 / TARGET_HZ
 
 char_recognition = tf.keras.models.load_model(DISPLAY_INFO_READER_MODEL_LOCATION)
 char_recognition_labels = json.load(open(DISPLAY_INFO_READER_MODEL_LABELS, "r"))
@@ -116,7 +120,7 @@ def load_points_from_csv() -> List[DataPoint]:
         os.makedirs(os.path.dirname(CSV_PATH), exist_ok=True)
         with open(CSV_PATH, 'w', newline='') as f:
             writer = csv.writer(f)
-            writer.writerow(["id","server", "x", "y", "z", "planet", "material", "quality_min", "quality_max", "note"])
+            writer.writerow(["recordid","server", "x", "y", "z", "planet", "material", "quality_min", "quality_max", "note"])
         return points
 
     with open(CSV_PATH, 'r', newline='') as f:
@@ -124,7 +128,7 @@ def load_points_from_csv() -> List[DataPoint]:
         for row in reader:
             try:
                 points.append(DataPoint(
-                    int(row['id']),
+                    int(row['recordid']),
                     row['server'],
                     float(row['x']),
                     float(row['y']),
@@ -229,7 +233,8 @@ def text_grap_xyz(frame=None, gray=None):
     
     # cut this portion of the screen and show it in a separate window to make it easier to read the text
     text_region = gray[30:44, -1000:-4]
-    cv2.imshow("Text Region", text_region)
+    # cv2.imshow("Text Region", text_region) # doesn't work because we are running in a separate thread, so save the text region to a file for debugging instead
+    # cv2.imwrite("text_region_debug.png", text_region)
     characters = extract_characters_rtl(text_region, char_w=7.5 ,char_h=14)
     
     # use pytorch and taraned model char_recognition_model.keras to recognize the characters and form the final string, then extract the x, y, z values from it
@@ -267,10 +272,10 @@ def text_grap_xyz(frame=None, gray=None):
                     coordinates[i] = coordinates[i].replace("m", "")
                     coordinates[i] = float(coordinates[i]) / 1000
         except ValueError:
-            print("Could not convert coordinates to float:", coordinates)
+            # print("Could not convert coordinates to float:", coordinates)
             return None, None, None
         x, y, z = coordinates
-        # print(f"X: {x}, Y: {y}, Z: {z}")
+        print("OCR Result:", ocr_result.strip(), f"→ Parsed coordinates: x={x:.2f}, y={y:.2f}, z={z:.2f}") 
         return x, y, z
     else:
         print("Could not parse coordinates from OCR result")
@@ -362,7 +367,7 @@ class AppState:
         self.quality_min = 0.0
         self.quality_max = MAX_QUALITY
 
-        self.new_data = DataPoint(self.selected_server, 0, 0, 0, self.selected_planet, self.selected_material,False, 0, MAX_QUALITY)
+        self.new_data = DataPoint(0,self.selected_server, 0, 0, 0, self.selected_planet, self.selected_material,False, 0, MAX_QUALITY)
         
         self.ocr_executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
         self.ocr_future = None
@@ -378,6 +383,7 @@ class AppState:
 
     def reload_planet_data(self):
         self.points = load_points_from_csv()
+        self.new_data.id = max((p.id for p in self.points), default=0) + 1
         
     def ocr_task(self):
         sct = mss.mss()
@@ -533,7 +539,10 @@ def main():
 
     window = glfw.create_window(1280, 720, "Planet Visualizer", None, None)
     glfw.make_context_current(window)
-
+    
+    next_tick = 0.0;
+    sleep_pct_samples = deque(maxlen=30)
+    
     imgui.create_context()
     impl = GlfwRenderer(window)
 
@@ -541,6 +550,19 @@ def main():
     state.reload_planet_data()
     
     while not glfw.window_should_close(window):
+        now = time.perf_counter()
+        wait_time = max(0.0, next_tick - now)
+        glfw.wait_events_timeout(wait_time)  # sleeps instead of busy-looping
+        
+        wait_start = time.perf_counter()
+        glfw.wait_events_timeout(wait_time)  # sleeps instead of busy-looping
+        wait_end = time.perf_counter()
+
+        actual_sleep = max(0.0, wait_end - wait_start)
+        sleep_pct = (actual_sleep / FRAME_TIME) * 100.0 if FRAME_TIME > 0 else 0.0
+        sleep_pct_samples.append(min(100.0, sleep_pct))
+        avg_sleep_pct = (sum(sleep_pct_samples) / len(sleep_pct_samples)) if sleep_pct_samples else 0.0
+        
         glfw.poll_events()
         impl.process_inputs()
         # background task to run both OCR functions
@@ -606,7 +628,9 @@ def main():
         _, state.new_data.quality_max = imgui.input_int("Quality Max", state.new_data.quality_max, MIN_QUALITY, MAX_QUALITY)
 
         if imgui.button("Add Point"):
+            
             new_point = DataPoint(
+                state.new_data.id,
                 state.selected_server,
                 state.new_data.x,
                 state.new_data.y,
@@ -618,7 +642,7 @@ def main():
                 state.new_data.quality_max,
                 note=""
             )
-
+            state.new_data.id += 1
             state.points.append(new_point)
             append_point_to_csv(new_point)
 
@@ -681,12 +705,26 @@ def main():
             imgui.text(hovered_text)
             imgui.end()
             
+        imgui.set_next_window_position(10, height - 30)
+        imgui.set_next_window_bg_alpha(0.7)
+        imgui.begin("##footer",
+                    flags=imgui.WINDOW_NO_TITLE_BAR |
+                          imgui.WINDOW_NO_RESIZE |
+                          imgui.WINDOW_NO_MOVE |
+                          imgui.WINDOW_ALWAYS_AUTO_RESIZE)
+        imgui.text(f"Sleep %: {avg_sleep_pct:.1f}%")
+        imgui.end()
+            
         glDisable(GL_BLEND)
         
         imgui.render()
         impl.render(imgui.get_draw_data())
 
         glfw.swap_buffers(window)
+        
+        next_tick += FRAME_TIME
+        if time.perf_counter() > next_tick + FRAME_TIME:
+            next_tick = time.perf_counter()
 
     impl.shutdown()
     glfw.terminate()

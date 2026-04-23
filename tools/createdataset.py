@@ -100,11 +100,12 @@ data_set = [
     ["images/test/rc6.jpg", ["                      Zone: rockcrack_assembled_002 Pos: -147.38m 116.84m 1042.10m", "                                     ShardId: pub_euw1b_11592622_180"]]
 ]
 
+DATASET_PATH = "../dataset"
 
 # remove dataset folder if it exists to start fresh
-if os.path.exists("../dataset"):
+if os.path.exists(DATASET_PATH):
     import shutil
-    shutil.rmtree("../dataset")
+    shutil.rmtree(DATASET_PATH)
 
 if __name__ == "__main__":
 
@@ -123,7 +124,7 @@ if __name__ == "__main__":
             # reverse ground truth to match RTL character order
             gt = ground_truth[0][::-1]
 
-            save_rtl_dataset(chars, gt)
+            save_rtl_dataset(chars, gt, output_dir=DATASET_PATH)
         
         if len(ground_truth) >= 2 and ground_truth[1] is not None:
             input_img = cv2.imread(input_image_path)
@@ -137,4 +138,4 @@ if __name__ == "__main__":
             # reverse ground truth to match RTL character order
             gt = ground_truth[1][::-1]
 
-            save_rtl_dataset(chars, gt)
+            save_rtl_dataset(chars, gt, output_dir=DATASET_PATH)

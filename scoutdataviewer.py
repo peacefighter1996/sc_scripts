@@ -12,6 +12,7 @@
 import math
 import os
 import csv
+import subprocess
 from dataclasses import dataclass
 from typing import List
 import cv2
@@ -43,6 +44,9 @@ import re
 CSV_PATH = "data/geoscout.csv"
 MAX_QUALITY = 1000.0
 MIN_QUALITY = 0.0
+SC_USE_CPP_ENGINE = os.environ.get("SC_USE_CPP_ENGINE", "1") == "1"
+SC_XYZ_OCR_BACKEND = os.environ.get("SC_XYZ_OCR_BACKEND", "model")
+SC_ROCK_OCR_BACKEND = os.environ.get("SC_ROCK_OCR_BACKEND", "manual")
 
 CAPTURE_MODE = "screen"   # "screen" or "window"
 WINDOW_NAME = 'Star Citizen '   # change if using window mode
@@ -111,6 +115,78 @@ class DataPoint:
 # CSV Handling (Global dataset)
 # -----------------------------
 
+def _cpp_engine_candidates():
+    return [
+        os.path.join("cpp_engine", "build", "scout_engine.exe"),
+        os.path.join("cpp_engine", "build", "Release", "scout_engine.exe"),
+    ]
+
+
+def _resolve_cpp_engine_path():
+    for candidate in _cpp_engine_candidates():
+        if os.path.exists(candidate):
+            return candidate
+    return None
+
+
+def _run_cpp_engine(args: List[str]):
+    engine_path = _resolve_cpp_engine_path()
+    if not engine_path:
+        raise FileNotFoundError("C++ engine executable not found")
+
+    result = subprocess.run(
+        [engine_path, *args],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return result.stdout
+
+
+def _load_points_from_cpp() -> List[DataPoint]:
+    points: List[DataPoint] = []
+    output = _run_cpp_engine(["dump", CSV_PATH])
+    for line in output.splitlines():
+        if not line.strip():
+            continue
+
+        row = line.split("\t", 9)
+        if len(row) < 10:
+            continue
+
+        material = row[6]
+        points.append(DataPoint(
+            int(row[0]),
+            row[1],
+            float(row[2]),
+            float(row[3]),
+            float(row[4]),
+            row[5],
+            material,
+            True if material.lower() == 'location' or material.lower() == 'cave' else False,
+            float(row[7]),
+            float(row[8]),
+            row[9],
+        ))
+    return points
+
+
+def _append_point_with_cpp(point: DataPoint):
+    _run_cpp_engine([
+        "append",
+        CSV_PATH,
+        str(point.id),
+        point.server,
+        str(point.x),
+        str(point.y),
+        str(point.z),
+        point.planet,
+        point.material,
+        str(point.quality_min),
+        str(point.quality_max),
+        point.note,
+    ])
+
 
 def load_points_from_csv() -> List[DataPoint]:
     points = []
@@ -122,6 +198,12 @@ def load_points_from_csv() -> List[DataPoint]:
             writer = csv.writer(f)
             writer.writerow(["recordid","server", "x", "y", "z", "planet", "material", "quality_min", "quality_max", "note"])
         return points
+
+    if SC_USE_CPP_ENGINE:
+        try:
+            return _load_points_from_cpp()
+        except Exception as e:
+            print("Falling back to Python CSV loader:", e)
 
     with open(CSV_PATH, 'r', newline='') as f:
         reader = csv.DictReader(f)
@@ -147,13 +229,20 @@ def load_points_from_csv() -> List[DataPoint]:
 
 
 def append_point_to_csv(point: DataPoint):
+    if SC_USE_CPP_ENGINE:
+        try:
+            _append_point_with_cpp(point)
+            return
+        except Exception as e:
+            print("Falling back to Python CSV append:", e)
+
     file_exists = os.path.exists(CSV_PATH)
 
     with open(CSV_PATH, 'a', newline='') as f:
         writer = csv.writer(f)
 
         if not file_exists:
-            writer.writerow(["id","server","x", "y", "z", "planet", "material", "quality_min", "quality_max", "note"])
+            writer.writerow(["recordid","server","x", "y", "z", "planet", "material", "quality_min", "quality_max", "note"])
 
         writer.writerow([
             point.id,
@@ -186,7 +275,7 @@ def get_window_bbox(name):
 
 
 
-def extract_characters_rtl(gray, char_w=7.5, char_h=12, threshold=200):
+def extract_characters_rtl(gray, char_w=7.5, char_h=12):
 
     h, w = gray.shape
 

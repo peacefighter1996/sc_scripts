@@ -4,3 +4,4 @@ data/geoscout.csv
 dataset/
 data/
 imgui.ini
+build/

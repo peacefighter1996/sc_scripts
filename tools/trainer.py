@@ -102,11 +102,11 @@ def build_model(num_classes):
 
     return model
 
-X, y, label_map = load_dataset("dataset")
+X, y, label_map = load_dataset("../dataset")
 
 # save label map to file
 import json
-with open("label_map.json", "w") as f:
+with open("../config/label_map.json", "w") as f:
     json.dump(label_map, f)
 
 X, y = augment_noise(X, y, copies=5)

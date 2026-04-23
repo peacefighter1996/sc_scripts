@@ -1,5 +1,14 @@
-# !pip install PyOpenGL glfw imgui Pillow numpy
+#%%
+# !pip install PyOpenGL 
+# !pip install glfw
+# !pip install imgui
+# !pip install Pillow 
+# !pip install tensorflow
+# !pip install opencv-python
+# !pip install pytesseract mss pygetwindow numpy  
+# !pip freeze > requirements.txt 
 
+#%%
 import math
 import os
 import csv
@@ -12,6 +21,8 @@ import pygetwindow as gw
 import json
 import pytesseract
 import concurrent.futures
+import time
+import tensorflow as tf
 
 import numpy as np
 from PIL import Image
@@ -25,9 +36,45 @@ import imgui
 from imgui.integrations.glfw import GlfwRenderer
 import re
 
+
+# -------- SETTINGS --------
+
 CSV_PATH = "data/geoscout.csv"
 MAX_QUALITY = 1000.0
 MIN_QUALITY = 0.0
+
+CAPTURE_MODE = "screen"   # "screen" or "window"
+WINDOW_NAME = 'Star Citizen '   # change if using window mode
+SELECTED_SCREEN = 2  # 1 for primary, 2 for secondary (if using screen capture mode)
+# print(gw.getAllTitles()) # uncomment to see all window titles for window capture mode
+
+DISPLAY_INFO_READER_MODEL_LOCATION = "data/best_pareto_model.keras"
+DISPLAY_INFO_READER_MODEL_LABELS = "data/label_map.json"
+
+char_recognition = tf.keras.models.load_model(DISPLAY_INFO_READER_MODEL_LOCATION)
+char_recognition_labels = json.load(open(DISPLAY_INFO_READER_MODEL_LABELS, "r"))
+# invert the label map to get char_recognition_labels which maps from index to character
+# replace space colon dot dash comma with their actual characters in char_recognition_labels
+char_recognition_labels = {int(v): k.replace("space"," ").replace("colon", ":").replace("dot", ".").replace("dash", "-").replace("comma", ",") for k, v in char_recognition_labels.items()}
+
+
+lastDataID = 0
+# print("Character Recognition Label Map:")
+# for k, v in char_recognition_labels.items():
+#     print(f"Label {k}: '{v}'")
+
+# Load color filter values from JSON or use defaults
+try:    
+    with open("config/filter_values.json", "r") as f:
+        base_values = json.load(f)
+except FileNotFoundError:
+    base_values = {
+        "lower_white": [0, 0, 150],
+        "upper_white": [255, 50, 255],
+        "lower_red": [50, 150, 0],
+        "upper_red": [120, 255, 255]
+    }
+
 
 # -----------------------------
 # Data Models
@@ -35,6 +82,7 @@ MIN_QUALITY = 0.0
 
 @dataclass
 class DataPoint:
+    id: int
     server: str
     x: float
     y: float
@@ -48,6 +96,8 @@ class DataPoint:
 
     def to_lat_lon_alt(self):
         r = math.sqrt(self.x**2 + self.y**2 + self.z**2)
+        if r == 0:
+            return 0.0, 0.0, 0.0
         lat = math.degrees(math.asin(self.z / r))
         lon = math.degrees(math.atan2(self.y, self.x))
         alt = r
@@ -66,7 +116,7 @@ def load_points_from_csv() -> List[DataPoint]:
         os.makedirs(os.path.dirname(CSV_PATH), exist_ok=True)
         with open(CSV_PATH, 'w', newline='') as f:
             writer = csv.writer(f)
-            writer.writerow(["server", "x", "y", "z", "planet", "material", "quality_min", "quality_max", "note"])
+            writer.writerow(["id","server", "x", "y", "z", "planet", "material", "quality_min", "quality_max", "note"])
         return points
 
     with open(CSV_PATH, 'r', newline='') as f:
@@ -74,13 +124,14 @@ def load_points_from_csv() -> List[DataPoint]:
         for row in reader:
             try:
                 points.append(DataPoint(
+                    int(row['id']),
                     row['server'],
                     float(row['x']),
                     float(row['y']),
                     float(row['z']),
                     row['planet'],
                     row['material'],
-                    True if row['material'].lower() == 'location' else False,
+                    True if row['material'].lower() == 'location' or row['material'].lower() == 'cave' else False,
                     float(row['quality_min']),
                     float(row['quality_max']),
                     row.get('note', "")
@@ -98,9 +149,10 @@ def append_point_to_csv(point: DataPoint):
         writer = csv.writer(f)
 
         if not file_exists:
-            writer.writerow(["server","x", "y", "z", "planet", "material", "quality_min", "quality_max", "note"])
+            writer.writerow(["id","server","x", "y", "z", "planet", "material", "quality_min", "quality_max", "note"])
 
         writer.writerow([
+            point.id,
             point.server,
             point.x,
             point.y,
@@ -112,13 +164,7 @@ def append_point_to_csv(point: DataPoint):
             point.note
         ])
 
-# -------- SETTINGS --------
-CAPTURE_MODE = "window"   # "screen" or "window"
-WINDOW_NAME = 'Star Citizen '   # change if using window mode
-# --------------------------
 
-
-print(gw.getAllTitles())
 def get_window_bbox(name):
     windows = gw.getWindowsWithTitle(name)
     if not windows:
@@ -135,24 +181,43 @@ def get_window_bbox(name):
 
 
 
-try:    
-    with open("filter_values.json", "r") as f:
-        base_values = json.load(f)
-except FileNotFoundError:
-    base_values = {
-        "lower_white": [0, 0, 150],
-        "upper_white": [255, 50, 255],
-        "lower_red": [50, 150, 0],
-        "upper_red": [120, 255, 255]
-    }
+
+def extract_characters_rtl(gray, char_w=7.5, char_h=12, threshold=200):
+
+    h, w = gray.shape
+
+    y_start = (h - char_h) // 2  # center vertically (adjust if needed)
+
+    chars = []
+
+    # start from right side
+    int_char_w = int(char_w)
+    x = w - int_char_w -1
     
-def text_grap_xyz(frame=None, hsv=None):
+
+    while x >= 0:
+        # print(x)
+        x_start = int(x)
+        x_end = int((x + int_char_w))
+        roi = gray[y_start:y_start+char_h, x_start-1:x_end+1]
+        # roi_mask = mask[y_start:y_start+char_h, x_start-1:x_end+1]
+
+        # skip empty blocks (no white pixels)
+        chars.append(roi)
+        
+
+        x -= char_w
+        
+
+    return chars
+
+def text_grap_xyz(frame=None, gray=None):
     if frame is None:
         sct = mss.mss()
         if CAPTURE_MODE == "window":
             monitor = get_window_bbox(WINDOW_NAME)
         else:
-            monitor = sct.monitors[2]  # full screen
+            monitor = sct.monitors[SELECTED_SCREEN]  # full screen
         screenshot = sct.grab(monitor)
         frame = np.array(screenshot)
     
@@ -160,38 +225,40 @@ def text_grap_xyz(frame=None, hsv=None):
     
         hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
 
-    lower_white = np.array(base_values["lower_white"])
-    upper_white = np.array(base_values["upper_white"])
-    mask = cv2.inRange(hsv, lower_white, upper_white)
     
-    view = cv2.bitwise_and(frame, frame, mask=mask)
-    size = (view.shape[1], view.shape[0])
-    # get right hand corner of the screen and draw a red rectangle there to show where the text is
-    lefttop = (size[0]-400, 31)
-    rightbottom = (size[0], 44)
     
     # cut this portion of the screen and show it in a separate window to make it easier to read the text
-    text_region = view[lefttop[1]:rightbottom[1], lefttop[0]:rightbottom[0]]
-    # cv2.imshow("Text Region", text_region)
+    text_region = gray[30:44, -1000:-4]
+    cv2.imshow("Text Region", text_region)
+    characters = extract_characters_rtl(text_region, char_w=7.5 ,char_h=14)
     
-    # perform OCR on the text region using pytesseract to read the text and print it to the console
-    ocr_result = pytesseract.image_to_string(text_region, config='--psm 7')
-    print("OCR Result:", ocr_result.strip())
-    # cv2.rectangle(view, lefttop, rightbottom, (0, 0, 255), 2)
+    # use pytorch and taraned model char_recognition_model.keras to recognize the characters and form the final string, then extract the x, y, z values from it
     
-    ocr_result = ocr_result.replace("\n", " ").strip()
+    X = np.array(characters)
+    X = X / 255.0
+    X = X[..., np.newaxis]  # (N, 14, 9, 1)
+    
+    # print(f"Extracted {X.shape} character images for OCR")
+    
+    predictions = char_recognition.predict(X, verbose=0)
+    predicted_labels = np.argmax(predictions, axis=1)
+    
+    ocr_result = ""
+    # print("Predicted labels:", predicted_labels)
+    for label in predicted_labels:
+        char = char_recognition_labels.get(label, "?")
+        ocr_result += char
+    # invert the string since we read characters from right to left
+    ocr_result = ocr_result[::-1]
+    # print("OCR Result:", ocr_result.strip())
+    
     data = ocr_result.split(" ")
     # get last 3 strings for x, y, z
     if len(data) >= 3:
         coordinates = data[-3:]
         try:
             for i in range(3):
-            
-                coordinates[i] = coordinates[i].replace(",", ".")
                 # remove . if last character and replace l with 1, O with 0, I with 1 to fix common OCR mistakes
-                if coordinates[i].endswith("."):
-                    coordinates[i] = coordinates[i][:-1]
-                coordinates[i] = coordinates[i].replace("l", "1").replace("O", "0").replace("I", "1")
                 if "k" in coordinates[i]:
                     coordinates[i] = coordinates[i].replace("k", "")
                     coordinates[i] = coordinates[i].replace("m", "")
@@ -203,7 +270,7 @@ def text_grap_xyz(frame=None, hsv=None):
             print("Could not convert coordinates to float:", coordinates)
             return None, None, None
         x, y, z = coordinates
-        print(f"X: {x}, Y: {y}, Z: {z}")
+        # print(f"X: {x}, Y: {y}, Z: {z}")
         return x, y, z
     else:
         print("Could not parse coordinates from OCR result")
@@ -215,7 +282,7 @@ def text_capture_rock_type(frame=None, hsv=None):
         if CAPTURE_MODE == "window":
             monitor = get_window_bbox(WINDOW_NAME)
         else:
-            monitor = sct.monitors[2]  # full screen
+            monitor = sct.monitors[SELECTED_SCREEN]  # full screen
         screenshot = sct.grab(monitor)
         frame = np.array(screenshot)
     
@@ -244,7 +311,7 @@ def text_capture_rock_type(frame=None, hsv=None):
     # cv2.imshow("Text Region", text_region)
     
     ocr_result = pytesseract.image_to_string(text_region, config='--psm 7')
-    print("OCR Result:", ocr_result.strip())
+    # print("OCR Result:", ocr_result.strip())
     
     # try to match the OCR result to a known rock type and return it
     rock_types = ["Hephaestanite", "Gold", "Janalite", "Aphorite", "Dolivine", "Aslarite", "Beryl", "Iron", "Taranite", "Laranite", "Stileron", "Copper", "Borase", "Tin", "Riccite"]
@@ -255,7 +322,6 @@ def text_capture_rock_type(frame=None, hsv=None):
         
     return None
         
-
 # -----------------------------
 # Application State
 # -----------------------------
@@ -280,8 +346,8 @@ class AppState:
         self.points: List[DataPoint] = []
         self.filtered_points: List[DataPoint] = []
 
-        self.serverIds = ["eu10", "eu180", "All"]
-        self.planets = ["Pyro_E5_Fuego", "Pyro_Pyro4", "Pyro_A5_Ignis"]
+        self.serverIds = ["eu10", "eu180", "us170" ,"All"]
+        self.planets = ["Pyro_E5_Fuego", "Pyro_Pyro4", "Pyro_A5_Ignis", "Pyro_Pyro2_Monox" ]
         self.materials = ["Hephaestanite", "Gold", "Janalite", "Aphorite", "Dolivine", "Aslarite", "Beryl", "Iron", "Taranite", "Laranite", "Stileron", "Copper", "All", "Borase", "Tin", "Riccite"]
         
         self.serverIds.sort()
@@ -321,13 +387,17 @@ class AppState:
             monitor = sct.monitors[2]  # full screen
         screenshot = sct.grab(monitor)
         frame = np.array(screenshot)
-    
+        if frame.shape[0] < 500 and frame.shape[1] < 500:
+            print("Captured frame is too small, check capture settings.")
+            return None, None, None, None
+        
         frame = cv2.cvtColor(frame, cv2.COLOR_BGRA2BGR)
     
         hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         try:
-            rock = text_capture_rock_type(frame, hsv)
-            x, y, z = text_grap_xyz(frame, hsv)
+            rock = text_capture_rock_type(frame, hsv) 
+            x, y, z = text_grap_xyz(frame, gray)
             return rock, x, y, z
         except Exception as e:
             print("OCR task exception:", e)
@@ -454,6 +524,10 @@ def draw_map(texture, points: List[DataPoint], mouse_pos=None):
 
 
 def main():
+    
+    last_time = time.time()
+    location_on = False                             
+    
     if not glfw.init():
         return
 
@@ -469,11 +543,6 @@ def main():
     while not glfw.window_should_close(window):
         glfw.poll_events()
         impl.process_inputs()
-        
-
-
-            
-
         # background task to run both OCR functions
         
 
@@ -579,6 +648,19 @@ def main():
 
         if texture:
             hovered_text = draw_map(texture, state.filtered_points, (mx, my))
+            if (time.time() - last_time > 0.25):
+                last_time = time.time()
+                location_on = not location_on
+            if location_on:
+                lat, lon, _ = state.new_data.to_lat_lon_alt()
+                u, v = latlon_to_uv(lat, lon)
+                px = u * 2 - 1
+                py = v * 2 - 1
+                glColor4f(1.0, 1.0, 0.0, 0.9)  # Yellow with alpha
+                glPointSize(5)
+                glBegin(GL_POINTS)
+                glVertex2f(px, py)
+                glEnd()
 
         if hovered_text:
             mouse_x, mouse_y = imgui.get_mouse_pos()

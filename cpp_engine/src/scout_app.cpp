@@ -13,7 +13,7 @@
 #include <GLFW/glfw3.h>
 #include <imgui.h>
 #include <backends/imgui_impl_glfw.h>
-#include <backends/imgui_impl_opengl2.h>
+#include <backends/imgui_impl_opengl3.h>
 
 #include <algorithm>
 #include <chrono>
@@ -605,6 +605,10 @@ int run_scout_app() {
         return 1;
     }
 
+    // glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 4); // Specify OpenGL version
+    // glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 5);
+    // glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE); // Use core profile
+
     GLFWwindow* window = glfwCreateWindow(1280, 720, "Scout Engine", nullptr, nullptr);
     if (!window) {
         glfwTerminate();
@@ -618,7 +622,7 @@ int run_scout_app() {
     ImGui::CreateContext();
     ImGui::StyleColorsDark();
     ImGui_ImplGlfw_InitForOpenGL(window, true);
-    ImGui_ImplOpenGL2_Init();
+    ImGui_ImplOpenGL3_Init();
 
     AppState state;
     state.reload_planet_data();
@@ -634,6 +638,7 @@ int run_scout_app() {
 
     while (!glfwWindowShouldClose(window)) {
         const auto now = std::chrono::steady_clock::now();
+        const auto loop_start = std::chrono::steady_clock::now();
         double actual_sleep = 0.0;
         if (next_tick > now ) {
             const auto sleep_start = std::chrono::steady_clock::now();
@@ -641,7 +646,7 @@ int run_scout_app() {
             const auto sleep_end = std::chrono::steady_clock::now();
             actual_sleep = std::chrono::duration<double>(sleep_end - sleep_start).count();
         }
-        const auto loop_start = std::chrono::steady_clock::now();
+        
 
         const auto sleep_pct = kFrameTime > 0.0 ? std::min(100.0, (actual_sleep / kFrameTime) * 100.0) : 0.0;
         timer_display.record_sleep(sleep_pct);
@@ -670,7 +675,7 @@ int run_scout_app() {
         }
         f3_was_down = f3_is_down;
 
-        ImGui_ImplOpenGL2_NewFrame();
+        ImGui_ImplOpenGL3_NewFrame();
         ImGui_ImplGlfw_NewFrame();
         ImGui::NewFrame();
 
@@ -690,13 +695,13 @@ int run_scout_app() {
 
         ImGui::Separator();
         ImGui::Text("Add new point:");
-        if (state.last_detected_rock) {
-            ImGui::Text("Last detected rock type: %s", state.last_detected_rock->c_str());
-            if (ImGui::Button("Use Detected Rock Type")) {
-                state.selected_material = *state.last_detected_rock;
-                state.new_data.material = *state.last_detected_rock;
-            }
-        }
+        // if (state.last_detected_rock) {
+        //     ImGui::Text("Last detected rock type: %s", state.last_detected_rock->c_str());
+        //     if (ImGui::Button("Use Detected Rock Type")) {
+        //         state.selected_material = *state.last_detected_rock;
+        //         state.new_data.material = *state.last_detected_rock;
+        //     }
+        // }
 
         float input_x = static_cast<float>(state.new_data.x);
         float input_y = static_cast<float>(state.new_data.y);
@@ -799,14 +804,16 @@ int run_scout_app() {
 
         const auto loop_end = std::chrono::steady_clock::now();
         const double loop_time_ms = std::chrono::duration<double, std::milli>(loop_end - loop_start).count();
-        timer_display.record_frame(loop_time_ms, loop_time_ms, render_time_ms, ocr_poll_ms);
+
+        const double work_ms = std::max(0.0, loop_time_ms - (actual_sleep * 1000.0));
+        timer_display.record_frame(loop_time_ms, work_ms, render_time_ms, ocr_poll_ms);
         if (show_timings) {
             timer_footer_renderer.render(timer_display, height);
         }
 
         glDisable(GL_BLEND);
         ImGui::Render();
-        ImGui_ImplOpenGL2_RenderDrawData(ImGui::GetDrawData());
+        ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
         glfwSwapBuffers(window);
 
         next_tick += std::chrono::duration_cast<std::chrono::steady_clock::duration>(std::chrono::duration<double>(kFrameTime));
@@ -816,7 +823,7 @@ int run_scout_app() {
         
     }
 
-    ImGui_ImplOpenGL2_Shutdown();
+    ImGui_ImplOpenGL3_Shutdown();
     ImGui_ImplGlfw_Shutdown();
     ImGui::DestroyContext();
     glfwDestroyWindow(window);

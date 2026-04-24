@@ -72,12 +72,6 @@ int find_column_index(const std::vector<std::string>& headers, const std::vector
     return -1;
 }
 
-
-struct PlanetCatalog {
-    std::vector<std::string> keys;
-    std::unordered_map<std::string, std::string> image_dir_by_key;
-};
-
 struct TextureEntry {
     GLuint texture{};
     int width{};
@@ -250,22 +244,23 @@ std::vector<Material> load_material_catalog(const std::filesystem::path& path, c
     return catalog;
 }
 
-PlanetCatalog load_planet_catalog(const std::filesystem::path& path, const std::vector<std::string>& defaults) {
+std::vector<Planet> load_planet_catalog(const std::filesystem::path& path, const std::vector<std::string>& defaults) {
     std::ifstream in(path);
     if (!in.is_open()) {
-        PlanetCatalog catalog;
-        catalog.keys = defaults;
+        std::vector<Planet> catalog;
         for (const auto& key : defaults) {
-            catalog.image_dir_by_key[key] = key;
+            catalog.push_back(Planet{-1, "", key, key, ""});
         }
         return catalog;
     }
 
-    PlanetCatalog catalog;
+    std::vector<Planet> catalog;
     bool header_parsed = false;
     int image_dir_index = -1;
     int planet_name_index = -1;
-    int key_index = -1;
+    int id_index = -1;
+    int system_index = -1;
+    int zone_id_index = -1;
 
     std::string line;
     while (std::getline(in, line)) {
@@ -280,48 +275,57 @@ PlanetCatalog load_planet_catalog(const std::filesystem::path& path, const std::
         }
 
         if (!header_parsed) {
+            //id,system,planet,image_dir,zone_id
+            id_index = find_column_index(cells, {"id", "planet_id", "key"});
             image_dir_index = find_column_index(cells, {"image_dir", "imagedir", "image"});
             planet_name_index = find_column_index(cells, {"planet", "name", "value"});
-            key_index = find_column_index(cells, {"key", "planet_key", "planet_id"});
+            system_index = find_column_index(cells, {"system"});
+            zone_id_index = find_column_index(cells, {"zone_id", "zoneid", "zone"});
             header_parsed = true;
             continue;
         }
 
-        std::string key;
-        if (planet_name_index >= 0 && planet_name_index < static_cast<int>(cells.size())) {
-            key = trim(cells[static_cast<size_t>(planet_name_index)]);
-        }
-        if (key_index >= 0 && key_index < static_cast<int>(cells.size())) {
-            const auto parsed = trim(cells[static_cast<size_t>(key_index)]);
-            if (!parsed.empty() && key.empty()) {
-                key = parsed;
+        int id = -1;
+        std::string system;
+        std::string zone_id;
+        std::string planet_name;
+        std::string img_dir;
+        
+        if (id_index >= 0 && id_index < static_cast<int>(cells.size())) {
+            try {
+                id = std::stoi(trim(cells[static_cast<size_t>(id_index)]));
+            } catch (const std::exception&) {
+                // ignore parse errors and just use default ids
             }
         }
-        if (key.empty() && image_dir_index >= 0 && image_dir_index < static_cast<int>(cells.size())) {
-            key = trim(cells[static_cast<size_t>(image_dir_index)]);
+
+        if (system_index >= 0 && system_index < static_cast<int>(cells.size())) {
+            system = trim(cells[static_cast<size_t>(system_index)]);
         }
-        if (key.empty()) {
+
+        if (zone_id_index >= 0 && zone_id_index < static_cast<int>(cells.size())) {
+            zone_id = trim(cells[static_cast<size_t>(zone_id_index)]);
+        }
+
+        if (planet_name_index >= 0 && planet_name_index < static_cast<int>(cells.size())) {
+            planet_name = trim(cells[static_cast<size_t>(planet_name_index)]);
+        }
+
+        if (image_dir_index >= 0 && image_dir_index < static_cast<int>(cells.size())) {
+            img_dir = trim(cells[static_cast<size_t>(image_dir_index)]);
+        }
+
+        if (planet_name.empty()) {
             continue;
         }
 
-        std::string image_dir = key;
-        if (image_dir_index >= 0 && image_dir_index < static_cast<int>(cells.size())) {
-            const auto parsed = trim(cells[static_cast<size_t>(image_dir_index)]);
-            if (!parsed.empty()) {
-                image_dir = parsed;
-            }
-        }
-
-        if (std::find(catalog.keys.begin(), catalog.keys.end(), key) == catalog.keys.end()) {
-            catalog.keys.push_back(key);
-        }
-        catalog.image_dir_by_key[key] = image_dir;
+        Planet planet{id, system, planet_name, img_dir, zone_id};
+        catalog.push_back(planet);
     }
 
-    if (catalog.keys.empty()) {
-        catalog.keys = defaults;
+    if (catalog.empty()) {
         for (const auto& key : defaults) {
-            catalog.image_dir_by_key[key] = key;
+            catalog.push_back(Planet{-1, "", key, key, ""});
         }
     }
 
@@ -389,8 +393,8 @@ struct AppState {
     std::vector<std::string> server_ids;
     std::vector<std::string> planets;
     std::vector<std::string> materials;
+    std::vector<Planet> planet_catalog;
     std::vector<Material> material_catalog;
-    std::unordered_map<std::string, std::string> planet_image_dirs;
 
     std::string selected_planet;
     std::string selected_material;
@@ -423,8 +427,9 @@ struct AppState {
           ocr(onnx_model_path, label_map_path) {
         server_ids = load_server_ids_csv(server_ids_path, kDefaultServerIds);
         const auto planet_catalog = load_planet_catalog(planets_csv_path, kDefaultPlanets);
-        planets = planet_catalog.keys;
-        planet_image_dirs = planet_catalog.image_dir_by_key;
+        for (const auto& planet : planet_catalog) {
+            this->planets.push_back(planet.name);
+        }
         const auto material_catalog = load_material_catalog(materials_path, kDefaultMaterials, kMaterialIds);
 
         for (const auto& material : material_catalog) {
@@ -478,9 +483,11 @@ struct AppState {
         }
 
         std::filesystem::path texture_path = planets_dir / selected_planet / "planet.jpg";
-        const auto dir_it = planet_image_dirs.find(selected_planet);
-        if (dir_it != planet_image_dirs.end() && !dir_it->second.empty()) {
-            texture_path = planets_dir / dir_it->second / "planet.jpg";
+        const auto dir_it = std::find_if(planet_catalog.begin(), planet_catalog.end(), [this](const Planet& p) {
+            return p.name == selected_planet;
+        });
+        if (dir_it != planet_catalog.end() && !dir_it->image_dir.empty()) {
+            texture_path = planets_dir / dir_it->image_dir / "planet.jpg";
         }
 
         GLuint texture = load_texture_file(texture_path);
@@ -610,6 +617,18 @@ int run_scout_app() {
                             state.new_data.y = *result.y;
                             state.new_data.z = *result.z;
                         }
+                        if (result.locationmarker && !result.locationmarker->empty()) {
+                            const auto planet_candidate = *result.locationmarker;
+
+                            // check if the detected location marker matches any known planet keys (case-insensitive)
+                            auto it = std::find_if(state.planets.begin(), state.planets.end(), [&planet_candidate](const std::string& planet) {
+                                return to_lower(planet) == to_lower(planet_candidate);
+                            });
+                            if (it != state.planets.end()) {
+                                state.new_data.planet = *it;
+                            }
+                        }
+                            
                     }
                     // always update detected rock for display
                     if (result.rock) {

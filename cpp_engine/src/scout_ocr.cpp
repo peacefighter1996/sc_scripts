@@ -337,10 +337,12 @@ OcrResult ScoutOcr::run_ocr_task() const {
     double x = 0.0;
     double y = 0.0;
     double z = 0.0;
-    if (try_parse_xyz_from_ocr_text(text, x, y, z)) {
+    std::string locationmarker;
+    if (try_parse_xyz_from_ocr_text(text, x, y, z, locationmarker)) {
         result.x = x;
         result.y = y;
         result.z = z;
+        result.locationmarker = locationmarker;
     }
 
     stamp_task_time(result);

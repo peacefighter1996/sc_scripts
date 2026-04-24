@@ -11,6 +11,7 @@ struct OcrResult {
     std::optional<double> x;
     std::optional<double> y;
     std::optional<double> z;
+    std::optional<std::string> locationmarker;
     double task_time_ms{0.0};
 };
 

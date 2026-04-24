@@ -193,7 +193,7 @@ static std::vector<std::string> split_whitespace(const std::string& text) {
     return parts;
 }
 
-bool try_parse_xyz_from_ocr_text(const std::string& ocr_text, double& x, double& y, double& z) {
+bool try_parse_xyz_from_ocr_text(const std::string& ocr_text, double& x, double& y, double& z, std::string& locationmarker) {
     const auto parts = split_whitespace(ocr_text);
     if (parts.size() < 3) {
         return false;
@@ -226,6 +226,12 @@ bool try_parse_xyz_from_ocr_text(const std::string& ocr_text, double& x, double&
     x = parsed[0];
     y = parsed[1];
     z = parsed[2];
+
+    if (parts.size() >= 5) {
+        locationmarker = parts[parts.size() - 4];
+    } else {
+        locationmarker.clear();
+    }
     return true;
 }
 

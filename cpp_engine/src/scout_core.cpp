@@ -228,7 +228,7 @@ bool try_parse_xyz_from_ocr_text(const std::string& ocr_text, double& x, double&
     z = parsed[2];
 
     if (parts.size() >= 5) {
-        locationmarker = parts[parts.size() - 4];
+        locationmarker = parts[parts.size() - 5];
     } else {
         locationmarker.clear();
     }

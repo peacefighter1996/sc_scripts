@@ -76,7 +76,8 @@ int main(int argc, char** argv) {
         double x = 0.0;
         double y = 0.0;
         double z = 0.0;
-        if (!try_parse_xyz_from_ocr_text(argv[2], x, y, z)) {
+        std::string locationmarker;
+        if (!try_parse_xyz_from_ocr_text(argv[2], x, y, z, locationmarker)) {
             return 1;
         }
 
@@ -95,7 +96,8 @@ int main(int argc, char** argv) {
         double x = 0.0;
         double y = 0.0;
         double z = 0.0;
-        const bool ok = try_parse_xyz_from_ocr_text(text, x, y, z);
+        std::string locationmarker;
+        const bool ok = try_parse_xyz_from_ocr_text(text, x, y, z, locationmarker);
         std::cout << rock << '\t';
         if (!ok) {
             std::cout << "nan\tnan\tnan\n";

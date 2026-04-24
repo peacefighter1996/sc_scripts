@@ -426,16 +426,15 @@ struct AppState {
           materials_path(repo_root / "data" / "materials.csv"),
           ocr(onnx_model_path, label_map_path) {
         server_ids = load_server_ids_csv(server_ids_path, kDefaultServerIds);
-        const auto planet_catalog = load_planet_catalog(planets_csv_path, kDefaultPlanets);
+        this->planet_catalog = load_planet_catalog(planets_csv_path, kDefaultPlanets);
         for (const auto& planet : planet_catalog) {
             this->planets.push_back(planet.name);
         }
-        const auto material_catalog = load_material_catalog(materials_path, kDefaultMaterials, kMaterialIds);
+        this->material_catalog = load_material_catalog(materials_path, kDefaultMaterials, kMaterialIds);
 
         for (const auto& material : material_catalog) {
             materials.push_back(material.name);
         }
-        this->material_catalog = material_catalog;
         selected_planet = planets.front();
         selected_material = materials.front();
         selected_server = server_ids.front();
@@ -482,7 +481,18 @@ struct AppState {
             return it->second;
         }
 
-        std::filesystem::path texture_path = planets_dir / selected_planet / "planet.jpg";
+        // selected to image dir for planet in planets.csv, if not found fallback to looking for image named after planet key directly in planets dir
+
+        std::string image_dir_name = selected_planet;
+        for (const auto& planet : planet_catalog) {
+            if (planet.name == selected_planet && !planet.image_dir.empty()) {
+                image_dir_name = planet.image_dir;
+                break;
+            }
+        }
+
+
+        std::filesystem::path texture_path = planets_dir / image_dir_name / "planet.jpg";
         const auto dir_it = std::find_if(planet_catalog.begin(), planet_catalog.end(), [this](const Planet& p) {
             return p.name == selected_planet;
         });
@@ -626,6 +636,8 @@ int run_scout_app() {
                             });
                             if (it != state.planets.end()) {
                                 state.new_data.planet = *it;
+                                state.selected_planet = *it;
+                                state.filter_points();
                             }
                         }
                             

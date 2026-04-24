@@ -34,3 +34,13 @@ double TimerMetric::average() const {
 int TimerMetric::sample_count() const {
     return count_;
 }
+
+void TimerMetric::stamp() const {
+    start_time_ = std::chrono::steady_clock::now();
+}
+
+void TimerMetric::record_time_since_stamp() {
+    const auto now = std::chrono::steady_clock::now();
+    const double ms = std::chrono::duration<double, std::milli>(now - start_time_).count();
+    add_sample(ms);
+}

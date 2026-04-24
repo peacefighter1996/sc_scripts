@@ -15,26 +15,26 @@ void TimerDisplay::record_ocr_task(double task_time_ms) {
     ocr_task_time_ms_.add_sample(task_time_ms);
 }
 
-const TimerMetric& TimerDisplay::sleep_percent() const {
+TimerMetric& TimerDisplay::sleep_percent() {
     return sleep_percent_;
 }
 
-const TimerMetric& TimerDisplay::loop_time_ms() const {
+TimerMetric& TimerDisplay::loop_time_ms() {
     return loop_time_ms_;
 }
 
-const TimerMetric& TimerDisplay::work_time_ms() const {
+TimerMetric& TimerDisplay::work_time_ms() {
     return work_time_ms_;
 }
 
-const TimerMetric& TimerDisplay::render_time_ms() const {
+TimerMetric& TimerDisplay::render_time_ms() {
     return render_time_ms_;
 }
 
-const TimerMetric& TimerDisplay::ocr_poll_time_ms() const {
+TimerMetric& TimerDisplay::ocr_poll_time_ms() {
     return ocr_poll_time_ms_;
 }
 
-const TimerMetric& TimerDisplay::ocr_task_time_ms() const {
+TimerMetric& TimerDisplay::ocr_task_time_ms() {
     return ocr_task_time_ms_;
 }

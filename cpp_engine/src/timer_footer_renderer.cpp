@@ -4,7 +4,7 @@
 
 #include <imgui.h>
 
-void TimerFooterRenderer::render(const TimerDisplay& timer_display, int viewport_height) const {
+void TimerFooterRenderer::render(TimerDisplay& timer_display, int viewport_height) const {
     ImGui::SetNextWindowPos(ImVec2(10.0f, static_cast<float>(viewport_height - 70)));
     ImGui::SetNextWindowBgAlpha(1.0f);
     ImGui::Begin("##footer", nullptr, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_AlwaysAutoResize);

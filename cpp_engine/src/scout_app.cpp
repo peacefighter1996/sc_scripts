@@ -8,12 +8,13 @@
 #define NOMINMAX
 #include <Windows.h>
 #include <gdiplus.h>
-#include <gl/GL.h>
+#include <glad/glad.h>
 
 #include <GLFW/glfw3.h>
 #include <imgui.h>
 #include <backends/imgui_impl_glfw.h>
 #include <backends/imgui_impl_opengl3.h>
+#include "scout_render.h"
 
 #include <algorithm>
 #include <chrono>
@@ -35,8 +36,8 @@
 namespace {
 
 constexpr double kPi = 3.14159265358979323846;
-constexpr double kMaxQuality = 1000.0;
-constexpr double kMinQuality = 0.0;
+constexpr int kMaxQuality = 1000;
+constexpr int kMinQuality = 0;
 constexpr double kTargetHz = 30.0;
 constexpr double kFrameTime = 1.0 / kTargetHz;
 
@@ -70,19 +71,6 @@ int find_column_index(const std::vector<std::string>& headers, const std::vector
     }
     return -1;
 }
-
-struct Material{
-    int id;
-    std::string name;
-    std::string short_name;
-};
-
-struct MaterialCatalog {
-    int next_id;
-    std::vector<std::string> names;
-    std::unordered_map<std::string, std::string> short_name;
-};
-
 
 
 struct PlanetCatalog {
@@ -189,13 +177,13 @@ std::vector<std::string> load_server_ids_csv(const std::filesystem::path& path, 
     return values.empty() ? defaults : values;
 }
 
-MaterialCatalog load_material_catalog(const std::filesystem::path& path, const std::vector<std::string>& default_names, const std::unordered_map<std::string, std::string>& default_shorts) {
+std::vector<Material> load_material_catalog(const std::filesystem::path& path, const std::vector<std::string>& default_names, const std::unordered_map<std::string, std::string>& default_shorts) {
     std::ifstream in(path);
     if (!in.is_open()) {
-        return {0, default_names, default_shorts};
+        return {};
     }
 
-    MaterialCatalog catalog;
+    std::vector<Material> catalog;
     bool header_parsed = false;
     int name_index = -1;
     int shortname_index = -1;
@@ -247,27 +235,16 @@ MaterialCatalog load_material_catalog(const std::filesystem::path& path, const s
             }
         }
 
-
-        if (std::find(catalog.names.begin(), catalog.names.end(), name) == catalog.names.end()) {
-            catalog.names.push_back(name);
-        }
-
-        if (!shortname.empty()) {
-            catalog.short_name[name] = shortname;
-        }
-
-        if (id >= 0) {
-            catalog.short_name[name] = std::to_string(id);
-        }
-        
-        
+        Material material{id, name, shortname};
+        catalog.push_back(material);
     }
 
-    if (catalog.names.empty()) {
-        catalog.names = default_names;
-    }
-    if (catalog.short_name.empty()) {
-        catalog.short_name = default_shorts;
+    if (catalog.empty()) {
+        for (const auto& name : default_names) {
+            const auto it = default_shorts.find(name);
+            const auto short_name = it != default_shorts.end() ? it->second : name.substr(0, std::min<size_t>(4, name.size()));
+            catalog.push_back(Material{-1, name, short_name});
+        }
     }
 
     return catalog;
@@ -395,83 +372,7 @@ std::pair<float, float> latlon_to_uv(double lat, double lon) {
     return {u, v};
 }
 
-std::optional<std::string> draw_map(
-    GLuint texture,
-    const std::vector<DataPoint>& points,
-    std::optional<std::pair<float, float>> mouse_pos,
-    const std::unordered_map<std::string, std::string>& material_ids) {
-    glEnable(GL_TEXTURE_2D);
-    glBindTexture(GL_TEXTURE_2D, texture);
-    glColor3f(1.0f, 1.0f, 1.0f);
-
-    glBegin(GL_QUADS);
-    glTexCoord2f(0.0f, 1.0f); glVertex2f(-1.0f, -1.0f);
-    glTexCoord2f(1.0f, 1.0f); glVertex2f(1.0f, -1.0f);
-    glTexCoord2f(1.0f, 0.0f); glVertex2f(1.0f, 1.0f);
-    glTexCoord2f(0.0f, 0.0f); glVertex2f(-1.0f, 1.0f);
-    glEnd();
-
-    glDisable(GL_TEXTURE_2D);
-    glPointSize(5.0f);
-    glBegin(GL_POINTS);
-    for (const auto& point : points) {
-        const auto lat_lon_alt = point.to_lat_lon_alt();
-        const auto [u, v] = latlon_to_uv(lat_lon_alt[0], lat_lon_alt[1]);
-
-        float r = 1.0f;
-        float g = 1.0f;
-        float b = 1.0f;
-        float a = 0.85f;
-        if (!point.location) {
-            double quality_norm = (point.quality_max - kMinQuality) / (kMaxQuality - kMinQuality);
-            quality_norm = std::clamp(quality_norm, 0.0, 1.0);
-            if (quality_norm < 0.5) {
-                const auto t = static_cast<float>(quality_norm * 2.0);
-                r = 0.0f;
-                g = t;
-                b = 1.0f - t;
-            } else {
-                const auto t = static_cast<float>((quality_norm - 0.5) * 2.0);
-                r = t;
-                g = 1.0f - t;
-                b = 0.0f;
-            }
-            a = 1.0f;
-        }
-
-        const float x = (u * 2.0f) - 1.0f;
-        const float y = (v * 2.0f) - 1.0f;
-        glColor4f(r, g, b, a);
-        glVertex2f(x, y);
-    }
-    glEnd();
-
-    if (!mouse_pos) {
-        return std::nullopt;
-    }
-
-    const auto [mx, my] = *mouse_pos;
-    constexpr float closest_dist = 0.02f;
-    for (const auto& point : points) {
-        const auto lat_lon_alt = point.to_lat_lon_alt();
-        const auto [u, v] = latlon_to_uv(lat_lon_alt[0], lat_lon_alt[1]);
-        const float px = (u * 2.0f) - 1.0f;
-        const float py = (v * 2.0f) - 1.0f;
-        const float dx = mx - px;
-        const float dy = my - py;
-        const float dist = std::sqrt((dx * dx) + (dy * dy));
-        if (dist < closest_dist) {
-            const auto it = material_ids.find(point.material);
-            const auto material_id = it != material_ids.end() ? it->second : point.material.substr(0, std::min<size_t>(4, point.material.size()));
-            if (point.location) {
-                return point.note;
-            }
-            return material_id + " Quality: " + std::to_string(point.quality_max) + "\n" + point.note;
-        }
-    }
-
-    return std::nullopt;
-}
+// Rendering moved to scout_render (modern GL)
 
 struct AppState {
     std::filesystem::path repo_root;
@@ -488,15 +389,15 @@ struct AppState {
     std::vector<std::string> server_ids;
     std::vector<std::string> planets;
     std::vector<std::string> materials;
-    std::unordered_map<std::string, std::string> material_ids;
+    std::vector<Material> material_catalog;
     std::unordered_map<std::string, std::string> planet_image_dirs;
 
     std::string selected_planet;
     std::string selected_material;
     std::string selected_server;
     std::optional<std::string> last_detected_rock;
-    double quality_min{kMinQuality};
-    double quality_max{kMaxQuality};
+    int quality_min{kMinQuality};
+    int quality_max{kMaxQuality};
     DataPoint new_data{};
     std::unordered_map<std::string, GLuint> texture_cache;
     std::optional<std::string> hovered_text;
@@ -507,25 +408,28 @@ struct AppState {
           csv_path(repo_root / "data" / "geoscout.csv"),
           onnx_model_path(repo_root / "data" / "best_pareto_model.onnx"),
           label_map_path(repo_root / "data" / "label_map.json"),
-                    planets_dir(repo_root / "images" / "planets"),
-                    server_ids_path(repo_root / "data" / "server_ids.csv"),
-                    planets_csv_path(repo_root / "data" / "planets.csv"),
-                    materials_path(repo_root / "data" / "materials.csv"),
-                    ocr(onnx_model_path, label_map_path) {
+          planets_dir(repo_root / "images" / "planets"),
+          server_ids_path(repo_root / "data" / "server_ids.csv"),
+          planets_csv_path(repo_root / "data" / "planets.csv"),
+          materials_path(repo_root / "data" / "materials.csv"),
+          ocr(onnx_model_path, label_map_path) {
         server_ids = load_server_ids_csv(server_ids_path, kDefaultServerIds);
         const auto planet_catalog = load_planet_catalog(planets_csv_path, kDefaultPlanets);
         planets = planet_catalog.keys;
         planet_image_dirs = planet_catalog.image_dir_by_key;
         const auto material_catalog = load_material_catalog(materials_path, kDefaultMaterials, kMaterialIds);
-        materials = material_catalog.names;
-        material_ids = material_catalog.short_name;
+
+        for (const auto& material : material_catalog) {
+            materials.push_back(material.name);
+        }
+        this->material_catalog = material_catalog;
         selected_planet = planets.front();
         selected_material = materials.front();
         selected_server = server_ids.front();
         new_data.server = selected_server;
         new_data.planet = selected_planet;
         new_data.material = selected_material;
-        new_data.quality_min = 0.0;
+        new_data.quality_min = 0;
         new_data.quality_max = kMaxQuality;
     }
 
@@ -605,9 +509,10 @@ int run_scout_app() {
         return 1;
     }
 
-    // glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 4); // Specify OpenGL version
-    // glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 5);
-    // glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE); // Use core profile
+    glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 4); // Specify OpenGL version
+    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 5);
+    glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE); // Use core profile
+    glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GLFW_TRUE);
 
     GLFWwindow* window = glfwCreateWindow(1280, 720, "Scout Engine", nullptr, nullptr);
     if (!window) {
@@ -616,6 +521,12 @@ int run_scout_app() {
     }
 
     glfwMakeContextCurrent(window);
+    if (!gladLoadGLLoader((GLADloadproc)glfwGetProcAddress)) {
+        std::cerr << "Failed to initialize GLAD\n";
+        glfwDestroyWindow(window);
+        glfwTerminate();
+        return 1;
+    }
     glfwSwapInterval(1);
 
     IMGUI_CHECKVERSION();
@@ -623,6 +534,14 @@ int run_scout_app() {
     ImGui::StyleColorsDark();
     ImGui_ImplGlfw_InitForOpenGL(window, true);
     ImGui_ImplOpenGL3_Init();
+
+    ScoutRenderer renderer;
+    if (!renderer.init()) {
+        std::cerr << "Failed to initialize renderer\n";
+        glfwDestroyWindow(window);
+        glfwTerminate();
+        return 1;
+    }
 
     AppState state;
     state.reload_planet_data();
@@ -637,8 +556,9 @@ int run_scout_app() {
     auto next_tick = std::chrono::steady_clock::now();
 
     while (!glfwWindowShouldClose(window)) {
-        const auto now = std::chrono::steady_clock::now();
-        const auto loop_start = std::chrono::steady_clock::now();
+        auto now = std::chrono::steady_clock::now();
+        timer_display.loop_time_ms().stamp();
+        timer_display.sleep_percent().stamp();
         double actual_sleep = 0.0;
         if (next_tick > now ) {
             const auto sleep_start = std::chrono::steady_clock::now();
@@ -649,9 +569,10 @@ int run_scout_app() {
         
 
         const auto sleep_pct = kFrameTime > 0.0 ? std::min(100.0, (actual_sleep / kFrameTime) * 100.0) : 0.0;
-        timer_display.record_sleep(sleep_pct);
+        timer_display.sleep_percent().add_sample(sleep_pct);
+        timer_display.work_time_ms().stamp();
 
-        const auto ocr_poll_start = std::chrono::steady_clock::now();
+        timer_display.ocr_poll_time_ms().stamp();
         state.ocr.request_async();
         if (const auto result = state.ocr.poll()) {
             timer_display.record_ocr_task(result->task_time_ms);
@@ -664,8 +585,7 @@ int run_scout_app() {
                 state.last_detected_rock = result->rock;
             }
         }
-        const auto ocr_poll_end = std::chrono::steady_clock::now();
-        const double ocr_poll_ms = std::chrono::duration<double, std::milli>(ocr_poll_end - ocr_poll_start).count();
+        timer_display.ocr_poll_time_ms().record_time_since_stamp();
 
         glfwPollEvents();
 
@@ -734,16 +654,12 @@ int run_scout_app() {
         }
         ImGui::End();
 
-        const auto render_start = std::chrono::steady_clock::now();
+        timer_display.render_time_ms().stamp();
 
         int width = 0;
         int height = 0;
         glfwGetFramebufferSize(window, &width, &height);
         glViewport(0, 0, width, height);
-        glMatrixMode(GL_PROJECTION);
-        glLoadIdentity();
-        glMatrixMode(GL_MODELVIEW);
-        glLoadIdentity();
         glClearColor(0.05f, 0.05f, 0.05f, 1.0f);
         glClear(GL_COLOR_BUFFER_BIT);
         glEnable(GL_BLEND);
@@ -764,7 +680,7 @@ int run_scout_app() {
 
         state.hovered_text.reset();
         if (texture != 0) {
-            state.hovered_text = draw_map(texture, state.filtered_points, mouse_pos, state.material_ids);
+            state.hovered_text = renderer.render_map(texture, state.filtered_points, mouse_pos, state.material_catalog);
             const auto toggle_now = std::chrono::steady_clock::now();
             if (std::chrono::duration<double>(toggle_now - last_toggle).count() > 0.25) {
                 last_toggle = toggle_now;
@@ -775,11 +691,7 @@ int run_scout_app() {
                 const auto [u, v] = latlon_to_uv(lat_lon_alt[0], lat_lon_alt[1]);
                 const float px = (u * 2.0f) - 1.0f;
                 const float py = (v * 2.0f) - 1.0f;
-                glColor4f(1.0f, 1.0f, 0.0f, 0.9f);
-                glPointSize(5.0f);
-                glBegin(GL_POINTS);
-                glVertex2f(px, py);
-                glEnd();
+                renderer.render_marker(px, py, 1.0f, 1.0f, 0.0f, 0.9f, 6.0f);
             }
         }
 
@@ -799,14 +711,11 @@ int run_scout_app() {
             ImGui::End();
         }
 
-        const auto render_end = std::chrono::steady_clock::now();
-        const double render_time_ms = std::chrono::duration<double, std::milli>(render_end - render_start).count();
+        timer_display.render_time_ms().record_time_since_stamp();
 
-        const auto loop_end = std::chrono::steady_clock::now();
-        const double loop_time_ms = std::chrono::duration<double, std::milli>(loop_end - loop_start).count();
+        timer_display.loop_time_ms().record_time_since_stamp();
+        timer_display.work_time_ms().record_time_since_stamp();
 
-        const double work_ms = std::max(0.0, loop_time_ms - (actual_sleep * 1000.0));
-        timer_display.record_frame(loop_time_ms, work_ms, render_time_ms, ocr_poll_ms);
         if (show_timings) {
             timer_footer_renderer.render(timer_display, height);
         }
@@ -816,9 +725,11 @@ int run_scout_app() {
         ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
         glfwSwapBuffers(window);
 
+        auto last_now = std::chrono::steady_clock::now();
+
         next_tick += std::chrono::duration_cast<std::chrono::steady_clock::duration>(std::chrono::duration<double>(kFrameTime));
-        if (loop_end > next_tick + std::chrono::duration_cast<std::chrono::steady_clock::duration>(std::chrono::duration<double>(kFrameTime))) {
-            next_tick = loop_end;
+        if (last_now > next_tick + std::chrono::duration_cast<std::chrono::steady_clock::duration>(std::chrono::duration<double>(kFrameTime))) {
+            next_tick = last_now + std::chrono::duration_cast<std::chrono::steady_clock::duration>(std::chrono::duration<double>(kFrameTime));
         }
         
     }

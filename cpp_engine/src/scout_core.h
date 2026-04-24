@@ -20,6 +20,12 @@ struct DataPoint {
     [[nodiscard]] std::vector<double> to_lat_lon_alt() const;
 };
 
+struct Material{
+    int id;
+    std::string name;
+    std::string short_name;
+};
+
 std::string trim(const std::string& value);
 std::string to_lower(std::string value);
 std::vector<std::string> split_csv_row(const std::string& line);

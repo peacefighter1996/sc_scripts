@@ -8,7 +8,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 option(SCOUT_BUILD_APP "Build standalone scout_engine desktop application" ON)
-option(SCOUT_ENABLE_ONNXRUNTIME "Enable ONNX Runtime inference commands" OFF)
+option(SCOUT_ENABLE_ONNXRUNTIME "Enable ONNX Runtime inference commands" ON)
 set(ONNXRUNTIME_ROOT "" CACHE PATH "Path to ONNX Runtime SDK root (contains include/ and lib/)")
 
 set(SCOUT_ENGINE_SOURCES
@@ -20,7 +20,9 @@ set(SCOUT_ENGINE_SOURCES
 	src/timer_footer_renderer.cpp
 )
 
-add_executable(scout_engine ${SCOUT_ENGINE_SOURCES})
+add_executable(scout_engine ${SCOUT_ENGINE_SOURCES}
+	src/scout_render.h
+	src/scout_render.cpp)
 target_include_directories(scout_engine PRIVATE src)
 
 if(SCOUT_BUILD_APP)
@@ -34,11 +36,16 @@ if(SCOUT_BUILD_APP)
 		GIT_TAG 3.4
 	)
 	FetchContent_Declare(
+		glad
+		GIT_REPOSITORY https://github.com/Dav1dde/glad.git
+		GIT_TAG v0.1.36
+	)
+	FetchContent_Declare(
 		imgui
 		GIT_REPOSITORY https://github.com/ocornut/imgui.git
 		GIT_TAG v1.91.9b
 	)
-	FetchContent_MakeAvailable(glfw imgui)
+	FetchContent_MakeAvailable(glfw glad imgui)
 
 	add_library(imgui STATIC
 		${imgui_SOURCE_DIR}/imgui.cpp
@@ -49,10 +56,12 @@ if(SCOUT_BUILD_APP)
 		${imgui_SOURCE_DIR}/backends/imgui_impl_opengl3.cpp
 	)
 	target_include_directories(imgui PUBLIC ${imgui_SOURCE_DIR} ${imgui_SOURCE_DIR}/backends)
-	target_link_libraries(imgui PUBLIC glfw)
+
+	# Use GLAD as the OpenGL loader for ImGui backend and link glad
+	target_compile_definitions(imgui PUBLIC IMGUI_IMPL_OPENGL_LOADER_GLAD)
+	target_link_libraries(imgui PUBLIC glfw glad)
 
 	target_sources(scout_engine PRIVATE src/scout_app.cpp)
-	target_compile_definitions(scout_engine PRIVATE IMGUI_IMPL_OPENGL_LOADER_CUSTOM)
 	target_link_libraries(scout_engine PRIVATE imgui glfw opengl32 gdiplus)
 endif()
 

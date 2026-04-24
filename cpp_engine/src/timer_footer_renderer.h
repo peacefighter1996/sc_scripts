@@ -4,5 +4,5 @@ class TimerDisplay;
 
 class TimerFooterRenderer {
 public:
-    void render(const TimerDisplay& timer_display, int viewport_height) const;
+    void render(TimerDisplay& timer_display, int viewport_height) const;
 };

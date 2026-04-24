@@ -45,8 +45,7 @@ CSV_PATH = "data/geoscout.csv"
 MAX_QUALITY = 1000.0
 MIN_QUALITY = 0.0
 SC_USE_CPP_ENGINE = os.environ.get("SC_USE_CPP_ENGINE", "1") == "1"
-SC_XYZ_OCR_BACKEND = os.environ.get("SC_XYZ_OCR_BACKEND", "model")
-SC_ROCK_OCR_BACKEND = os.environ.get("SC_ROCK_OCR_BACKEND", "manual")
+SC_USE_CPP_XYZ_INFER = os.environ.get("SC_USE_CPP_XYZ_INFER", "1") == "1"
 
 CAPTURE_MODE = "screen"   # "screen" or "window"
 WINDOW_NAME = 'Star Citizen '   # change if using window mode
@@ -54,12 +53,14 @@ SELECTED_SCREEN = 2  # 1 for primary, 2 for secondary (if using screen capture m
 # print(gw.getAllTitles()) # uncomment to see all window titles for window capture mode
 
 DISPLAY_INFO_READER_MODEL_LOCATION = "data/best_pareto_model.keras"
+DISPLAY_INFO_READER_MODEL_ONNX_LOCATION = "data/best_pareto_model.onnx"
 DISPLAY_INFO_READER_MODEL_LABELS = "data/label_map.json"
 
 TARGET_HZ = 30.0
 FRAME_TIME = 1.0 / TARGET_HZ
 
-char_recognition = tf.keras.models.load_model(DISPLAY_INFO_READER_MODEL_LOCATION)
+char_recognition = None
+cpp_onnx_predict_failed = False
 char_recognition_labels = json.load(open(DISPLAY_INFO_READER_MODEL_LABELS, "r"))
 # invert the label map to get char_recognition_labels which maps from index to character
 # replace space colon dot dash comma with their actual characters in char_recognition_labels
@@ -129,18 +130,72 @@ def _resolve_cpp_engine_path():
     return None
 
 
-def _run_cpp_engine(args: List[str]):
+def _run_cpp_engine(args: List[str], input_text: str = None):
     engine_path = _resolve_cpp_engine_path()
     if not engine_path:
         raise FileNotFoundError("C++ engine executable not found")
 
     result = subprocess.run(
         [engine_path, *args],
+        input=input_text,
         capture_output=True,
         text=True,
         check=True,
     )
     return result.stdout
+
+
+def _ensure_char_recognition_model():
+    global char_recognition
+    if char_recognition is None:
+        char_recognition = tf.keras.models.load_model(DISPLAY_INFO_READER_MODEL_LOCATION)
+    return char_recognition
+
+
+def _predict_labels_py(X):
+    model = _ensure_char_recognition_model()
+    predictions = model.predict(X, verbose=0)
+    return np.argmax(predictions, axis=1)
+
+
+def _can_use_cpp_xyz_infer():
+    return (
+        SC_USE_CPP_ENGINE
+        and SC_USE_CPP_XYZ_INFER
+        and not cpp_onnx_predict_failed
+        and os.path.exists(DISPLAY_INFO_READER_MODEL_ONNX_LOCATION)
+    )
+
+
+def _predict_labels_cpp_onnx(X):
+    flat = X.reshape(-1)
+    payload = "\n".join(str(float(v)) for v in flat)
+    output = _run_cpp_engine([
+        "predict-labels-onnx",
+        DISPLAY_INFO_READER_MODEL_ONNX_LOCATION,
+        str(X.shape[0]),
+    ], input_text=payload).strip()
+
+    if not output:
+        raise RuntimeError("Empty label output from C++ ONNX inference")
+
+    labels = [int(v) for v in output.split()]
+    if len(labels) != X.shape[0]:
+        raise RuntimeError(f"Expected {X.shape[0]} labels, got {len(labels)}")
+
+    return np.array(labels)
+
+
+def predict_labels(X):
+    global cpp_onnx_predict_failed
+    if _can_use_cpp_xyz_infer():
+        try:
+            return _predict_labels_cpp_onnx(X)
+        except Exception as e:
+            cpp_onnx_predict_failed = True
+            print("Falling back to Python model inference:", e)
+
+    return _predict_labels_py(X)
 
 
 def _load_points_from_cpp() -> List[DataPoint]:
@@ -186,6 +241,85 @@ def _append_point_with_cpp(point: DataPoint):
         str(point.quality_max),
         point.note,
     ])
+
+
+def _parse_xyz_from_ocr_text_py(ocr_result: str):
+    data = ocr_result.split(" ")
+    if len(data) < 3:
+        return None, None, None
+
+    coordinates = data[-3:]
+    try:
+        for i in range(3):
+            if "k" in coordinates[i]:
+                coordinates[i] = coordinates[i].replace("k", "")
+                coordinates[i] = coordinates[i].replace("m", "")
+                coordinates[i] = float(coordinates[i])
+            else:
+                coordinates[i] = coordinates[i].replace("m", "")
+                coordinates[i] = float(coordinates[i]) / 1000
+    except ValueError:
+        return None, None, None
+
+    x, y, z = coordinates
+    return x, y, z
+
+
+def _parse_xyz_from_ocr_text_cpp(ocr_result: str):
+    output = _run_cpp_engine(["parse-xyz", ocr_result]).strip()
+    if not output:
+        return None, None, None
+
+    parts = output.split("\t")
+    if len(parts) != 3:
+        return None, None, None
+
+    try:
+        return float(parts[0]), float(parts[1]), float(parts[2])
+    except ValueError:
+        return None, None, None
+
+
+def parse_xyz_from_ocr_text(ocr_result: str):
+    if SC_USE_CPP_ENGINE:
+        try:
+            return _parse_xyz_from_ocr_text_cpp(ocr_result)
+        except Exception as e:
+            print("Falling back to Python XYZ parser:", e)
+    return _parse_xyz_from_ocr_text_py(ocr_result)
+
+
+def _ocr_task_result_cpp(rock, ocr_result: str):
+    rock_arg = "" if rock is None else str(rock)
+    output = _run_cpp_engine(["ocr-task", rock_arg, ocr_result]).strip()
+    if not output:
+        return rock, None, None, None
+
+    parts = output.split("\t")
+    if len(parts) != 4:
+        return rock, None, None, None
+
+    out_rock = parts[0] if parts[0] else None
+    try:
+        x = float(parts[1])
+        y = float(parts[2])
+        z = float(parts[3])
+        if np.isnan(x) or np.isnan(y) or np.isnan(z):
+            return out_rock, None, None, None
+        return out_rock, x, y, z
+    except ValueError:
+        return out_rock, None, None, None
+
+
+def resolve_ocr_task_result(rock, ocr_result: str):
+    if SC_USE_CPP_ENGINE:
+        try:
+            return _ocr_task_result_cpp(rock, ocr_result)
+        except Exception as e:
+            print("Falling back to Python OCR task parser:", e)
+
+    x, y, z = _parse_xyz_from_ocr_text_py(ocr_result)
+    return rock, x, y, z
 
 
 def load_points_from_csv() -> List[DataPoint]:
@@ -305,70 +439,42 @@ def extract_characters_rtl(gray, char_w=7.5, char_h=12):
     return chars
 
 def text_grap_xyz(frame=None, gray=None):
+    ocr_result = get_xyz_ocr_text(frame, gray)
+    x, y, z = parse_xyz_from_ocr_text(ocr_result)
+    if x is not None and y is not None and z is not None:
+        print("OCR Result:", ocr_result.strip(), f"→ Parsed coordinates: x={x:.2f}, y={y:.2f}, z={z:.2f}")
+        return x, y, z
+
+    print("Could not parse coordinates from OCR result")
+    return None, None, None
+
+
+def get_xyz_ocr_text(frame=None, gray=None):
     if frame is None:
         sct = mss.mss()
         if CAPTURE_MODE == "window":
             monitor = get_window_bbox(WINDOW_NAME)
         else:
-            monitor = sct.monitors[SELECTED_SCREEN]  # full screen
+            monitor = sct.monitors[SELECTED_SCREEN]
         screenshot = sct.grab(monitor)
         frame = np.array(screenshot)
-    
         frame = cv2.cvtColor(frame, cv2.COLOR_BGRA2BGR)
-    
-        hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
 
-    
-    
-    # cut this portion of the screen and show it in a separate window to make it easier to read the text
     text_region = gray[30:44, -1000:-4]
-    # cv2.imshow("Text Region", text_region) # doesn't work because we are running in a separate thread, so save the text region to a file for debugging instead
-    # cv2.imwrite("text_region_debug.png", text_region)
-    characters = extract_characters_rtl(text_region, char_w=7.5 ,char_h=14)
-    
-    # use pytorch and taraned model char_recognition_model.keras to recognize the characters and form the final string, then extract the x, y, z values from it
-    
+    characters = extract_characters_rtl(text_region, char_w=7.5, char_h=14)
+
     X = np.array(characters)
     X = X / 255.0
-    X = X[..., np.newaxis]  # (N, 14, 9, 1)
-    
-    # print(f"Extracted {X.shape} character images for OCR")
-    
-    predictions = char_recognition.predict(X, verbose=0)
-    predicted_labels = np.argmax(predictions, axis=1)
-    
+    X = X[..., np.newaxis]
+
+    predicted_labels = predict_labels(X)
+
     ocr_result = ""
-    # print("Predicted labels:", predicted_labels)
     for label in predicted_labels:
         char = char_recognition_labels.get(label, "?")
         ocr_result += char
-    # invert the string since we read characters from right to left
-    ocr_result = ocr_result[::-1]
-    # print("OCR Result:", ocr_result.strip())
-    
-    data = ocr_result.split(" ")
-    # get last 3 strings for x, y, z
-    if len(data) >= 3:
-        coordinates = data[-3:]
-        try:
-            for i in range(3):
-                # remove . if last character and replace l with 1, O with 0, I with 1 to fix common OCR mistakes
-                if "k" in coordinates[i]:
-                    coordinates[i] = coordinates[i].replace("k", "")
-                    coordinates[i] = coordinates[i].replace("m", "")
-                    coordinates[i] = float(coordinates[i]) 
-                else:
-                    coordinates[i] = coordinates[i].replace("m", "")
-                    coordinates[i] = float(coordinates[i]) / 1000
-        except ValueError:
-            # print("Could not convert coordinates to float:", coordinates)
-            return None, None, None
-        x, y, z = coordinates
-        print("OCR Result:", ocr_result.strip(), f"→ Parsed coordinates: x={x:.2f}, y={y:.2f}, z={z:.2f}") 
-        return x, y, z
-    else:
-        print("Could not parse coordinates from OCR result")
-        return None, None, None
+    return ocr_result[::-1]
 
 def text_capture_rock_type(frame=None, hsv=None):
     if frame is None:
@@ -491,8 +597,13 @@ class AppState:
         hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         try:
-            rock = text_capture_rock_type(frame, hsv) 
-            x, y, z = text_grap_xyz(frame, gray)
+            # rock = text_capture_rock_type(frame, hsv) # currently disabled because it's not very accurate and we can just ask the user to select the rock type manually
+            ocr_result = get_xyz_ocr_text(frame, gray)
+            rock, x, y, z = resolve_ocr_task_result(None, ocr_result)
+            if x is not None and y is not None and z is not None:
+                print("OCR Result:", ocr_result.strip(), f"→ Parsed coordinates: x={x:.2f}, y={y:.2f}, z={z:.2f}")
+            else:
+                print("Could not parse coordinates from OCR result")
             return rock, x, y, z
         except Exception as e:
             print("OCR task exception:", e)

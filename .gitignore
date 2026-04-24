@@ -5,3 +5,5 @@ dataset/
 data/
 imgui.ini
 build/
+build_*/
+third_party/

@@ -247,12 +247,27 @@ void ScoutOcr::request_async() {
         return;
     }
 
-    future_ = std::async(std::launch::async, [this]() { return run_ocr_task(); });
+    // Launch the OCR task. When complete, either store the future (legacy)
+    // or invoke the registered callback with the result.
     has_pending_ = true;
+    std::thread([this]() {
+        const auto result = run_ocr_task();
+        has_pending_ = false;
+        if (callback_) {
+            callback_(result);
+        } else {
+            // If no callback registered, keep behavior similar to before by
+            // storing the result in the future for poll() to pick up.
+            // We can't set a std::future from here, so use a packaged_task.
+            std::packaged_task<OcrResult()> task([result]() { return result; });
+            future_ = task.get_future();
+            task(); // run immediately to make future ready
+        }
+    }).detach();
 }
 
 std::optional<OcrResult> ScoutOcr::poll() {
-    if (!has_pending_ || !future_.valid()) {
+    if (!future_.valid()) {
         return std::nullopt;
     }
 
@@ -260,8 +275,15 @@ std::optional<OcrResult> ScoutOcr::poll() {
         return std::nullopt;
     }
 
-    has_pending_ = false;
-    return future_.get();
+    try {
+        return future_.get();
+    } catch (...) {
+        return std::nullopt;
+    }
+}
+
+void ScoutOcr::set_callback(Callback cb) {
+    callback_ = std::move(cb);
 }
 
 std::string ScoutOcr::get_xyz_ocr_text() const {

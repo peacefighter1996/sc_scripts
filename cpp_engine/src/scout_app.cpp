@@ -402,6 +402,14 @@ struct AppState {
     std::unordered_map<std::string, GLuint> texture_cache;
     std::optional<std::string> hovered_text;
         ScoutOcr ocr;
+    // OCR results pushed from worker thread are stored here for main-thread processing
+    std::mutex ocr_mutex;
+    std::vector<OcrResult> ocr_results;
+        // Rate limiting: minimum interval between applying OCR results to active point (seconds)
+        std::chrono::steady_clock::time_point last_ocr_processed;
+        double ocr_min_interval_seconds{0.1}; // max 10 times per second
+        // If false, OCR will not write into the active new_data (but rock detection still recorded)
+        bool ocr_feed_enabled{true};
 
     AppState()
         : repo_root(detect_repo_root()),
@@ -431,6 +439,7 @@ struct AppState {
         new_data.material = selected_material;
         new_data.quality_min = 0;
         new_data.quality_max = kMaxQuality;
+        last_ocr_processed = std::chrono::steady_clock::now() - std::chrono::duration_cast<std::chrono::steady_clock::duration>(std::chrono::duration<double>(ocr_min_interval_seconds));
     }
 
     ~AppState() {
@@ -544,6 +553,12 @@ int run_scout_app() {
     }
 
     AppState state;
+    // Register OCR callback to push results into AppState queue
+    state.ocr.set_callback([&state](const OcrResult& r) {
+        std::lock_guard<std::mutex> lk(state.ocr_mutex);
+        state.ocr_results.push_back(r);
+    });
+
     state.reload_planet_data();
     state.filter_points();
     TimerDisplay timer_display;
@@ -574,15 +589,33 @@ int run_scout_app() {
 
         timer_display.ocr_poll_time_ms().stamp();
         state.ocr.request_async();
-        if (const auto result = state.ocr.poll()) {
-            timer_display.record_ocr_task(result->task_time_ms);
-            if (result->x && result->y && result->z) {
-                state.new_data.x = *result->x;
-                state.new_data.y = *result->y;
-                state.new_data.z = *result->z;
+        // Process any OCR results pushed by the worker thread
+        {
+            std::vector<OcrResult> popped;
+            {
+                std::lock_guard<std::mutex> lk(state.ocr_mutex);
+                popped.swap(state.ocr_results);
             }
-            if (result->rock) {
-                state.last_detected_rock = result->rock;
+            if (!popped.empty()) {
+                // Process only the most recent result and rate-limit updates
+                const auto& result = popped.back();
+                timer_display.record_ocr_task(result.task_time_ms);
+                const auto now_inner = std::chrono::steady_clock::now();
+                const double since = std::chrono::duration<double>(now_inner - state.last_ocr_processed).count();
+                if (since >= state.ocr_min_interval_seconds) {
+                    state.last_ocr_processed = now_inner;
+                    if (state.ocr_feed_enabled) {
+                        if (result.x && result.y && result.z) {
+                            state.new_data.x = *result.x;
+                            state.new_data.y = *result.y;
+                            state.new_data.z = *result.z;
+                        }
+                    }
+                    // always update detected rock for display
+                    if (result.rock) {
+                        state.last_detected_rock = result.rock;
+                    }
+                }
             }
         }
         timer_display.ocr_poll_time_ms().record_time_since_stamp();
@@ -600,6 +633,7 @@ int run_scout_app() {
         ImGui::NewFrame();
 
         ImGui::Begin("Controls");
+        ImGui::Checkbox("Enable OCR feed into active point", &state.ocr_feed_enabled);
         if (combo_string("Server", state.server_ids, state.selected_server)) {
             state.new_data.server = state.selected_server;
             state.filter_points();

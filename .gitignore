@@ -7,3 +7,5 @@ imgui.ini
 build/
 build_*/
 third_party/
+.vscode/
+.vs/

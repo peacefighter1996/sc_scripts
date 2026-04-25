@@ -35,495 +35,505 @@
 
 namespace {
 
-constexpr double kPi = 3.14159265358979323846;
-constexpr int kMaxQuality = 1000;
-constexpr int kMinQuality = 0;
-constexpr double kTargetHz = 30.0;
-constexpr double kFrameTime = 1.0 / kTargetHz;
+    constexpr double kPi = 3.14159265358979323846;
+    constexpr int kMaxQuality = 1000;
+    constexpr int kMinQuality = 0;
+    constexpr double kTargetHz = 30.0;
+    constexpr double kFrameTime = 1.0 / kTargetHz;
 
-const std::vector<std::string> kDefaultServerIds{"eu10", "eu180", "us170", "All"};
-const std::vector<std::string> kDefaultPlanets{"Pyro_A5_Ignis", "Pyro_E5_Fuego", "Pyro_Pyro2_Monox", "Pyro_Pyro4"};
-const std::vector<std::string> kDefaultMaterials{"All", "Aphorite", "Aslarite", "Beryl", "Borase", "Copper", "Dolivine", "Gold", "Hephaestanite", "Iron", "Janalite", "Laranite", "Riccite", "Stileron", "Taranite", "Tin"};
+    const std::vector<std::string> kDefaultServerIds{ "eu10", "eu180", "us170", "All" };
+    const std::vector<std::string> kDefaultPlanets{ "Pyro_A5_Ignis", "Pyro_E5_Fuego", "Pyro_Pyro2_Monox", "Pyro_Pyro4" };
+    const std::vector<std::string> kDefaultMaterials{ "All", "Aphorite", "Aslarite", "Beryl", "Borase", "Copper", "Dolivine", "Gold", "Hephaestanite", "Iron", "Janalite", "Laranite", "Riccite", "Stileron", "Taranite", "Tin" };
 
-const std::unordered_map<std::string, std::string> kMaterialIds = {
-    {"Hephaestanite", "HEPH"},
-    {"Iron", "IRON"},
-    {"Gold", "GOLD"},
-    {"Janalite", "JANA"},
-    {"Aphorite", "APHO"},
-    {"Dolivine", "DOLI"},
-    {"Aslarite", "ASLAR"},
-    {"Beryl", "BERY"},
-    {"Taranite", "TARA"},
-    {"Laranite", "LARA"},
-    {"Stileron", "SILI"},
-    {"Copper", "COPP"},
-};
+    const std::unordered_map<std::string, std::string> kMaterialIds = {
+        {"Hephaestanite", "HEPH"},
+        {"Iron", "IRON"},
+        {"Gold", "GOLD"},
+        {"Janalite", "JANA"},
+        {"Aphorite", "APHO"},
+        {"Dolivine", "DOLI"},
+        {"Aslarite", "ASLAR"},
+        {"Beryl", "BERY"},
+        {"Taranite", "TARA"},
+        {"Laranite", "LARA"},
+        {"Stileron", "SILI"},
+        {"Copper", "COPP"},
+    };
 
-int find_column_index(const std::vector<std::string>& headers, const std::vector<std::string>& candidates) {
-    for (size_t i = 0; i < headers.size(); ++i) {
-        const auto header = to_lower(trim(headers[i]));
-        for (const auto& candidate : candidates) {
-            if (header == candidate) {
-                return static_cast<int>(i);
+    int find_column_index(const std::vector<std::string>& headers, const std::vector<std::string>& candidates) {
+        for (size_t i = 0; i < headers.size(); ++i) {
+            const auto header = to_lower(trim(headers[i]));
+            for (const auto& candidate : candidates) {
+                if (header == candidate) {
+                    return static_cast<int>(i);
+                }
             }
         }
-    }
-    return -1;
-}
-
-struct TextureEntry {
-    GLuint texture{};
-    int width{};
-    int height{};
-};
-
-class GdiplusSession {
-public:
-    GdiplusSession() {
-        Gdiplus::GdiplusStartupInput startup_input;
-        Gdiplus::GdiplusStartup(&token_, &startup_input, nullptr);
+        return -1;
     }
 
-    ~GdiplusSession() {
-        if (token_ != 0) {
-            Gdiplus::GdiplusShutdown(token_);
-        }
-    }
+    struct TextureEntry {
+        GLuint texture{};
+        int width{};
+        int height{};
+    };
 
-private:
-    ULONG_PTR token_{};
-};
-
-std::filesystem::path detect_repo_root() {
-    std::vector<std::filesystem::path> candidates;
-    candidates.push_back(std::filesystem::current_path());
-
-    wchar_t exe_path[MAX_PATH];
-    const auto len = GetModuleFileNameW(nullptr, exe_path, MAX_PATH);
-    if (len > 0) {
-        candidates.push_back(std::filesystem::path(exe_path).parent_path());
-    }
-
-    for (auto candidate : candidates) {
-        for (int depth = 0; depth < 6; ++depth) {
-            if (std::filesystem::exists(candidate / "data" / "label_map.json")) {
-                return candidate;
-            }
-            if (!candidate.has_parent_path()) {
-                break;
-            }
-            candidate = candidate.parent_path();
-        }
-    }
-
-    return std::filesystem::current_path();
-}
-
-std::wstring to_wstring(const std::filesystem::path& path) {
-    return path.wstring();
-}
-
-std::vector<std::string> load_server_ids_csv(const std::filesystem::path& path, const std::vector<std::string>& defaults) {
-    std::ifstream in(path);
-    if (!in.is_open()) {
-        return defaults;
-    }
-
-    bool header_parsed = false;
-    int value_index = 0;
-    std::vector<std::string> values;
-    std::string line;
-    while (std::getline(in, line)) {
-        const auto trimmed = trim(line);
-        if (trimmed.empty()) {
-            continue;
+    class GdiplusSession {
+    public:
+        GdiplusSession() {
+            Gdiplus::GdiplusStartupInput startup_input;
+            Gdiplus::GdiplusStartup(&token_, &startup_input, nullptr);
         }
 
-        const auto cells = split_csv_row(trimmed);
-        if (cells.empty()) {
-            continue;
-        }
-
-        if (!header_parsed) {
-            value_index = find_column_index(cells, {"value", "server", "server_id", "id"});
-            if (value_index < 0) {
-                value_index = 0;
-            }
-            header_parsed = true;
-            continue;
-        }
-
-        if (value_index >= static_cast<int>(cells.size())) {
-            continue;
-        }
-
-        const auto value = trim(cells[static_cast<size_t>(value_index)]);
-        if (value.empty()) {
-            continue;
-        }
-
-        if (std::find(values.begin(), values.end(), value) == values.end()) {
-            values.push_back(value);
-        }
-    }
-
-    return values.empty() ? defaults : values;
-}
-
-std::vector<Material> load_material_catalog(const std::filesystem::path& path, const std::vector<std::string>& default_names, const std::unordered_map<std::string, std::string>& default_shorts) {
-    std::ifstream in(path);
-    if (!in.is_open()) {
-        return {};
-    }
-
-    std::vector<Material> catalog;
-    bool header_parsed = false;
-    int name_index = -1;
-    int shortname_index = -1;
-    int id_index = -1;
-
-    std::string line;
-    while (std::getline(in, line)) {
-        const auto trimmed = trim(line);
-        if (trimmed.empty()) {
-            continue;
-        }
-
-        const auto cells = split_csv_row(trimmed);
-        if (cells.empty()) {
-            continue;
-        }
-
-        if (!header_parsed) {
-            id_index = find_column_index(cells, {"id"});
-            name_index = find_column_index(cells, {"name", "material", "value"});
-            shortname_index = find_column_index(cells, {"shortname", "short_name", "short", "code"});
-            if (name_index < 0) {
-                name_index = std::min(1, static_cast<int>(cells.size()) - 1);
-            }
-            header_parsed = true;
-            continue;
-        }
-
-        if (name_index < 0 || name_index >= static_cast<int>(cells.size())) {
-            continue;
-        }
-
-        const auto name = trim(cells[static_cast<size_t>(name_index)]);
-        if (name.empty()) {
-            continue;
-        }
-
-        std::string shortname;
-        if (shortname_index >= 0 && shortname_index < static_cast<int>(cells.size())) {
-            shortname = trim(cells[static_cast<size_t>(shortname_index)]);
-        }
-
-        int id = -1;
-        if (id_index >= 0 && id_index < static_cast<int>(cells.size())) {
-            try {
-                id = std::stoi(trim(cells[static_cast<size_t>(id_index)]));
-            } catch (const std::exception&) {
-                // ignore parse errors and just use default ids
+        ~GdiplusSession() {
+            if (token_ != 0) {
+                Gdiplus::GdiplusShutdown(token_);
             }
         }
 
-        Material material{id, name, shortname};
-        catalog.push_back(material);
+    private:
+        ULONG_PTR token_{};
+    };
+
+    std::filesystem::path detect_repo_root() {
+        std::vector<std::filesystem::path> candidates;
+        candidates.push_back(std::filesystem::current_path());
+
+        wchar_t exe_path[MAX_PATH];
+        const auto len = GetModuleFileNameW(nullptr, exe_path, MAX_PATH);
+        if (len > 0) {
+            candidates.push_back(std::filesystem::path(exe_path).parent_path());
+        }
+
+        for (auto candidate : candidates) {
+            for (int depth = 0; depth < 6; ++depth) {
+                if (std::filesystem::exists(candidate / "data" / "label_map.json")) {
+                    return candidate;
+                }
+                if (!candidate.has_parent_path()) {
+                    break;
+                }
+                candidate = candidate.parent_path();
+            }
+        }
+
+        return std::filesystem::current_path();
     }
 
-    if (catalog.empty()) {
-        for (const auto& name : default_names) {
-            const auto it = default_shorts.find(name);
-            const auto short_name = it != default_shorts.end() ? it->second : name.substr(0, std::min<size_t>(4, name.size()));
-            catalog.push_back(Material{-1, name, short_name});
-        }
+    std::wstring to_wstring(const std::filesystem::path& path) {
+        return path.wstring();
     }
 
-    return catalog;
-}
-
-std::vector<Planet> load_planet_catalog(const std::filesystem::path& path, const std::vector<std::string>& defaults) {
-    std::ifstream in(path);
-    if (!in.is_open()) {
-        std::vector<Planet> catalog;
-        for (const auto& key : defaults) {
-            catalog.push_back(Planet{-1, "", key, key, ""});
+    std::vector<std::string> load_server_ids_csv(const std::filesystem::path& path, const std::vector<std::string>& defaults) {
+        std::ifstream in(path);
+        if (!in.is_open()) {
+            return defaults;
         }
+
+        bool header_parsed = false;
+        int value_index = 0;
+        std::vector<std::string> values;
+        std::string line;
+        while (std::getline(in, line)) {
+            const auto trimmed = trim(line);
+            if (trimmed.empty()) {
+                continue;
+            }
+
+            const auto cells = split_csv_row(trimmed);
+            if (cells.empty()) {
+                continue;
+            }
+
+            if (!header_parsed) {
+                value_index = find_column_index(cells, { "value", "server", "server_id", "id" });
+                if (value_index < 0) {
+                    value_index = 0;
+                }
+                header_parsed = true;
+                continue;
+            }
+
+            if (value_index >= static_cast<int>(cells.size())) {
+                continue;
+            }
+
+            const auto value = trim(cells[static_cast<size_t>(value_index)]);
+            if (value.empty()) {
+                continue;
+            }
+
+            if (std::find(values.begin(), values.end(), value) == values.end()) {
+                values.push_back(value);
+            }
+        }
+
+        return values.empty() ? defaults : values;
+    }
+
+    std::vector<Material> load_material_catalog(const std::filesystem::path& path, const std::vector<std::string>& default_names, const std::unordered_map<std::string, std::string>& default_shorts) {
+        std::ifstream in(path);
+        if (!in.is_open()) {
+            return {};
+        }
+
+        std::vector<Material> catalog;
+        bool header_parsed = false;
+        int name_index = -1;
+        int shortname_index = -1;
+        int id_index = -1;
+
+        std::string line;
+        while (std::getline(in, line)) {
+            const auto trimmed = trim(line);
+            if (trimmed.empty()) {
+                continue;
+            }
+
+            const auto cells = split_csv_row(trimmed);
+            if (cells.empty()) {
+                continue;
+            }
+
+            if (!header_parsed) {
+                id_index = find_column_index(cells, { "id" });
+                name_index = find_column_index(cells, { "name", "material", "value" });
+                shortname_index = find_column_index(cells, { "shortname", "short_name", "short", "code" });
+                if (name_index < 0) {
+                    name_index = std::min(1, static_cast<int>(cells.size()) - 1);
+                }
+                header_parsed = true;
+                continue;
+            }
+
+            if (name_index < 0 || name_index >= static_cast<int>(cells.size())) {
+                continue;
+            }
+
+            const auto name = trim(cells[static_cast<size_t>(name_index)]);
+            if (name.empty()) {
+                continue;
+            }
+
+            std::string shortname;
+            if (shortname_index >= 0 && shortname_index < static_cast<int>(cells.size())) {
+                shortname = trim(cells[static_cast<size_t>(shortname_index)]);
+            }
+
+            int id = -1;
+            if (id_index >= 0 && id_index < static_cast<int>(cells.size())) {
+                try {
+                    id = std::stoi(trim(cells[static_cast<size_t>(id_index)]));
+                }
+                catch (const std::exception&) {
+                    // ignore parse errors and just use default ids
+                }
+            }
+
+            Material material{ id, name, shortname };
+            catalog.push_back(material);
+        }
+
+        if (catalog.empty()) {
+            for (const auto& name : default_names) {
+                const auto it = default_shorts.find(name);
+                const auto short_name = it != default_shorts.end() ? it->second : name.substr(0, std::min<size_t>(4, name.size()));
+                catalog.push_back(Material{ -1, name, short_name });
+            }
+        }
+
         return catalog;
     }
 
-    std::vector<Planet> catalog;
-    bool header_parsed = false;
-    int image_dir_index = -1;
-    int planet_name_index = -1;
-    int id_index = -1;
-    int system_index = -1;
-    int zone_id_index = -1;
-
-    std::string line;
-    while (std::getline(in, line)) {
-        const auto trimmed = trim(line);
-        if (trimmed.empty()) {
-            continue;
+    std::vector<Planet> load_planet_catalog(const std::filesystem::path& path, const std::vector<std::string>& defaults) {
+        std::ifstream in(path);
+        if (!in.is_open()) {
+            std::vector<Planet> catalog;
+            for (const auto& key : defaults) {
+                catalog.push_back(Planet{ -1, "", key, key, "" });
+            }
+            return catalog;
         }
 
-        const auto cells = split_csv_row(trimmed);
-        if (cells.empty()) {
-            continue;
+        std::vector<Planet> catalog;
+        bool header_parsed = false;
+        int image_dir_index = -1;
+        int planet_name_index = -1;
+        int id_index = -1;
+        int system_index = -1;
+        int zone_id_index = -1;
+
+        std::string line;
+        while (std::getline(in, line)) {
+            const auto trimmed = trim(line);
+            if (trimmed.empty()) {
+                continue;
+            }
+
+            const auto cells = split_csv_row(trimmed);
+            if (cells.empty()) {
+                continue;
+            }
+
+            if (!header_parsed) {
+                //id,system,planet,image_dir,zone_id
+                id_index = find_column_index(cells, { "id", "planet_id", "key" });
+                image_dir_index = find_column_index(cells, { "image_dir", "imagedir", "image" });
+                planet_name_index = find_column_index(cells, { "planet", "name", "value" });
+                system_index = find_column_index(cells, { "system" });
+                zone_id_index = find_column_index(cells, { "zone_id", "zoneid", "zone" });
+                header_parsed = true;
+                continue;
+            }
+
+            int id = -1;
+            std::string system;
+            std::string zone_id;
+            std::string planet_name;
+            std::string img_dir;
+
+            if (id_index >= 0 && id_index < static_cast<int>(cells.size())) {
+                try {
+                    id = std::stoi(trim(cells[static_cast<size_t>(id_index)]));
+                }
+                catch (const std::exception&) {
+                    // ignore parse errors and just use default ids
+                }
+            }
+
+            if (system_index >= 0 && system_index < static_cast<int>(cells.size())) {
+                system = trim(cells[static_cast<size_t>(system_index)]);
+            }
+
+            if (zone_id_index >= 0 && zone_id_index < static_cast<int>(cells.size())) {
+                zone_id = trim(cells[static_cast<size_t>(zone_id_index)]);
+            }
+
+            if (planet_name_index >= 0 && planet_name_index < static_cast<int>(cells.size())) {
+                planet_name = trim(cells[static_cast<size_t>(planet_name_index)]);
+            }
+
+            if (image_dir_index >= 0 && image_dir_index < static_cast<int>(cells.size())) {
+                img_dir = trim(cells[static_cast<size_t>(image_dir_index)]);
+            }
+
+            if (planet_name.empty()) {
+                continue;
+            }
+
+            Planet planet{ id, system, planet_name, img_dir, zone_id };
+            catalog.push_back(planet);
         }
 
-        if (!header_parsed) {
-            //id,system,planet,image_dir,zone_id
-            id_index = find_column_index(cells, {"id", "planet_id", "key"});
-            image_dir_index = find_column_index(cells, {"image_dir", "imagedir", "image"});
-            planet_name_index = find_column_index(cells, {"planet", "name", "value"});
-            system_index = find_column_index(cells, {"system"});
-            zone_id_index = find_column_index(cells, {"zone_id", "zoneid", "zone"});
-            header_parsed = true;
-            continue;
-        }
-
-        int id = -1;
-        std::string system;
-        std::string zone_id;
-        std::string planet_name;
-        std::string img_dir;
-        
-        if (id_index >= 0 && id_index < static_cast<int>(cells.size())) {
-            try {
-                id = std::stoi(trim(cells[static_cast<size_t>(id_index)]));
-            } catch (const std::exception&) {
-                // ignore parse errors and just use default ids
+        if (catalog.empty()) {
+            for (const auto& key : defaults) {
+                catalog.push_back(Planet{ -1, "", key, key, "" });
             }
         }
 
-        if (system_index >= 0 && system_index < static_cast<int>(cells.size())) {
-            system = trim(cells[static_cast<size_t>(system_index)]);
-        }
-
-        if (zone_id_index >= 0 && zone_id_index < static_cast<int>(cells.size())) {
-            zone_id = trim(cells[static_cast<size_t>(zone_id_index)]);
-        }
-
-        if (planet_name_index >= 0 && planet_name_index < static_cast<int>(cells.size())) {
-            planet_name = trim(cells[static_cast<size_t>(planet_name_index)]);
-        }
-
-        if (image_dir_index >= 0 && image_dir_index < static_cast<int>(cells.size())) {
-            img_dir = trim(cells[static_cast<size_t>(image_dir_index)]);
-        }
-
-        if (planet_name.empty()) {
-            continue;
-        }
-
-        Planet planet{id, system, planet_name, img_dir, zone_id};
-        catalog.push_back(planet);
+        return catalog;
     }
 
-    if (catalog.empty()) {
-        for (const auto& key : defaults) {
-            catalog.push_back(Planet{-1, "", key, key, ""});
-        }
-    }
-
-    return catalog;
-}
-
-GLuint load_texture_file(const std::filesystem::path& path) {
-    if (!std::filesystem::exists(path)) {
-        return 0;
-    }
-
-    Gdiplus::Bitmap bitmap(to_wstring(path).c_str());
-    if (bitmap.GetLastStatus() != Gdiplus::Ok) {
-        return 0;
-    }
-
-    const int width = static_cast<int>(bitmap.GetWidth());
-    const int height = static_cast<int>(bitmap.GetHeight());
-    if (width <= 0 || height <= 0) {
-        return 0;
-    }
-
-    Gdiplus::Rect rect(0, 0, width, height);
-    Gdiplus::BitmapData data{};
-    if (bitmap.LockBits(&rect, Gdiplus::ImageLockModeRead, PixelFormat32bppARGB, &data) != Gdiplus::Ok) {
-        return 0;
-    }
-
-    std::vector<std::uint8_t> pixels(static_cast<size_t>(width) * static_cast<size_t>(height) * 4);
-    for (int y = 0; y < height; ++y) {
-        const auto* src = reinterpret_cast<const std::uint8_t*>(static_cast<const std::uint8_t*>(data.Scan0) + (static_cast<size_t>(y) * static_cast<size_t>(data.Stride)));
-        std::memcpy(pixels.data() + (static_cast<size_t>(y) * static_cast<size_t>(width) * 4), src, static_cast<size_t>(width) * 4);
-    }
-    bitmap.UnlockBits(&data);
-
-    GLuint texture = 0;
-    glGenTextures(1, &texture);
-    glBindTexture(GL_TEXTURE_2D, texture);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, width, height, 0, 0x80E1, GL_UNSIGNED_BYTE, pixels.data());
-    return texture;
-}
-
-std::pair<float, float> latlon_to_uv(double lat, double lon) {
-    const auto u = static_cast<float>((lon + 180.0) / 360.0);
-    const auto v = static_cast<float>((lat + 90.0) / 180.0);
-    return {u, v};
-}
-
-// Rendering moved to scout_render (modern GL)
-
-struct AppState {
-    std::filesystem::path repo_root;
-    std::filesystem::path csv_path;
-    std::filesystem::path onnx_model_path;
-    std::filesystem::path label_map_path;
-    std::filesystem::path planets_dir;
-    std::filesystem::path server_ids_path;
-    std::filesystem::path planets_csv_path;
-    std::filesystem::path materials_path;
-
-    std::vector<DataPoint> points;
-    std::vector<DataPoint> filtered_points;
-    std::vector<std::string> server_ids;
-    std::vector<std::string> planets;
-    std::vector<std::string> materials;
-    std::vector<Planet> planet_catalog;
-    std::vector<Material> material_catalog;
-
-    std::string selected_planet;
-    std::string selected_material;
-    std::string selected_server;
-    std::optional<std::string> last_detected_rock;
-    int quality_min{kMinQuality};
-    int quality_max{kMaxQuality};
-    DataPoint new_data{};
-    std::unordered_map<std::string, GLuint> texture_cache;
-    std::optional<std::string> hovered_text;
-        ScoutOcr ocr;
-    // OCR results pushed from worker thread are stored here for main-thread processing
-    std::mutex ocr_mutex;
-    std::vector<OcrResult> ocr_results;
-        // Rate limiting: minimum interval between applying OCR results to active point (seconds)
-        std::chrono::steady_clock::time_point last_ocr_processed;
-        double ocr_min_interval_seconds{0.1}; // max 10 times per second
-        // If false, OCR will not write into the active new_data (but rock detection still recorded)
-        bool ocr_feed_enabled{true};
-
-    AppState()
-        : repo_root(detect_repo_root()),
-          csv_path(repo_root / "data" / "geoscout.csv"),
-          onnx_model_path(repo_root / "data" / "best_pareto_model.onnx"),
-          label_map_path(repo_root / "data" / "label_map.json"),
-          planets_dir(repo_root / "images" / "planets"),
-          server_ids_path(repo_root / "data" / "server_ids.csv"),
-          planets_csv_path(repo_root / "data" / "planets.csv"),
-          materials_path(repo_root / "data" / "materials.csv"),
-          ocr(onnx_model_path, label_map_path) {
-        server_ids = load_server_ids_csv(server_ids_path, kDefaultServerIds);
-        this->planet_catalog = load_planet_catalog(planets_csv_path, kDefaultPlanets);
-        for (const auto& planet : planet_catalog) {
-            this->planets.push_back(planet.name);
-        }
-        this->material_catalog = load_material_catalog(materials_path, kDefaultMaterials, kMaterialIds);
-
-        for (const auto& material : material_catalog) {
-            materials.push_back(material.name);
-        }
-        selected_planet = planets.front();
-        selected_material = materials.front();
-        selected_server = server_ids.front();
-        new_data.server = selected_server;
-        new_data.planet = selected_planet;
-        new_data.material = selected_material;
-        new_data.quality_min = 0;
-        new_data.quality_max = kMaxQuality;
-        last_ocr_processed = std::chrono::steady_clock::now() - std::chrono::duration_cast<std::chrono::steady_clock::duration>(std::chrono::duration<double>(ocr_min_interval_seconds));
-    }
-
-    ~AppState() {
-        for (const auto& [_, texture] : texture_cache) {
-            if (texture != 0) {
-                glDeleteTextures(1, &texture);
-            }
-        }
-    }
-
-    void reload_planet_data() {
-        points = load_points(csv_path.string());
-        int max_id = 0;
-        for (const auto& point : points) {
-            max_id = std::max(max_id, point.id);
-        }
-        new_data.id = max_id + 1;
-    }
-
-    void filter_points() {
-        filtered_points.clear();
-        for (const auto& point : points) {
-            const bool material_match = point.material == selected_material || selected_material == "All" || point.location;
-            const bool planet_match = point.planet == selected_planet;
-            const bool server_match = point.server == selected_server || selected_server == "All" || point.location;
-            if (material_match && planet_match && server_match) {
-                filtered_points.push_back(point);
-            }
-        }
-    }
-
-    GLuint get_texture_for_selected_planet() {
-        auto it = texture_cache.find(selected_planet);
-        if (it != texture_cache.end()) {
-            return it->second;
+    GLuint load_texture_file(const std::filesystem::path& path) {
+        if (!std::filesystem::exists(path)) {
+            return 0;
         }
 
-        // selected to image dir for planet in planets.csv, if not found fallback to looking for image named after planet key directly in planets dir
-
-        std::string image_dir_name = selected_planet;
-        for (const auto& planet : planet_catalog) {
-            if (planet.name == selected_planet && !planet.image_dir.empty()) {
-                image_dir_name = planet.image_dir;
-                break;
-            }
+        Gdiplus::Bitmap bitmap(to_wstring(path).c_str());
+        if (bitmap.GetLastStatus() != Gdiplus::Ok) {
+            return 0;
         }
 
-
-        std::filesystem::path texture_path = planets_dir / image_dir_name / "planet.jpg";
-        const auto dir_it = std::find_if(planet_catalog.begin(), planet_catalog.end(), [this](const Planet& p) {
-            return p.name == selected_planet;
-        });
-        if (dir_it != planet_catalog.end() && !dir_it->image_dir.empty()) {
-            texture_path = planets_dir / dir_it->image_dir / "planet.jpg";
+        const int width = static_cast<int>(bitmap.GetWidth());
+        const int height = static_cast<int>(bitmap.GetHeight());
+        if (width <= 0 || height <= 0) {
+            return 0;
         }
 
-        GLuint texture = load_texture_file(texture_path);
-        if (texture == 0) {
-            texture = load_texture_file(planets_dir / (selected_planet + ".jpg"));
+        Gdiplus::Rect rect(0, 0, width, height);
+        Gdiplus::BitmapData data{};
+        if (bitmap.LockBits(&rect, Gdiplus::ImageLockModeRead, PixelFormat32bppARGB, &data) != Gdiplus::Ok) {
+            return 0;
         }
-        texture_cache[selected_planet] = texture;
+
+        std::vector<std::uint8_t> pixels(static_cast<size_t>(width) * static_cast<size_t>(height) * 4);
+        for (int y = 0; y < height; ++y) {
+            const auto* src = reinterpret_cast<const std::uint8_t*>(static_cast<const std::uint8_t*>(data.Scan0) + (static_cast<size_t>(y) * static_cast<size_t>(data.Stride)));
+            std::memcpy(pixels.data() + (static_cast<size_t>(y) * static_cast<size_t>(width) * 4), src, static_cast<size_t>(width) * 4);
+        }
+        bitmap.UnlockBits(&data);
+
+        GLuint texture = 0;
+        glGenTextures(1, &texture);
+        glBindTexture(GL_TEXTURE_2D, texture);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, width, height, 0, 0x80E1, GL_UNSIGNED_BYTE, pixels.data());
         return texture;
     }
-};
 
-bool combo_string(const char* label, const std::vector<std::string>& items, std::string& current_value) {
-    auto current_it = std::find(items.begin(), items.end(), current_value);
-    int current_index = current_it != items.end() ? static_cast<int>(std::distance(items.begin(), current_it)) : 0;
-    std::vector<const char*> c_strs;
-    c_strs.reserve(items.size());
-    for (const auto& item : items) {
-        c_strs.push_back(item.c_str());
+    std::pair<float, float> latlon_to_uv(double lat, double lon) {
+        const auto u = static_cast<float>((lon + 180.0) / 360.0);
+        const auto v = static_cast<float>((lat + 90.0) / 180.0);
+        return { u, v };
     }
 
-    if (ImGui::Combo(label, &current_index, c_strs.data(), static_cast<int>(c_strs.size()))) {
-        current_value = items[static_cast<size_t>(current_index)];
-        return true;
+    struct AppSettings {
+        bool show_timings{ false };
+        bool ocr_feed_newpoint_enabled{ true };
+        bool ocr_feed_planet_update_enabled{ true };
+    };
+
+
+
+    struct AppState {
+        AppSettings settings;
+
+        std::filesystem::path repo_root;
+        std::filesystem::path csv_path;
+        std::filesystem::path onnx_model_path;
+        std::filesystem::path label_map_path;
+        std::filesystem::path planets_dir;
+        std::filesystem::path server_ids_path;
+        std::filesystem::path planets_csv_path;
+        std::filesystem::path materials_path;
+
+        std::vector<DataPoint> points;
+        std::vector<DataPoint> filtered_points;
+        std::vector<std::string> server_ids;
+        std::vector<std::string> planets;
+        std::vector<std::string> materials;
+        std::vector<Planet> planet_catalog;
+        std::vector<Material> material_catalog;
+
+        std::string selected_planet;
+        std::string last_detected_region;
+        std::string selected_material;
+        std::string selected_server;
+        std::optional<std::string> last_detected_rock;
+        int quality_min{ kMinQuality };
+        int quality_max{ kMaxQuality };
+        DataPoint new_data{};
+        std::unordered_map<std::string, GLuint> texture_cache;
+        std::optional<std::string> hovered_text;
+        ScoutOcr ocr;
+        // OCR results pushed from worker thread are stored here for main-thread processing
+        std::mutex ocr_mutex;
+        std::vector<OcrResult> ocr_results;
+        // Rate limiting: minimum interval between applying OCR results to active point (seconds)
+        std::chrono::steady_clock::time_point last_ocr_processed;
+        double ocr_min_interval_seconds{ 0.1 }; // max 10 times per second
+        // If false, OCR will not write into the active new_data (but rock detection still recorded)
+
+        AppState()
+            : repo_root(detect_repo_root()),
+            csv_path(repo_root / "data" / "geoscout.csv"),
+            onnx_model_path(repo_root / "data" / "best_pareto_model.onnx"),
+            label_map_path(repo_root / "data" / "label_map.json"),
+            planets_dir(repo_root / "images" / "planets"),
+            server_ids_path(repo_root / "data" / "server_ids.csv"),
+            planets_csv_path(repo_root / "data" / "planets.csv"),
+            materials_path(repo_root / "data" / "materials.csv"),
+            ocr(onnx_model_path, label_map_path) {
+            server_ids = load_server_ids_csv(server_ids_path, kDefaultServerIds);
+            this->planet_catalog = load_planet_catalog(planets_csv_path, kDefaultPlanets);
+            for (const auto& planet : planet_catalog) {
+                this->planets.push_back(planet.name);
+            }
+            this->material_catalog = load_material_catalog(materials_path, kDefaultMaterials, kMaterialIds);
+
+            for (const auto& material : material_catalog) {
+                materials.push_back(material.name);
+            }
+            selected_planet = planets.front();
+            selected_material = materials.front();
+            selected_server = server_ids.front();
+            new_data.server = selected_server;
+            new_data.planet = selected_planet;
+            new_data.material = selected_material;
+            new_data.quality_min = 0;
+            new_data.quality_max = kMaxQuality;
+            last_ocr_processed = std::chrono::steady_clock::now() - std::chrono::duration_cast<std::chrono::steady_clock::duration>(std::chrono::duration<double>(ocr_min_interval_seconds));
+        }
+
+        ~AppState() {
+            for (const auto& [_, texture] : texture_cache) {
+                if (texture != 0) {
+                    glDeleteTextures(1, &texture);
+                }
+            }
+        }
+
+        void reload_planet_data() {
+            points = load_points(csv_path.string());
+            int max_id = 0;
+            for (const auto& point : points) {
+                max_id = std::max(max_id, point.id);
+            }
+            new_data.id = max_id + 1;
+        }
+
+        void filter_points() {
+            filtered_points.clear();
+            for (const auto& point : points) {
+                const bool material_match = point.material == selected_material || selected_material == "All" || point.location;
+                const bool planet_match = point.planet == selected_planet;
+                const bool server_match = point.server == selected_server || selected_server == "All" || point.location;
+                if (material_match && planet_match && server_match) {
+                    filtered_points.push_back(point);
+                }
+            }
+        }
+
+        GLuint get_texture_for_selected_planet() {
+            auto it = texture_cache.find(selected_planet);
+            if (it != texture_cache.end()) {
+                return it->second;
+            }
+
+            // selected to image dir for planet in planets.csv, if not found fallback to looking for image named after planet key directly in planets dir
+
+            std::string image_dir_name = selected_planet;
+            for (const auto& planet : planet_catalog) {
+                if (planet.name == selected_planet && !planet.image_dir.empty()) {
+                    image_dir_name = planet.image_dir;
+                    break;
+                }
+            }
+
+
+            std::filesystem::path texture_path = planets_dir / image_dir_name / "planet.jpg";
+            const auto dir_it = std::find_if(planet_catalog.begin(), planet_catalog.end(), [this](const Planet& p) {
+                return p.name == selected_planet;
+                });
+            if (dir_it != planet_catalog.end() && !dir_it->image_dir.empty()) {
+                texture_path = planets_dir / dir_it->image_dir / "planet.jpg";
+            }
+
+            GLuint texture = load_texture_file(texture_path);
+            if (texture == 0) {
+                texture = load_texture_file(planets_dir / (selected_planet + ".jpg"));
+            }
+            texture_cache[selected_planet] = texture;
+            return texture;
+        }
+    };
+
+    bool combo_string(const char* label, const std::vector<std::string>& items, std::string& current_value) {
+        auto current_it = std::find(items.begin(), items.end(), current_value);
+        int current_index = current_it != items.end() ? static_cast<int>(std::distance(items.begin(), current_it)) : 0;
+        std::vector<const char*> c_strs;
+        c_strs.reserve(items.size());
+        for (const auto& item : items) {
+            c_strs.push_back(item.c_str());
+        }
+
+        if (ImGui::Combo(label, &current_index, c_strs.data(), static_cast<int>(c_strs.size()))) {
+            current_value = items[static_cast<size_t>(current_index)];
+            return true;
+        }
+        return false;
     }
-    return false;
-}
 
 } // namespace
 
@@ -574,7 +584,7 @@ int run_scout_app() {
     state.ocr.set_callback([&state](const OcrResult& r) {
         std::lock_guard<std::mutex> lk(state.ocr_mutex);
         state.ocr_results.push_back(r);
-    });
+        });
 
     state.reload_planet_data();
     state.filter_points();
@@ -582,7 +592,6 @@ int run_scout_app() {
     TimerFooterRenderer timer_footer_renderer;
 
     bool location_on = false;
-    bool show_timings = false;
     bool f3_was_down = false;
     auto last_toggle = std::chrono::steady_clock::now();
     auto next_tick = std::chrono::steady_clock::now();
@@ -590,15 +599,16 @@ int run_scout_app() {
     while (!glfwWindowShouldClose(window)) {
         auto now = std::chrono::steady_clock::now();
         timer_display.loop_time_ms().stamp();
-        timer_display.sleep_percent().stamp();
+
+        // Simple fixed timestep loop with sleep to limit CPU usage. Not super precise but good enough for this use case.
         double actual_sleep = 0.0;
-        if (next_tick > now ) {
+        if (next_tick > now) {
             const auto sleep_start = std::chrono::steady_clock::now();
-            std::this_thread::sleep_for(next_tick - now );
+            std::this_thread::sleep_for(next_tick - now);
             const auto sleep_end = std::chrono::steady_clock::now();
             actual_sleep = std::chrono::duration<double>(sleep_end - sleep_start).count();
         }
-        
+
 
         const auto sleep_pct = kFrameTime > 0.0 ? std::min(100.0, (actual_sleep / kFrameTime) * 100.0) : 0.0;
         timer_display.sleep_percent().add_sample(sleep_pct);
@@ -621,7 +631,7 @@ int run_scout_app() {
                 const double since = std::chrono::duration<double>(now_inner - state.last_ocr_processed).count();
                 if (since >= state.ocr_min_interval_seconds) {
                     state.last_ocr_processed = now_inner;
-                    if (state.ocr_feed_enabled) {
+                    if (state.settings.ocr_feed_newpoint_enabled) {
                         if (result.x && result.y && result.z) {
                             state.new_data.x = *result.x;
                             state.new_data.y = *result.y;
@@ -633,14 +643,19 @@ int run_scout_app() {
                             // check if the detected location marker matches any known planet keys (case-insensitive)
                             auto it = std::find_if(state.planets.begin(), state.planets.end(), [&planet_candidate](const std::string& planet) {
                                 return to_lower(planet) == to_lower(planet_candidate);
-                            });
+                                });
                             if (it != state.planets.end()) {
-                                state.new_data.planet = *it;
-                                state.selected_planet = *it;
-                                state.filter_points();
+                                if (state.settings.ocr_feed_planet_update_enabled) {
+                                    state.new_data.planet = *it;
+                                    state.selected_planet = *it;
+                                    state.filter_points();
+                                }
+                                else {
+                                    state.last_detected_region = *it;
+                                }
                             }
                         }
-                            
+
                     }
                     // always update detected rock for display
                     if (result.rock) {
@@ -655,7 +670,7 @@ int run_scout_app() {
 
         const bool f3_is_down = glfwGetKey(window, GLFW_KEY_F3) == GLFW_PRESS;
         if (f3_is_down && !f3_was_down) {
-            show_timings = !show_timings;
+            state.settings.show_timings = !state.settings.show_timings;
         }
         f3_was_down = f3_is_down;
 
@@ -663,60 +678,96 @@ int run_scout_app() {
         ImGui_ImplGlfw_NewFrame();
         ImGui::NewFrame();
 
-        ImGui::Begin("Controls");
-        ImGui::Checkbox("Enable OCR feed into active point", &state.ocr_feed_enabled);
-        if (combo_string("Server", state.server_ids, state.selected_server)) {
-            state.new_data.server = state.selected_server;
-            state.filter_points();
-        }
-        if (combo_string("Planet", state.planets, state.selected_planet)) {
-            state.new_data.planet = state.selected_planet;
-            state.filter_points();
-        }
-        if (combo_string("Material", state.materials, state.selected_material)) {
-            state.new_data.material = state.selected_material;
-            state.filter_points();
-        }
+        ImGui::Begin("MAIN CONTROLS");
+        if (ImGui::BeginTabBar("ControlsTabs")) {
+            if (ImGui::BeginTabItem("Controls")) {
 
-        ImGui::Separator();
-        ImGui::Text("Add new point:");
-        // if (state.last_detected_rock) {
-        //     ImGui::Text("Last detected rock type: %s", state.last_detected_rock->c_str());
-        //     if (ImGui::Button("Use Detected Rock Type")) {
-        //         state.selected_material = *state.last_detected_rock;
-        //         state.new_data.material = *state.last_detected_rock;
-        //     }
-        // }
+                if (combo_string("Server", state.server_ids, state.selected_server)) {
+                    state.new_data.server = state.selected_server;
+                    state.filter_points();
+                }
 
-        float input_x = static_cast<float>(state.new_data.x);
-        float input_y = static_cast<float>(state.new_data.y);
-        float input_z = static_cast<float>(state.new_data.z);
-        ImGui::InputFloat("X", &input_x);
-        ImGui::InputFloat("Y", &input_y);
-        ImGui::InputFloat("Z", &input_z);
-        state.new_data.x = input_x;
-        state.new_data.y = input_y;
-        state.new_data.z = input_z;
-        ImGui::InputDouble("Quality Min", &state.new_data.quality_min);
-        ImGui::InputDouble("Quality Max", &state.new_data.quality_max);
+                if (!state.settings.ocr_feed_planet_update_enabled) {
+                    if (state.last_detected_region.empty()) {
+                        ImGui::Text("Detected Region: None");
+                    }
+                    else {
+                        ImGui::Text("Detected Region: %s", state.last_detected_region.c_str());
+                        if (state.last_detected_region != state.selected_planet) {
+                            if (ImGui::Button("Use Detected Region")) {
+                                state.selected_planet = state.last_detected_region;
+                                state.new_data.planet = state.last_detected_region;
+                                state.filter_points();
+                            }
+                        }
+                    }
+                }
 
-        if (ImGui::Button("Add Point")) {
-            DataPoint new_point;
-            new_point.id = state.new_data.id;
-            new_point.server = state.selected_server;
-            new_point.x = state.new_data.x;
-            new_point.y = state.new_data.y;
-            new_point.z = state.new_data.z;
-            new_point.planet = state.selected_planet;
-            new_point.material = state.selected_material;
-            new_point.location = false;
-            new_point.quality_min = state.new_data.quality_min;
-            new_point.quality_max = state.new_data.quality_max;
-            if (append_point(state.csv_path.string(), new_point)) {
-                state.points.push_back(new_point);
-                state.new_data.id += 1;
+                if (combo_string("Planet", state.planets, state.selected_planet)) {
+                    state.new_data.planet = state.selected_planet;
+                    state.filter_points();
+                }
+
+                if (combo_string("Material", state.materials, state.selected_material)) {
+                    state.new_data.material = state.selected_material;
+                    state.filter_points();
+                }
+
+                ImGui::Separator();
+
+                ImGui::Text("New Point:");
+                // if (state.last_detected_rock) {
+                //     ImGui::Text("Last detected rock type: %s", state.last_detected_rock->c_str());
+                //     if (ImGui::Button("Use Detected Rock Type")) {
+                //         state.selected_material = *state.last_detected_rock;
+                //         state.new_data.material = *state.last_detected_rock;
+                //     }
+                // }
+
+                float input_x = static_cast<float>(state.new_data.x);
+                float input_y = static_cast<float>(state.new_data.y);
+                float input_z = static_cast<float>(state.new_data.z);
+                ImGui::InputFloat("X", &input_x);
+                ImGui::InputFloat("Y", &input_y);
+                ImGui::InputFloat("Z", &input_z);
+                state.new_data.x = input_x;
+                state.new_data.y = input_y;
+                state.new_data.z = input_z;
+                ImGui::InputDouble("Quality Min", &state.new_data.quality_min);
+                ImGui::InputDouble("Quality Max", &state.new_data.quality_max);
+
+                if (ImGui::Button("Add Point")) {
+                    DataPoint new_point;
+                    new_point.id = state.new_data.id;
+                    new_point.server = state.selected_server;
+                    new_point.x = state.new_data.x;
+                    new_point.y = state.new_data.y;
+                    new_point.z = state.new_data.z;
+                    new_point.planet = state.selected_planet;
+                    new_point.material = state.selected_material;
+                    new_point.location = false;
+                    new_point.quality_min = state.new_data.quality_min;
+                    new_point.quality_max = state.new_data.quality_max;
+                    if (append_point(state.csv_path.string(), new_point)) {
+                        state.points.push_back(new_point);
+                        state.new_data.id += 1;
+                    }
+                }
+                ImGui::EndTabItem();
             }
+            // ImGui::EndTabItem();
+
+            if (ImGui::BeginTabItem("Settings")) {
+                ImGui::Checkbox("Show Timings (F3)", &state.settings.show_timings);
+                ImGui::Separator();
+                ImGui::Text("OCR Settings:");
+                ImGui::Checkbox("Auto updates new point coordinates", &state.settings.ocr_feed_newpoint_enabled);
+                ImGui::Checkbox("Auto updates active planet", &state.settings.ocr_feed_planet_update_enabled);
+                ImGui::EndTabItem();
+            }
+            // ImGui::EndTabItem();
         }
+        ImGui::EndTabBar();
         ImGui::End();
 
         timer_display.render_time_ms().stamp();
@@ -730,7 +781,6 @@ int run_scout_app() {
         glEnable(GL_BLEND);
         glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
-        
         const GLuint texture = state.get_texture_for_selected_planet();
         double cursor_x = 0.0;
         double cursor_y = 0.0;
@@ -781,7 +831,7 @@ int run_scout_app() {
         timer_display.loop_time_ms().record_time_since_stamp();
         timer_display.work_time_ms().record_time_since_stamp();
 
-        if (show_timings) {
+        if (state.settings.show_timings) {
             timer_footer_renderer.render(timer_display, height);
         }
 
@@ -794,9 +844,11 @@ int run_scout_app() {
 
         next_tick += std::chrono::duration_cast<std::chrono::steady_clock::duration>(std::chrono::duration<double>(kFrameTime));
         if (last_now > next_tick + std::chrono::duration_cast<std::chrono::steady_clock::duration>(std::chrono::duration<double>(kFrameTime))) {
-            next_tick = last_now + std::chrono::duration_cast<std::chrono::steady_clock::duration>(std::chrono::duration<double>(kFrameTime));
+            auto missed_frames = std::chrono::duration<double>(last_now - next_tick).count() / kFrameTime;
+            // std::cout << "Warning: Missed " << missed_frames << " frames\n";
+            next_tick = missed_frames > 5.0 ? last_now : next_tick + std::chrono::duration_cast<std::chrono::steady_clock::duration>(std::chrono::duration<double>(kFrameTime * std::ceil(missed_frames)));
         }
-        
+
     }
 
     ImGui_ImplOpenGL3_Shutdown();

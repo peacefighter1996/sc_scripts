@@ -275,7 +275,7 @@ std::optional<std::string> ScoutRenderer::render_map(GLuint texture,
             if (point.location) {
                 return point.note;
             }
-            return material_id + " Quality: " + std::to_string(point.quality_max) + "\n" + point.note;
+            return material_id + " Quality: " + std::to_string(int(point.quality_max)) + "\n" + point.note;
         }
     }
 

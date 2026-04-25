@@ -242,28 +242,31 @@ ScoutOcr::ScoutOcr(std::filesystem::path onnx_model_path, std::filesystem::path 
       label_map_path_(std::move(label_map_path)) {
 }
 
+
 void ScoutOcr::request_async() {
-    if (has_pending_) {
+    bool expected = false;
+    if (!has_pending_.compare_exchange_strong(expected, true)) {
         return;
     }
 
-    // Launch the OCR task. When complete, either store the future (legacy)
-    // or invoke the registered callback with the result.
-    has_pending_ = true;
-    std::thread([this]() {
+    // Launch async OCR work using std::async so we keep a future we can wait on.
+    future_ = std::async(std::launch::async, [this]() {
         const auto result = run_ocr_task();
         has_pending_ = false;
-        if (callback_) {
-            callback_(result);
-        } else {
-            // If no callback registered, keep behavior similar to before by
-            // storing the result in the future for poll() to pick up.
-            // We can't set a std::future from here, so use a packaged_task.
-            std::packaged_task<OcrResult()> task([result]() { return result; });
-            future_ = task.get_future();
-            task(); // run immediately to make future ready
+
+        // copy subscribers under lock to avoid holding lock while invoking
+        std::vector<Callback> subs;
+        {
+            std::lock_guard<std::mutex> lk(subs_mtx_);
+            subs.reserve(subscribers_.size());
+            for (const auto& kv : subscribers_) subs.push_back(kv.second);
         }
-    }).detach();
+        for (const auto& cb : subs) {
+            try { cb(result); } catch (...) {}
+        }
+
+        return result;
+    });
 }
 
 std::optional<OcrResult> ScoutOcr::poll() {
@@ -283,7 +286,38 @@ std::optional<OcrResult> ScoutOcr::poll() {
 }
 
 void ScoutOcr::set_callback(Callback cb) {
-    callback_ = std::move(cb);
+    // replace any previous single callback subscription
+    if (single_sub_id_ != 0) {
+        unsubscribe(single_sub_id_);
+        single_sub_id_ = 0;
+    }
+    if (cb) {
+        single_sub_id_ = subscribe(std::move(cb));
+    }
+}
+
+ScoutOcr::SubscriptionId ScoutOcr::subscribe(Callback cb) {
+    std::lock_guard<std::mutex> lk(subs_mtx_);
+    const SubscriptionId id = next_sub_id_++;
+    subscribers_.emplace(id, std::move(cb));
+    return id;
+}
+
+void ScoutOcr::unsubscribe(SubscriptionId id) {
+    std::lock_guard<std::mutex> lk(subs_mtx_);
+    subscribers_.erase(id);
+}
+
+void ScoutOcr::stop_and_wait() {
+    stop();
+    // wait for pending future to complete
+    if (future_.valid()) {
+        try { future_.wait(); } catch (...) {}
+    }
+}
+
+void ScoutOcr::stop() {
+    active = false;
 }
 
 std::string ScoutOcr::get_xyz_ocr_text() const {

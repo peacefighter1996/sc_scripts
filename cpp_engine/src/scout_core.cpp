@@ -122,9 +122,34 @@ std::vector<DataPoint> load_points(const std::string& csv_path) {
             point.z = std::stod(trim(row[4]));
             point.planet = trim(row[5]);
             point.material = trim(row[6]);
-            point.quality_min = std::stod(trim(row[7]));
-            point.quality_max = std::stod(trim(row[8]));
+            // backward-compatible: quality fields expected at indices 7 and 8
+            point.quality_min = row.size() > 7 ? std::stod(trim(row[7])) : 0.0;
+            point.quality_max = row.size() > 8 ? std::stod(trim(row[8])) : 0.0;
             point.note = row.size() >= 10 ? row[9] : std::string{};
+            // POI type may be stored as an integer index or a name. Handle both for compatibility.
+            point.poi_type = PoiType::Unknown;
+            if (row.size() >= 11) {
+                const std::string v = trim(row[10]);
+                if (!v.empty()) {
+                    try {
+                        int iv = std::stoi(v);
+                        if (iv >= 0 && static_cast<size_t>(iv) < poi_impl::poi_type_count) {
+                            point.poi_type = static_cast<PoiType>(iv);
+                        } else {
+                            PoiType tmp;
+                            if (poi_type_from_string(v, tmp)) {
+                                point.poi_type = tmp;
+                            }
+                        }
+                    } catch (...) {
+                        PoiType tmp;
+                        if (poi_type_from_string(v, tmp)) {
+                            point.poi_type = tmp;
+                        }
+                    }
+                }
+            }
+            point.time_info = row.size() >= 12 ? trim(row[11]) : std::string{};
             const auto material = to_lower(point.material);
             point.location = material == "location" || material == "cave";
             points.push_back(point);
@@ -149,7 +174,7 @@ bool append_point(const std::string& csv_path, const DataPoint& point) {
     }
 
     if (!file_exists) {
-        out << "recordid,server,x,y,z,planet,material,quality_min,quality_max,note\n";
+        out << "recordid,server,x,y,z,planet,material,quality_min,quality_max,note,poi_type,poi_time\n";
     }
 
     out << point.id << ','
@@ -161,7 +186,9 @@ bool append_point(const std::string& csv_path, const DataPoint& point) {
         << csv_escape(point.material) << ','
         << std::setprecision(15) << point.quality_min << ','
         << std::setprecision(15) << point.quality_max << ','
-        << csv_escape(point.note)
+        << csv_escape(point.note) << ','
+        << csv_escape(poi_type_name(point.poi_type)) << ','
+        << csv_escape(point.time_info)
         << '\n';
 
     return true;
@@ -176,6 +203,8 @@ void print_dump(const std::vector<DataPoint>& points) {
                   << std::setprecision(15) << point.z << '\t'
                   << point.planet << '\t'
                   << point.material << '\t'
+                  << poi_type_name(point.poi_type) << '\t'
+                  << point.time_info << '\t'
                   << std::setprecision(15) << point.quality_min << '\t'
                   << std::setprecision(15) << point.quality_max << '\t'
                   << point.note

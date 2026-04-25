@@ -20,6 +20,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstring>
+#include <cfloat>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -70,6 +71,45 @@ namespace {
             }
         }
         return -1;
+    }
+
+    // --- Simple datetime helpers for Time editing ---
+    inline std::array<int, 5> now_ymdhm() {
+        using namespace std::chrono;
+        const auto t = system_clock::now();
+        std::time_t tt = system_clock::to_time_t(t);
+        std::tm tm;
+#if defined(_WIN32)
+        localtime_s(&tm, &tt);
+#else
+        localtime_r(&tt, &tm);
+#endif
+        return { tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday, tm.tm_hour, tm.tm_min };
+    }
+
+    inline bool parse_iso_datetime(const std::string& s, std::array<int, 5>& out) {
+        if (s.empty()) return false;
+        int y = 0, m = 0, d = 0, hh = 0, mm = 0;
+        // Accept formats: YYYY-MM-DD HH:MM or YYYY-MM-DDTHH:MM or YYYY-MM-DD
+        if (std::sscanf(s.c_str(), "%4d-%2d-%2d %2d:%2d", &y, &m, &d, &hh, &mm) >= 3) {
+            out = { y,m,d,hh,mm };
+            return true;
+        }
+        if (std::sscanf(s.c_str(), "%4d-%2d-%2dT%2d:%2d", &y, &m, &d, &hh, &mm) >= 3) {
+            out = { y,m,d,hh,mm };
+            return true;
+        }
+        if (std::sscanf(s.c_str(), "%4d-%2d-%2d", &y, &m, &d) == 3) {
+            out = { y,m,d,0,0 };
+            return true;
+        }
+        return false;
+    }
+
+    inline std::string format_iso_datetime(const std::array<int, 5>& v) {
+        char buf[64];
+        std::snprintf(buf, sizeof(buf), "%04d-%02d-%02d %02d:%02d", v[0], v[1], v[2], v[3], v[4]);
+        return std::string(buf);
     }
 
     struct TextureEntry {
@@ -405,6 +445,7 @@ namespace {
         std::vector<std::string> materials;
         std::vector<Planet> planet_catalog;
         std::vector<Material> material_catalog;
+        SubscriptionId ocr_subscription_id;
 
         std::string selected_planet;
         std::string last_detected_region;
@@ -416,14 +457,12 @@ namespace {
         DataPoint new_data{};
         std::unordered_map<std::string, GLuint> texture_cache;
         std::optional<std::string> hovered_text;
-        ScoutOcr ocr;
+
+        bool data_form_active{ false };
+        
         // OCR results pushed from worker thread are stored here for main-thread processing
         std::mutex ocr_mutex;
         std::vector<OcrResult> ocr_results;
-        // Rate limiting: minimum interval between applying OCR results to active point (seconds)
-        std::chrono::steady_clock::time_point last_ocr_processed;
-        double ocr_min_interval_seconds{ 0.1 }; // max 10 times per second
-        // If false, OCR will not write into the active new_data (but rock detection still recorded)
 
         AppState()
             : repo_root(detect_repo_root()),
@@ -433,8 +472,10 @@ namespace {
             planets_dir(repo_root / "images" / "planets"),
             server_ids_path(repo_root / "data" / "server_ids.csv"),
             planets_csv_path(repo_root / "data" / "planets.csv"),
-            materials_path(repo_root / "data" / "materials.csv"),
-            ocr(onnx_model_path, label_map_path) {
+            materials_path(repo_root / "data" / "materials.csv") {
+
+            settings = load_settings(repo_root / "config" / "settings.ini");
+
             server_ids = load_server_ids_csv(server_ids_path, kDefaultServerIds);
             this->planet_catalog = load_planet_catalog(planets_csv_path, kDefaultPlanets);
             for (const auto& planet : planet_catalog) {
@@ -453,7 +494,6 @@ namespace {
             new_data.material = selected_material;
             new_data.quality_min = 0;
             new_data.quality_max = kMaxQuality;
-            last_ocr_processed = std::chrono::steady_clock::now() - std::chrono::duration_cast<std::chrono::steady_clock::duration>(std::chrono::duration<double>(ocr_min_interval_seconds));
         }
 
         ~AppState() {
@@ -517,6 +557,98 @@ namespace {
             texture_cache[selected_planet] = texture;
             return texture;
         }
+        void save_settings() {
+            std::ofstream out(repo_root / "config" / "settings.ini");
+            if (!out.is_open()) {
+                return;
+            }
+            out << "show_timings=" << (settings.show_timings ? "1" : "0") << '\n';
+            out << "ocr_feed_newpoint_enabled=" << (settings.ocr_feed_newpoint_enabled ? "1" : "0") << '\n';
+            out << "ocr_feed_planet_update_enabled=" << (settings.ocr_feed_planet_update_enabled ? "1" : "0") << '\n';
+        }
+        AppSettings load_settings(const std::filesystem::path& path) {
+            AppSettings settings;
+            std::ifstream in(path);
+            if (!in.is_open()) {
+                return settings;
+            }
+
+            std::string line;
+            while (std::getline(in, line)) {
+                const auto trimmed = trim(line);
+                if (trimmed.empty() || trimmed[0] == '#') {
+                    continue;
+                }
+
+                const auto delimiter_pos = trimmed.find('=');
+                if (delimiter_pos == std::string::npos) {
+                    continue;
+                }
+
+                const auto key = trim(trimmed.substr(0, delimiter_pos));
+                const auto value = trim(trimmed.substr(delimiter_pos + 1));
+
+                if (key == "show_timings") {
+                    settings.show_timings = (value == "1");
+                }
+                else if (key == "ocr_feed_newpoint_enabled") {
+                    settings.ocr_feed_newpoint_enabled = (value == "1");
+                }
+                else if (key == "ocr_feed_planet_update_enabled") {
+                    settings.ocr_feed_planet_update_enabled = (value == "1");
+                }
+            }
+
+            return settings;
+
+        }
+
+        std::vector<double> process_ocr_results() {
+            std::vector<OcrResult> results_to_process;
+            {
+                std::lock_guard<std::mutex> lk(ocr_mutex);
+                results_to_process.swap(ocr_results);
+            }
+
+            if (results_to_process.empty()) {
+                return {};
+            }
+            std::vector<double> ocr_values;
+
+            for (const auto& result : results_to_process) {
+                if (settings.ocr_feed_newpoint_enabled && result.rock.has_value()) {
+                    new_data.material = result.rock.value();
+                    if (result.x.has_value() && result.y.has_value() && result.z.has_value()) {
+                        new_data.x = result.x.value();
+                        new_data.y = result.y.value();
+                        new_data.z = result.z.value();
+                    }
+                }
+
+                if (settings.ocr_feed_planet_update_enabled) {
+                    if (result.locationmarker.has_value()) {
+                        selected_planet = result.locationmarker.value();
+                    }
+                    else if (result.rock.has_value()) {
+                        // If no location marker, but we have a rock, try to infer the planet from the rock name (e.g., "Pyro_A5_Ignis_HEPH" -> "Pyro_A5_Ignis")
+                        const auto& rock_name = result.rock.value();
+                        for (const auto& planet : planets) {
+                            if (rock_name.find(planet) != std::string::npos) {
+                                selected_planet = planet;
+                                break;
+                            }
+                        }
+                    }
+                }
+                ocr_values.push_back(result.task_time_ms);
+            }
+            return ocr_values;
+        }
+
+        void update_new_data_from_ocr(const OcrResult& result) {
+            std::lock_guard<std::mutex> lk(ocr_mutex);
+            ocr_results.push_back(result);
+        }
     };
 
     bool combo_string(const char* label, const std::vector<std::string>& items, std::string& current_value) {
@@ -537,8 +669,44 @@ namespace {
 
 } // namespace
 
+// Overwrite the CSV with the provided points vector. Matches append_point header/order.
+bool write_points_csv(const std::string& csv_path, const std::vector<DataPoint>& points) {
+    const auto parent = std::filesystem::path(csv_path).parent_path();
+    if (!parent.empty()) {
+        std::error_code ec;
+        std::filesystem::create_directories(parent, ec);
+    }
+
+    std::ofstream out(csv_path, std::ios::trunc);
+    if (!out.is_open()) {
+        return false;
+    }
+
+    out << "recordid,server,x,y,z,planet,material,quality_min,quality_max,note,poi_type,poi_time\n";
+    for (const auto& point : points) {
+        out << point.id << ','
+            << csv_escape(point.server) << ','
+            << std::setprecision(15) << point.x << ','
+            << std::setprecision(15) << point.y << ','
+            << std::setprecision(15) << point.z << ','
+            << csv_escape(point.planet) << ','
+            << csv_escape(point.material) << ','
+            << std::setprecision(15) << point.quality_min << ','
+            << std::setprecision(15) << point.quality_max << ','
+            << csv_escape(point.note) << ','
+            << csv_escape(poi_type_name(point.poi_type)) << ','
+            << csv_escape(point.time_info)
+            << '\n';
+    }
+
+    return true;
+}
+
+
 int run_scout_app() {
     GdiplusSession gdiplus_session;
+    
+
 
     if (!glfwInit()) {
         std::cerr << "Failed to initialize GLFW\n";
@@ -580,11 +748,28 @@ int run_scout_app() {
     }
 
     AppState state;
+
+    auto root_location = detect_repo_root();
+    auto onnx_model_path = root_location / "data" / "best_pareto_model.onnx";
+    auto label_map_path = root_location / "data" / "label_map.json";
+    ScoutOcr ocr_instance(onnx_model_path, label_map_path);
     // Register OCR callback to push results into AppState queue
-    state.ocr.set_callback([&state](const OcrResult& r) {
-        std::lock_guard<std::mutex> lk(state.ocr_mutex);
-        state.ocr_results.push_back(r);
+    state.ocr_subscription_id = ocr_instance.subscribe([&state](const OcrResult& result) {
+        state.update_new_data_from_ocr(result);
         });
+
+    // Timer to periodically call OCR on the current window content
+    auto ocr_timer = std::thread([&ocr_instance]() {
+        auto start = std::chrono::steady_clock::now();
+        auto end = start;
+        while (ocr_instance.active) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(100) - (end - start));
+            start = std::chrono::steady_clock::now();
+            ocr_instance.request_async();
+            end = std::chrono::steady_clock::now();
+        }
+        });
+    // keep thread joinable so we can stop it cleanly on shutdown
 
     state.reload_planet_data();
     state.filter_points();
@@ -615,54 +800,10 @@ int run_scout_app() {
         timer_display.work_time_ms().stamp();
 
         timer_display.ocr_poll_time_ms().stamp();
-        state.ocr.request_async();
         // Process any OCR results pushed by the worker thread
-        {
-            std::vector<OcrResult> popped;
-            {
-                std::lock_guard<std::mutex> lk(state.ocr_mutex);
-                popped.swap(state.ocr_results);
-            }
-            if (!popped.empty()) {
-                // Process only the most recent result and rate-limit updates
-                const auto& result = popped.back();
-                timer_display.record_ocr_task(result.task_time_ms);
-                const auto now_inner = std::chrono::steady_clock::now();
-                const double since = std::chrono::duration<double>(now_inner - state.last_ocr_processed).count();
-                if (since >= state.ocr_min_interval_seconds) {
-                    state.last_ocr_processed = now_inner;
-                    if (state.settings.ocr_feed_newpoint_enabled) {
-                        if (result.x && result.y && result.z) {
-                            state.new_data.x = *result.x;
-                            state.new_data.y = *result.y;
-                            state.new_data.z = *result.z;
-                        }
-                        if (result.locationmarker && !result.locationmarker->empty()) {
-                            const auto planet_candidate = *result.locationmarker;
-
-                            // check if the detected location marker matches any known planet keys (case-insensitive)
-                            auto it = std::find_if(state.planets.begin(), state.planets.end(), [&planet_candidate](const std::string& planet) {
-                                return to_lower(planet) == to_lower(planet_candidate);
-                                });
-                            if (it != state.planets.end()) {
-                                if (state.settings.ocr_feed_planet_update_enabled) {
-                                    state.new_data.planet = *it;
-                                    state.selected_planet = *it;
-                                    state.filter_points();
-                                }
-                                else {
-                                    state.last_detected_region = *it;
-                                }
-                            }
-                        }
-
-                    }
-                    // always update detected rock for display
-                    if (result.rock) {
-                        state.last_detected_rock = result.rock;
-                    }
-                }
-            }
+        auto ocr_values = state.process_ocr_results();
+        for (const auto& value : ocr_values) {
+            timer_display.ocr_task_time_ms().add_sample(value);
         }
         timer_display.ocr_poll_time_ms().record_time_since_stamp();
 
@@ -681,6 +822,11 @@ int run_scout_app() {
         ImGui::Begin("MAIN CONTROLS");
         if (ImGui::BeginTabBar("ControlsTabs")) {
             if (ImGui::BeginTabItem("Controls")) {
+                if (ImGui::Button("Open Data Form")) {
+                    state.data_form_active = true;
+                }
+                
+                ImGui::Separator();
 
                 if (combo_string("Server", state.server_ids, state.selected_server)) {
                     state.new_data.server = state.selected_server;
@@ -733,8 +879,8 @@ int run_scout_app() {
                 state.new_data.x = input_x;
                 state.new_data.y = input_y;
                 state.new_data.z = input_z;
-                ImGui::InputDouble("Quality Min", &state.new_data.quality_min);
-                ImGui::InputDouble("Quality Max", &state.new_data.quality_max);
+                ImGui::InputInt("Quality Min", &state.new_data.quality_min);
+                ImGui::InputInt("Quality Max", &state.new_data.quality_max);
 
                 if (ImGui::Button("Add Point")) {
                     DataPoint new_point;
@@ -748,6 +894,8 @@ int run_scout_app() {
                     new_point.location = false;
                     new_point.quality_min = state.new_data.quality_min;
                     new_point.quality_max = state.new_data.quality_max;
+                    new_point.poi_type = PoiType::Mineral;
+                    new_point.time_info = format_iso_datetime(now_ymdhm());
                     if (append_point(state.csv_path.string(), new_point)) {
                         state.points.push_back(new_point);
                         state.new_data.id += 1;
@@ -769,6 +917,246 @@ int run_scout_app() {
         }
         ImGui::EndTabBar();
         ImGui::End();
+
+        if (state.data_form_active) {
+
+            ImGui::Begin("Datatable", &state.data_form_active);
+            // Editable table for DataPoint entries
+            static bool data_dirty = false;
+            static std::string save_message;
+
+            ImGui::Text("Edit existing points (changes are in-memory until you Save)");
+            ImGui::Separator();
+
+            ImGuiTableFlags table_flags = ImGuiTableFlags_Resizable | ImGuiTableFlags_Reorderable | ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerH | ImGuiTableFlags_ScrollY;
+            // Use a distinct table ID to avoid legacy table-layout mismatches across builds
+            if (ImGui::BeginTable("DataPointsTable_v3", 13, table_flags, ImVec2(0, ImGui::GetContentRegionAvail().y - 30))) {
+                ImGui::TableSetupColumn("ID", ImGuiTableColumnFlags_WidthFixed, 30.0f); // 0
+                ImGui::TableSetupColumn("Record Time", ImGuiTableColumnFlags_WidthFixed, 100.0f); // 1
+                ImGui::TableSetupColumn("Server"); // 2
+                ImGui::TableSetupColumn("X"); // 3
+                ImGui::TableSetupColumn("Y"); // 4
+                ImGui::TableSetupColumn("Z"); // 5
+                ImGui::TableSetupColumn("Planet"); // 6
+                ImGui::TableSetupColumn("POI Type", ImGuiTableColumnFlags_WidthFixed, 100.0f); // 7
+                ImGui::TableSetupColumn("Material"); // 8
+                ImGui::TableSetupColumn("QMin"); // 9
+                ImGui::TableSetupColumn("QMax"); // 10
+                ImGui::TableSetupColumn("Note"); // 11
+                ImGui::TableSetupColumn("Control", ImGuiTableColumnFlags_WidthFixed, 80.0f); //12
+                ImGui::TableSetupScrollFreeze(0, 1);
+                ImGui::TableHeadersRow();
+
+                std::vector<size_t> to_erase;
+                for (size_t i = 0; i < state.points.size(); ++i) {
+                    DataPoint& dp = state.points[i];
+                    ImGui::TableNextRow();
+
+                    // ID (read-only)
+                    ImGui::TableSetColumnIndex(0);
+                    ImGui::TextDisabled("%d", dp.id);
+
+                    // Record Time (read-only, formatted from time_info)
+                    ImGui::TableSetColumnIndex(1);
+                    if (dp.time_info.empty()) {
+                        ImGui::TextDisabled("N/A");
+                    }
+                    else {
+                        ImGui::Text("%s", dp.time_info.c_str());
+                    }
+
+                    // Server
+                    ImGui::TableSetColumnIndex(2);
+                    {
+                        char buf[16] = { 0 };
+                        strncpy(buf, dp.server.c_str(), sizeof(buf) - 1);
+                        std::string lbl = std::string("##server") + std::to_string(i);
+                        ImGui::PushItemWidth(-FLT_MIN);
+                        if (ImGui::InputText(lbl.c_str(), buf, IM_ARRAYSIZE(buf))) {
+                            dp.server = buf;
+                            data_dirty = true;
+                        }
+                        ImGui::PopItemWidth();
+                    }
+                    // X
+                    ImGui::TableSetColumnIndex(3);
+                    {
+                        double val = dp.x;
+                        std::string lbl = std::string("##x") + std::to_string(i);
+                        ImGui::PushItemWidth(-FLT_MIN);
+                        if (ImGui::InputDouble(lbl.c_str(), &val, 0.0, 0.0, "%.6f")) {
+                            dp.x = val;
+                            data_dirty = true;
+                        }
+                        ImGui::PopItemWidth();
+                    }
+
+                    // Y
+                    ImGui::TableSetColumnIndex(4);
+                    {
+                        double val = dp.y;
+                        std::string lbl = std::string("##y") + std::to_string(i);
+                        ImGui::PushItemWidth(-FLT_MIN);
+                        if (ImGui::InputDouble(lbl.c_str(), &val, 0.0, 0.0, "%.6f")) {
+                            dp.y = val;
+                            data_dirty = true;
+                        }
+                        ImGui::PopItemWidth();
+                    }
+
+                    // Z
+                    ImGui::TableSetColumnIndex(5);
+                    {
+                        double val = dp.z;
+                        std::string lbl = std::string("##z") + std::to_string(i);
+                        ImGui::PushItemWidth(-FLT_MIN);
+                        if (ImGui::InputDouble(lbl.c_str(), &val, 0.0, 0.0, "%.6f")) {
+                            dp.z = val;
+                            data_dirty = true;
+                        }
+                        ImGui::PopItemWidth();
+                    }
+
+                    // Planet (combo)
+                    ImGui::TableSetColumnIndex(6);
+                    {
+                        std::string lbl = std::string("##planet") + std::to_string(i);
+                        auto it = std::find(state.planets.begin(), state.planets.end(), dp.planet);
+                        int cur = it != state.planets.end() ? static_cast<int>(std::distance(state.planets.begin(), it)) : 0;
+                        std::vector<const char*> cstrs;
+                        cstrs.reserve(state.planets.size());
+                        for (const auto& s : state.planets) cstrs.push_back(s.c_str());
+                        ImGui::PushItemWidth(-FLT_MIN);
+                        if (ImGui::Combo(lbl.c_str(), &cur, cstrs.data(), static_cast<int>(cstrs.size()))) {
+                            dp.planet = state.planets[static_cast<size_t>(cur)];
+                            data_dirty = true;
+                        }
+                        ImGui::PopItemWidth();
+                    }
+                    // POI Type (enum-backed combo)
+                    ImGui::TableSetColumnIndex(7);
+                    {
+                        std::string lbl = std::string("##poi_type") + std::to_string(i);
+                        int cur = static_cast<int>(dp.poi_type);
+                        auto names = poi_type_names();
+                        std::vector<const char*> cstrs;
+                        cstrs.reserve(names.size());
+                        for (const auto& s : names) cstrs.push_back(s.c_str());
+                        ImGui::PushItemWidth(-FLT_MIN);
+                        if (ImGui::Combo(lbl.c_str(), &cur, cstrs.data(), static_cast<int>(cstrs.size()))) {
+                            dp.poi_type = static_cast<PoiType>(cur);
+                            data_dirty = true;
+                        }
+                        ImGui::PopItemWidth();
+                    }
+
+                    // Material (combo)
+                    ImGui::TableSetColumnIndex(8);
+                    {
+                        std::string lbl = std::string("##material") + std::to_string(i);
+                        auto it = std::find(state.materials.begin(), state.materials.end(), dp.material);
+                        int cur = it != state.materials.end() ? static_cast<int>(std::distance(state.materials.begin(), it)) : 0;
+                        std::vector<const char*> cstrs;
+                        cstrs.reserve(state.materials.size());
+                        for (const auto& s : state.materials) cstrs.push_back(s.c_str());
+                        ImGui::PushItemWidth(-FLT_MIN);
+                        if (ImGui::Combo(lbl.c_str(), &cur, cstrs.data(), static_cast<int>(cstrs.size()))) {
+                            dp.material = state.materials[static_cast<size_t>(cur)];
+                            data_dirty = true;
+                        }
+                        ImGui::PopItemWidth();
+                    }
+
+
+                    // QMin
+                    ImGui::TableSetColumnIndex(9);
+                    {
+                        int val = int(dp.quality_min);
+                        std::string lbl = std::string("##qmin") + std::to_string(i);
+                        ImGui::PushItemWidth(-FLT_MIN);
+                        if (ImGui::InputInt(lbl.c_str(), &val, 0, 0)) {
+                            dp.quality_min = val;
+                            data_dirty = true;
+                        }
+                        ImGui::PopItemWidth();
+                    }
+
+                    // QMax
+                    ImGui::TableSetColumnIndex(10);
+                    {
+                        int val = int(dp.quality_max);
+                        std::string lbl = std::string("##qmax") + std::to_string(i);
+                        ImGui::PushItemWidth(-FLT_MIN);
+                        if (ImGui::InputInt(lbl.c_str(), &val, 0, 0)) {
+                            dp.quality_max = val;
+                            data_dirty = true;
+                        }
+                        ImGui::PopItemWidth();
+                    }
+
+                    // Note
+                    ImGui::TableSetColumnIndex(11);
+                    {
+                        char buf[256] = { 0 };
+                        strncpy(buf, dp.note.c_str(), sizeof(buf) - 1);
+                        std::string lbl = std::string("##note") + std::to_string(i);
+                        ImGui::PushItemWidth(-FLT_MIN);
+                        if (ImGui::InputText(lbl.c_str(), buf, IM_ARRAYSIZE(buf))) {
+                            dp.note = buf;
+                            data_dirty = true;
+                        }
+                        ImGui::PopItemWidth();
+                    }
+
+                    // Controls (Delete)
+                    ImGui::TableSetColumnIndex(12);
+                    {
+                        std::string del_lbl = std::string("Delete##del") + std::to_string(i);
+                        if (ImGui::SmallButton(del_lbl.c_str())) {
+                            to_erase.push_back(i);
+                        }
+                    }
+                }
+
+                // erase rows in reverse order
+                if (!to_erase.empty()) {
+                    std::sort(to_erase.rbegin(), to_erase.rend());
+                    for (size_t idx : to_erase) {
+                        if (idx < state.points.size()) {
+                            state.points.erase(state.points.begin() + static_cast<std::ptrdiff_t>(idx));
+                            data_dirty = true;
+                        }
+                    }
+                }
+
+                ImGui::EndTable();
+            }
+
+            ImGui::Separator();
+            if (ImGui::Button("Save Changes")) {
+                if (write_points_csv(state.csv_path.string(), state.points)) {
+                    save_message = "Saved successfully";
+                    state.reload_planet_data();
+                    state.filter_points();
+                    data_dirty = false;
+                }
+                else {
+                    save_message = "Save failed";
+                }
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Reload From CSV")) {
+                state.reload_planet_data();
+                state.filter_points();
+                save_message = "Reloaded";
+                data_dirty = false;
+            }
+            ImGui::SameLine();
+            ImGui::Text("%s", save_message.c_str());
+            ImGui::End();
+        }
+
+
 
         timer_display.render_time_ms().stamp();
 
@@ -850,11 +1238,19 @@ int run_scout_app() {
         }
 
     }
+    // Signal the OCR thread to stop and wait for it to finish before exiting
+    ocr_instance.stop_and_wait();
+    
 
     ImGui_ImplOpenGL3_Shutdown();
     ImGui_ImplGlfw_Shutdown();
     ImGui::DestroyContext();
     glfwDestroyWindow(window);
     glfwTerminate();
+
+    state.save_settings();
+
+    ocr_timer.join();
+
     return 0;
 }

@@ -9,3 +9,6 @@ build_*/
 third_party/
 .vscode/
 .vs/
+*.pt
+runs/
+labels/

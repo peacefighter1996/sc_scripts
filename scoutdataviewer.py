@@ -7,7 +7,7 @@
 # !pip install opencv-python
 # !pip install pytesseract mss pygetwindow numpy  
 # !pip freeze > requirements.txt 
-
+# !pip install -r requirements.txt
 #%%
 import math
 import os

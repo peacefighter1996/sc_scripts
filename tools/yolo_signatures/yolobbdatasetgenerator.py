@@ -38,15 +38,22 @@ def build_coco(image_dir, boxes_dict):
     images = []
     annotations = []
     img_id = 1; ann_id = 1
+    excluded = []
     for fname in sorted(os.listdir(image_dir)):
-        if not fname.lower().endswith(('.png','.jpg','.jpeg')): continue
+        if not fname.lower().endswith(('.png','.jpg','.jpeg')):
+            continue
+        # skip images that have no boxes
+        bl = boxes_dict.get(fname, [])
+        if not bl:
+            excluded.append(fname)
+            continue
         path = os.path.join(image_dir, fname)
         try:
             with Image.open(path) as im: w,h = im.size
         except Exception:
             w=h=0
         images.append({'id': img_id, 'file_name': fname, 'width': w, 'height': h})
-        for b in boxes_dict.get(fname, []):
+        for b in bl:
             bbox = [b['xmin'], b['ymin'], b['xmax']-b['xmin'], b['ymax']-b['ymin']]
             cat = 0 if (b.get('class','')=='unknown') else 1
             attrs = {'subtype': b.get('subtype','')}
@@ -56,7 +63,7 @@ def build_coco(image_dir, boxes_dict):
             ann_id += 1
         img_id += 1
     coco = {'images': images, 'annotations': annotations, 'categories': [{'id':0,'name':'unknown'},{'id':1,'name':'mineral'}]}
-    return coco
+    return coco, excluded
 
 
 def main():
@@ -69,11 +76,13 @@ def main():
     if not os.path.isdir(args.input_dir):
         print('Input dir not found:', args.input_dir); return
     boxes = read_csv(args.annotations)
-    coco = build_coco(args.input_dir, boxes)
+    coco, excluded = build_coco(args.input_dir, boxes)
     os.makedirs(os.path.dirname(args.output), exist_ok=True)
     with open(args.output, 'w', encoding='utf-8') as f:
         json.dump(coco, f, indent=2)
     print('Wrote', args.output)
+    if excluded:
+        print(f'Excluded {len(excluded)} images with no bounding boxes. Example: {excluded[:5]}')
 
 
 if __name__ == '__main__':

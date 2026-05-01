@@ -1,10 +1,14 @@
 import os
+import re
+import datetime
 import argparse
 import json
 from flask import Flask, send_from_directory, jsonify, request, render_template_string
 from PIL import Image
 
 app = Flask(__name__)
+# runtime-loaded model instance (ultralytics YOLO)
+MODEL = None
 
 HTML = '''
 <!doctype html>
@@ -21,94 +25,243 @@ HTML = '''
   </head>
   <body>
     <h3>YOLO Signatures Annotator</h3>
+    <div id="dirinfo" style="font-size:0.9em;color:#666;margin-bottom:6px"></div>
     <div>
       <button id="prev">Prev</button>
       <button id="next">Next</button>
       <span id="fname"></span>
     </div>
     <canvas id="canvas"></canvas>
-    <div id="sidebar">
-      <label>Class
-        <select id="cls"><option>unknown</option><option>mineral</option></select>
-      </label>
-      <label>Subtype<input id="subtype" /></label>
-      <button id="add">Add Box (click two points)</button>
-      <button id="save">Save</button>
-      <div id="info"></div>
-    </div>
+        <div id="sidebar">
+            <label>Class
+                <select id="cls"><option>unknown</option><option>mineral</option></select>
+            </label>
+            <label>Subtype<input id="subtype" /></label>
+            <label>xmin<input id="xmin" type="number" /></label>
+            <label>ymin<input id="ymin" type="number" /></label>
+            <label>xmax<input id="xmax" type="number" /></label>
+            <label>ymax<input id="ymax" type="number" /></label>
+            <div>
+                <button id="add">Add Box (click two points)</button>
+                <button id="update" disabled>Update Selected</button>
+                <button id="save">Save</button>
+                <button id="predict">Predict</button>
+            </div>
+            <div id="prediction_info" style="margin-top:6px;color:#006;font-size:0.9em"></div>
+            <div id="info"></div>
+            <div id="selected_info" style="margin-top:8px;color:#333"></div>
+        </div>
 
-    <script>
-    let images = [];
-    let idx = 0;
-    let boxes = {}; // image -> [{xmin,ymin,xmax,ymax,class,subtype}]
-    let mode = 'view';
-    let tmp = [];
+        <script>
+        let images = [];
+        let idx = 0;
+        let boxes = {}; // image -> [{xmin,ymin,xmax,ymax,class,subtype,id}]
+        let predictedBoxes = {}; // image -> [{xmin,ymin,xmax,ymax,class,conf}]
+        let mode = 'view';
+        let tmp = [];
+        let selectedIndex = null;
+        let lastCandidatesKey = null;
+        let lastCandidates = [];
+        let lastCandidatePosition = null;
 
-    async function loadList(){
-      const r = await fetch('/api/images');
-      images = await r.json();
-      if(images.length===0){ alert('No images in directory'); }
-      loadImage(0);
-    }
-
-    function drawImage(img){
-      const c = document.getElementById('canvas');
-      const ctx = c.getContext('2d');
-      c.width = img.width; c.height = img.height;
-      ctx.drawImage(img,0,0);
-      const name = images[idx];
-      const arr = boxes[name]||[];
-      ctx.lineWidth = 2;
-      for(const b of arr){
-        ctx.strokeStyle = 'lime'; ctx.strokeRect(b.xmin,b.ymin,b.xmax-b.xmin,b.ymax-b.ymin);
-        ctx.fillStyle = 'rgba(0,0,0,0.5)'; ctx.fillRect(b.xmin,b.ymin-18,120,18);
-        ctx.fillStyle = 'white'; ctx.fillText((b.class||'') + ' ' + (b.subtype||''), b.xmin+4, b.ymin-4);
-      }
-      if(tmp.length===1){ ctx.fillStyle='red'; ctx.fillRect(tmp[0].x-3,tmp[0].y-3,6,6); }
-    }
-
-    async function loadImage(i){
-      if(i<0) i = images.length-1; if(i>=images.length) i=0; idx=i;
-      document.getElementById('fname').textContent = images[idx];
-      const img = new Image(); img.src = '/images/' + encodeURIComponent(images[idx]);
-      img.onload = ()=> drawImage(img);
-      const r = await fetch('/api/annotations/' + encodeURIComponent(images[idx]));
-      const data = await r.json();
-      boxes[images[idx]] = data.boxes || [];
-    }
-
-    document.getElementById('next').onclick = ()=> loadImage(idx+1);
-    document.getElementById('prev').onclick = ()=> loadImage(idx-1);
-    document.getElementById('add').onclick = ()=> { mode='add'; tmp=[]; document.getElementById('info').textContent='Click two points on image'; };
-    document.getElementById('save').onclick = async ()=>{
-      const name = images[idx];
-      const payload = { image: name, boxes: boxes[name] || [] };
-      const res = await fetch('/api/save_image_annotations',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
-      const j = await res.json(); alert(j.message||'saved');
-    };
-
-    document.getElementById('canvas').addEventListener('click', (ev)=>{
-      const rect = ev.target.getBoundingClientRect();
-      const x = ev.clientX - rect.left; const y = ev.clientY - rect.top;
-      if(mode==='add'){
-        tmp.push({x:Math.round(x), y:Math.round(y)});
-        if(tmp.length===2){
-          const a=tmp[0], b=tmp[1];
-          const xmin=Math.min(a.x,b.x), ymin=Math.min(a.y,b.y), xmax=Math.max(a.x,b.x), ymax=Math.max(a.y,b.y);
-          const cls = document.getElementById('cls').value; const subtype = document.getElementById('subtype').value;
-          const name = images[idx]; boxes[name] = boxes[name]||[]; boxes[name].push({xmin,ymin,xmax,ymax,class:cls,subtype:subtype});
-          tmp=[]; mode='view';
-          // redraw image locally so the new box remains in memory (don't re-fetch annotations)
-          const img = new Image(); img.src = '/images/' + encodeURIComponent(images[idx]); img.onload = ()=> drawImage(img);
-        } else {
-          // show temporary point without reloading annotations
-          const img = new Image(); img.src = '/images/' + encodeURIComponent(images[idx]); img.onload = ()=> drawImage(img);
+        async function loadList(){
+            const r = await fetch('/api/info');
+            const info = await r.json();
+            document.getElementById('dirinfo').textContent = `Dir: ${info.dir} — ${info.count} images`;
+            const r2 = await fetch('/api/images');
+            images = await r2.json();
+            if(images.length===0){ alert('No images in directory'); }
+            loadImage(0);
         }
-      }
-    });
 
-    loadList();
-    </script>
+        function drawImage(img){
+            const c = document.getElementById('canvas');
+            const ctx = c.getContext('2d');
+            c.width = img.width; c.height = img.height;
+            ctx.drawImage(img,0,0);
+            const name = images[idx];
+            const arr = boxes[name]||[];
+            ctx.lineWidth = 2;
+            for(let i=0;i<arr.length;i++){
+                const b = arr[i];
+                if(i===selectedIndex){ ctx.strokeStyle='red'; ctx.lineWidth=3; }
+                else { ctx.strokeStyle = 'lime'; ctx.lineWidth=2; }
+                ctx.strokeRect(b.xmin,b.ymin,b.xmax-b.xmin,b.ymax-b.ymin);
+                ctx.fillStyle = 'rgba(0,0,0,0.5)'; ctx.fillRect(b.xmin,b.ymin-18,160,18);
+                ctx.fillStyle = 'white'; ctx.fillText((b.class||'') + ' ' + (b.subtype||''), b.xmin+4, b.ymin-4);
+            }
+            // draw predicted boxes (if any)
+            const preds = (predictedBoxes[name]||[]);
+            if(preds.length){
+                ctx.setLineDash([6,4]);
+                for(const p of preds){
+                    ctx.strokeStyle = 'cyan'; ctx.lineWidth = 2;
+                    ctx.strokeRect(p.xmin,p.ymin,p.xmax-p.xmin,p.ymax-p.ymin);
+                    ctx.fillStyle = 'rgba(0,0,0,0.5)'; ctx.fillRect(p.xmin,p.ymin-18,120,18);
+                    ctx.fillStyle = 'white'; ctx.fillText((p.class||'') + ' ' + (p.conf?p.conf.toFixed(2):''), p.xmin+4, p.ymin-4);
+                }
+                ctx.setLineDash([]);
+            }
+            if(tmp.length===1){ ctx.fillStyle='red'; ctx.fillRect(tmp[0].x-3,tmp[0].y-3,6,6); }
+        }
+
+        async function loadImage(i){
+            if(i<0) i = images.length-1; if(i>=images.length) i=0; idx=i;
+            document.getElementById('fname').textContent = images[idx];
+            const img = new Image(); img.src = '/images/' + encodeURIComponent(images[idx]);
+            img.onload = ()=> drawImage(img);
+            const r = await fetch('/api/annotations/' + encodeURIComponent(images[idx]));
+            const data = await r.json();
+            boxes[images[idx]] = data.boxes || [];
+            // clear any previous predictions for this image
+            predictedBoxes[images[idx]] = [];
+            selectedIndex = null; lastCandidatesKey = null; lastCandidates = []; lastCandidatePosition = null;
+            updateSidebarSelection();
+        }
+
+        document.getElementById('next').onclick = ()=> loadImage(idx+1);
+        document.getElementById('prev').onclick = ()=> loadImage(idx-1);
+        document.getElementById('add').onclick = ()=> { mode='add'; tmp=[]; selectedIndex=null; document.getElementById('info').textContent='Click two points on image'; updateSidebarSelection(); };
+        document.getElementById('update').onclick = async ()=>{
+            // explicit update (kept for backward compatibility)
+            applySidebarToBox();
+        };
+
+        // live-update: when sidebar inputs change, immediately apply to selected box
+        const liveInputs = ['xmin','ymin','xmax','ymax','cls','subtype'];
+        function applySidebarToBox(){
+            const name = images[idx];
+            if(!name) return;
+            if(selectedIndex === null) return;
+            const arr = boxes[name] || [];
+            const b = arr[selectedIndex];
+            const xi = parseInt(document.getElementById('xmin').value);
+            const yi = parseInt(document.getElementById('ymin').value);
+            const xa = parseInt(document.getElementById('xmax').value);
+            const ya = parseInt(document.getElementById('ymax').value);
+            if(!Number.isNaN(xi)) b.xmin = xi;
+            if(!Number.isNaN(yi)) b.ymin = yi;
+            if(!Number.isNaN(xa)) b.xmax = xa;
+            if(!Number.isNaN(ya)) b.ymax = ya;
+            b.class = document.getElementById('cls').value;
+            b.subtype = document.getElementById('subtype').value;
+            // redraw
+            const img = new Image(); img.src = '/images/' + encodeURIComponent(images[idx]); img.onload = ()=> drawImage(img);
+            updateSidebarSelection();
+        }
+        // debounce helper
+        function debounce(fn, ms){ let t=null; return (...args)=>{ clearTimeout(t); t=setTimeout(()=>fn(...args), ms); }; }
+        const applyDebounced = debounce(applySidebarToBox, 80);
+        for(const id of liveInputs){
+            const el = document.getElementById(id);
+            if(el) el.addEventListener('input', ()=> applyDebounced());
+        }
+
+        document.getElementById('save').onclick = async ()=>{
+            const name = images[idx];
+            const payload = { image: name, boxes: boxes[name] || [] };
+            const res = await fetch('/api/save_image_annotations',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+            const j = await res.json(); alert(j.message||'saved');
+        };
+
+        document.getElementById('predict').onclick = async ()=>{
+            const name = images[idx];
+            if(!name){ alert('No image'); return; }
+            document.getElementById('prediction_info').textContent = 'Running model...';
+            try{
+                const res = await fetch('/api/predict/' + encodeURIComponent(name));
+                const j = await res.json();
+                if(j.error){ alert('Prediction error: ' + j.error); document.getElementById('prediction_info').textContent=''; return; }
+                predictedBoxes[name] = j.boxes || [];
+                document.getElementById('prediction_info').textContent = `Predictions: ${predictedBoxes[name].length}`;
+                const img = new Image(); img.src = '/images/' + encodeURIComponent(name); img.onload = ()=> drawImage(img);
+            }catch(err){
+                alert('Prediction request failed: ' + err);
+                document.getElementById('prediction_info').textContent='';
+            }
+        };
+
+        document.getElementById('canvas').addEventListener('click', (ev)=>{
+            const rect = ev.target.getBoundingClientRect();
+            const x = ev.clientX - rect.left; const y = ev.clientY - rect.top;
+            const name = images[idx];
+            if(mode==='add'){
+                tmp.push({x:Math.round(x), y:Math.round(y)});
+                if(tmp.length===2){
+                    const a=tmp[0], b=tmp[1];
+                    const xmin=Math.min(a.x,b.x), ymin=Math.min(a.y,b.y), xmax=Math.max(a.x,b.x), ymax=Math.max(a.y,b.y);
+                    const cls = document.getElementById('cls').value; const subtype = document.getElementById('subtype').value;
+                    boxes[name] = boxes[name]||[]; boxes[name].push({xmin,ymin,xmax,ymax,class:cls,subtype:subtype});
+                    tmp=[]; mode='view';
+                    const img = new Image(); img.src = '/images/' + encodeURIComponent(images[idx]); img.onload = ()=> drawImage(img);
+                } else {
+                    const img = new Image(); img.src = '/images/' + encodeURIComponent(images[idx]); img.onload = ()=> drawImage(img);
+                }
+            } else {
+                // selection/cycling logic
+                const arr = boxes[name] || [];
+                const candidates = [];
+                for(let i=0;i<arr.length;i++){
+                    const b = arr[i];
+                    if(x>=b.xmin && x<=b.xmax && y>=b.ymin && y<=b.ymax){ candidates.push(i); }
+                }
+                const key = candidates.join(',');
+                if(candidates.length===0){
+                    selectedIndex = null; lastCandidates = []; lastCandidatesKey = null; lastCandidatePosition = null; updateSidebarSelection(); const img = new Image(); img.src = '/images/' + encodeURIComponent(images[idx]); img.onload = ()=> drawImage(img);
+                } else {
+                    if(lastCandidatesKey === key && lastCandidatePosition && Math.hypot(lastCandidatePosition.x - x, lastCandidatePosition.y - y) < 8){
+                        // same area: cycle
+                        let pos = lastCandidates.indexOf(selectedIndex);
+                        if(pos === -1) pos = 0;
+                        selectedIndex = candidates[(pos+1) % candidates.length];
+                    } else {
+                        // new click area: choose first
+                        selectedIndex = candidates[0];
+                        lastCandidates = candidates.slice();
+                        lastCandidatesKey = key;
+                    }
+                    lastCandidatePosition = {x,y};
+                    updateSidebarSelection();
+                    const img = new Image(); img.src = '/images/' + encodeURIComponent(images[idx]); img.onload = ()=> drawImage(img);
+                }
+            }
+        });
+
+        // keyboard event for editing
+        document.addEventListener('keydown', (ev)=>{
+            if(ev.key === 'e' || ev.key === 'E'){
+                if(selectedIndex === null){ alert('No box selected to edit'); return; }
+                document.getElementById('xmin').focus();
+            }
+        });
+
+        function updateSidebarSelection(){
+            const info = document.getElementById('selected_info');
+            const name = images[idx];
+            if(!name){ info.textContent=''; return; }
+            const arr = boxes[name] || [];
+            if(selectedIndex === null || selectedIndex < 0 || selectedIndex >= arr.length){
+                info.textContent = 'No selection';
+                document.getElementById('xmin').value = '';
+                document.getElementById('ymin').value = '';
+                document.getElementById('xmax').value = '';
+                document.getElementById('ymax').value = '';
+                document.getElementById('cls').value = 'unknown';
+                document.getElementById('subtype').value = '';
+                document.getElementById('update').disabled = true;
+                return;
+            }
+            const b = arr[selectedIndex];
+            info.textContent = `Selected #${selectedIndex} id=${b.id||'(none)'}`;
+            document.getElementById('xmin').value = b.xmin; document.getElementById('ymin').value = b.ymin;
+            document.getElementById('xmax').value = b.xmax; document.getElementById('ymax').value = b.ymax;
+            document.getElementById('cls').value = b.class || 'unknown';
+            document.getElementById('subtype').value = b.subtype || '';
+            document.getElementById('update').disabled = false;
+        }
+
+        loadList();
+        </script>
   </body>
 </html>
 '''
@@ -120,6 +273,53 @@ def find_images(root):
         1].lower() in exts]
     names.sort()
     return names
+
+
+def find_latest_best(root='runs/detect/runs/train'):
+    """Scan `root` for subfolders like `run_YYYYMMDD_HHMMSS/*/weights/best.pt` and return the
+    path to the most recent `best.pt`. Prefers parsing the timestamp in the folder name
+    (`run_YYYYMMDD_HHMMSS`) and falls back to directory mtime.
+
+    Returns full path to best.pt or None if not found.
+    """
+    if not os.path.isabs(root):
+        root = os.path.abspath(root)
+    if not os.path.isdir(root):
+        return None
+    candidates = []
+    for name in os.listdir(root):
+        p = os.path.join(root, name)
+        if not os.path.isdir(p):
+            continue
+        best = os.path.join(p, 'weights', 'best.pt')
+        if not os.path.exists(best):
+            continue
+        ts = None
+        m = re.search(r'run_(\d{8}_\d{6})', name)
+        if m:
+            try:
+                ts = datetime.datetime.strptime(m.group(1), '%Y%m%d_%H%M%S')
+            except Exception:
+                ts = None
+        if ts is None:
+            try:
+                ts = datetime.datetime.fromtimestamp(os.path.getmtime(p))
+            except Exception:
+                ts = None
+        candidates.append((ts, best, p))
+    if not candidates:
+        return None
+    # Normalize any None timestamps to mtime and sort descending
+    normalized = []
+    for ts, best, p in candidates:
+        if ts is None:
+            try:
+                ts = datetime.datetime.fromtimestamp(os.path.getmtime(p))
+            except Exception:
+                ts = datetime.datetime.fromtimestamp(0)
+        normalized.append((ts, best))
+    normalized.sort(key=lambda x: x[0], reverse=True)
+    return normalized[0][1]
 
 
 def read_csv_annotations(csv_path):
@@ -171,6 +371,12 @@ def index():
 @app.route('/api/images')
 def api_images():
     return jsonify(app.config['IMG_LIST'])
+
+
+@app.route('/api/info')
+def api_info():
+    imgs = app.config.get('IMG_LIST', [])
+    return jsonify({'dir': app.config.get('IMG_DIR',''), 'count': len(imgs)})
 
 
 @app.route('/images/<path:fname>')
@@ -258,12 +464,80 @@ def api_save_image_annotations():
     return jsonify({'message': 'saved', 'coco': out})
 
 
+@app.route('/api/predict/<path:imagename>', methods=['GET', 'POST'])
+def api_predict(imagename):
+    """Run model inference on a single image and return predicted boxes.
+    Requires `app.config['MODEL_SPEC']` to be set (path or ultralytics model id).
+    """
+    model_spec = app.config.get('MODEL_SPEC', '')
+    if not model_spec:
+        return jsonify({'error': 'No model configured. Start server with --model <path_or_name>'}), 400
+    global MODEL
+    if MODEL is None:
+        try:
+            from ultralytics import YOLO
+        except Exception as e:
+            return jsonify({'error': 'ultralytics not installed: ' + str(e)}), 500
+        try:
+            MODEL = YOLO(model_spec)
+        except Exception as e:
+            return jsonify({'error': 'failed to load model: ' + str(e)}), 500
+
+    path = os.path.join(app.config['IMG_DIR'], imagename)
+    if not os.path.exists(path):
+        return jsonify({'error': 'image not found'}), 404
+
+    try:
+        # prefer predict API if available
+        try:
+            results = MODEL.predict(source=path, conf=0.25, imgsz=640)
+        except Exception:
+            results = MODEL(path)
+    except Exception as e:
+        return jsonify({'error': 'inference failed: ' + str(e)}), 500
+
+    boxes_out = []
+    try:
+        r = results[0]
+        # Try structured extraction (boxes.xyxy, boxes.conf, boxes.cls)
+        try:
+            xyxy = r.boxes.xyxy.cpu().numpy()
+            confs = r.boxes.conf.cpu().numpy() if hasattr(r.boxes, 'conf') else None
+            clss = r.boxes.cls.cpu().numpy() if hasattr(r.boxes, 'cls') else None
+            for i, row in enumerate(xyxy):
+                x1, y1, x2, y2 = row.tolist()
+                conf = float(confs[i]) if confs is not None else 0.0
+                clsid = int(clss[i]) if clss is not None else 0
+                boxes_out.append({'xmin': int(round(x1)), 'ymin': int(round(y1)), 'xmax': int(round(x2)), 'ymax': int(round(y2)), 'class': ('mineral' if clsid == 1 else 'unknown'), 'conf': conf})
+        except Exception:
+            # fallback: iterate boxes attribute
+            try:
+                for b in r.boxes:
+                    coords = getattr(b, 'xyxy', None)
+                    if coords is None:
+                        continue
+                    arr = coords.cpu().numpy() if hasattr(coords, 'cpu') else coords
+                    if hasattr(arr, 'tolist'):
+                        arr = arr.tolist()[0] if len(arr.shape) > 1 else arr.tolist()
+                    x1, y1, x2, y2 = arr[:4]
+                    conf = float(getattr(b, 'conf', 0.0))
+                    clsid = int(getattr(b, 'cls', 0))
+                    boxes_out.append({'xmin': int(round(x1)), 'ymin': int(round(y1)), 'xmax': int(round(x2)), 'ymax': int(round(y2)), 'class': ('mineral' if clsid == 1 else 'unknown'), 'conf': conf})
+            except Exception:
+                pass
+    except Exception as e:
+        return jsonify({'error': 'failed to parse results: ' + str(e)}), 500
+
+    return jsonify({'boxes': boxes_out})
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument(
         '--dir', default='images/test/bb_unknown', help='images directory')
-    parser.add_argument('--annotations', default='annotations.csv',
+    parser.add_argument('--annotations', default='data/annotations.csv',
                         help='CSV annotations path (optional)')
+    parser.add_argument('--model', default='', help='model path or ultralytics model name (optional)')
     parser.add_argument('--host', default='127.0.0.1')
     parser.add_argument('--port', default=5000, type=int)
     args = parser.parse_args()
@@ -276,10 +550,19 @@ def main():
     csv_path = args.annotations if os.path.exists(args.annotations) else None
     csv_ann = read_csv_annotations(csv_path) if csv_path else {}
 
+    # If no model specified, try to auto-detect the latest training run best.pt
+    model_spec = args.model
+    if not model_spec:
+        candidate = find_latest_best()
+        if candidate:
+            print('Auto-detected model:', candidate)
+            model_spec = candidate
+
     app.config['IMG_DIR'] = img_dir
     app.config['IMG_LIST'] = imgs
     app.config['CSV_PATH'] = csv_path
     app.config['CSV_ANN'] = csv_ann
+    app.config['MODEL_SPEC'] = model_spec
 
     print(f'Serving {len(imgs)} images from', img_dir)
     app.run(host=args.host, port=args.port, debug=False)

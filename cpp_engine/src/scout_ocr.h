@@ -10,6 +10,10 @@
 #include <atomic>
 #include <cstddef>
 
+#ifdef SCOUT_HAS_ONNXRUNTIME
+#include <onnxruntime_cxx_api.h>
+#endif
+
 struct OcrResult {
     std::optional<std::string> rock;
     std::optional<double> x;
@@ -22,6 +26,7 @@ struct OcrResult {
 class ScoutOcr {
 public:
     ScoutOcr(std::filesystem::path onnx_model_path, std::filesystem::path label_map_path);
+    ~ScoutOcr();
 
     // Start an async OCR request (no-op if one is already pending).
     void request_async();
@@ -32,11 +37,11 @@ public:
     // Stop flag observed by external timers/loops.
     std::atomic<bool> active{true};
 
-    using Callback = std::function<void(const OcrResult&)>;
     using SubscriptionId = std::size_t;
+    using Callback = std::function<void(const OcrResult&)>;
 
     // Subscribe to OCR results. Returns a subscription id for later unsubscribe.
-    SubscriptionId subscribe(Callback cb);
+    std::size_t subscribe(Callback cb);
     void unsubscribe(SubscriptionId id);
 
     // Backwards-compatible single-callback setter (wraps subscribe/unsubscribe).
@@ -48,10 +53,14 @@ public:
 
 private:
     OcrResult run_ocr_task() const;
-    std::string get_xyz_ocr_text() const;
+    std::string get_coordinates_ocr_text() const;
 
     std::filesystem::path onnx_model_path_;
     std::filesystem::path label_map_path_;
+    std::unordered_map<int, std::string> labels_;
+#ifdef SCOUT_HAS_ONNXRUNTIME
+    Ort::Session* onnx_session_{nullptr};
+#endif
     std::future<OcrResult> future_;
     std::atomic<bool> has_pending_{false};
 

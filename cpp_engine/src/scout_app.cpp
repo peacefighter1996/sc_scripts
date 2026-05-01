@@ -420,7 +420,7 @@ namespace {
 
     struct AppSettings {
         bool show_timings{ false };
-        bool ocr_feed_newpoint_enabled{ true };
+        bool auto_update_ocr_newpoint_enabled{ true };
         bool ocr_feed_planet_update_enabled{ true };
     };
 
@@ -445,7 +445,11 @@ namespace {
         std::vector<std::string> materials;
         std::vector<Planet> planet_catalog;
         std::vector<Material> material_catalog;
-        SubscriptionId ocr_subscription_id;
+        ScoutOcr::SubscriptionId ocr_subscription_id;
+
+        double x;
+        double y;
+        double z;
 
         std::string selected_planet;
         std::string last_detected_region;
@@ -459,7 +463,7 @@ namespace {
         std::optional<std::string> hovered_text;
 
         bool data_form_active{ false };
-        
+
         // OCR results pushed from worker thread are stored here for main-thread processing
         std::mutex ocr_mutex;
         std::vector<OcrResult> ocr_results;
@@ -563,7 +567,7 @@ namespace {
                 return;
             }
             out << "show_timings=" << (settings.show_timings ? "1" : "0") << '\n';
-            out << "ocr_feed_newpoint_enabled=" << (settings.ocr_feed_newpoint_enabled ? "1" : "0") << '\n';
+            out << "ocr_feed_newpoint_enabled=" << (settings.auto_update_ocr_newpoint_enabled ? "1" : "0") << '\n';
             out << "ocr_feed_planet_update_enabled=" << (settings.ocr_feed_planet_update_enabled ? "1" : "0") << '\n';
         }
         AppSettings load_settings(const std::filesystem::path& path) {
@@ -592,7 +596,7 @@ namespace {
                     settings.show_timings = (value == "1");
                 }
                 else if (key == "ocr_feed_newpoint_enabled") {
-                    settings.ocr_feed_newpoint_enabled = (value == "1");
+                    settings.auto_update_ocr_newpoint_enabled = (value == "1");
                 }
                 else if (key == "ocr_feed_planet_update_enabled") {
                     settings.ocr_feed_planet_update_enabled = (value == "1");
@@ -611,30 +615,44 @@ namespace {
             }
 
             if (results_to_process.empty()) {
-                return {};
+                return {}; 
             }
             std::vector<double> ocr_values;
 
             for (const auto& result : results_to_process) {
-                if (settings.ocr_feed_newpoint_enabled && result.rock.has_value()) {
-                    new_data.material = result.rock.value();
-                    if (result.x.has_value() && result.y.has_value() && result.z.has_value()) {
-                        new_data.x = result.x.value();
-                        new_data.y = result.y.value();
-                        new_data.z = result.z.value();
-                    }
+                if (settings.auto_update_ocr_newpoint_enabled
+                    && result.x.has_value()
+                    && result.y.has_value()
+                    && result.z.has_value()) {
+                    new_data.x = result.x.value();
+                    new_data.y = result.y.value();
+                    new_data.z = result.z.value();
                 }
+                else if(result.x.has_value()
+                    && result.y.has_value()
+                    && result.z.has_value() ) {
+                    x = result.x.value();
+                    y = result.y.value();
+                    z = result.z.value();
+                }
+
+                //if (result.rock.has_value()) {
+                //    if 
+                //    new_data.material = result.rock.value();
+                //}
 
                 if (settings.ocr_feed_planet_update_enabled) {
                     if (result.locationmarker.has_value()) {
-                        selected_planet = result.locationmarker.value();
-                    }
-                    else if (result.rock.has_value()) {
-                        // If no location marker, but we have a rock, try to infer the planet from the rock name (e.g., "Pyro_A5_Ignis_HEPH" -> "Pyro_A5_Ignis")
-                        const auto& rock_name = result.rock.value();
-                        for (const auto& planet : planets) {
-                            if (rock_name.find(planet) != std::string::npos) {
-                                selected_planet = planet;
+                        for (const auto& planet : planet_catalog) {
+                            if (planet.zone_id.empty() ) {
+                                continue;
+                            }
+                            if (result.locationmarker.value().find(planet.zone_id) != std::string::npos) {
+                                // only update if different
+                                if (planet.name != selected_planet) {
+                                    selected_planet = planet.name;
+                                    filter_points();
+                                }
                                 break;
                             }
                         }
@@ -705,7 +723,7 @@ bool write_points_csv(const std::string& csv_path, const std::vector<DataPoint>&
 
 int run_scout_app() {
     GdiplusSession gdiplus_session;
-    
+
 
 
     if (!glfwInit()) {
@@ -825,7 +843,7 @@ int run_scout_app() {
                 if (ImGui::Button("Open Data Form")) {
                     state.data_form_active = true;
                 }
-                
+
                 ImGui::Separator();
 
                 if (combo_string("Server", state.server_ids, state.selected_server)) {
@@ -873,6 +891,15 @@ int run_scout_app() {
                 float input_x = static_cast<float>(state.new_data.x);
                 float input_y = static_cast<float>(state.new_data.y);
                 float input_z = static_cast<float>(state.new_data.z);
+                ImGui::Checkbox("Auto updates new point coordinates", &state.settings.auto_update_ocr_newpoint_enabled);
+                if (!state.settings.auto_update_ocr_newpoint_enabled) {
+                    ImGui::Text("Last OCR values: X=%.2f Y=%.2f Z=%.2f", state.x, state.y, state.z);
+                    if(ImGui::Button("Use Last OCR Values")) {
+                        input_x = static_cast<float>(state.x);
+                        input_y = static_cast<float>(state.y);
+                        input_z = static_cast<float>(state.z);
+                    };
+                }
                 ImGui::InputFloat("X", &input_x);
                 ImGui::InputFloat("Y", &input_y);
                 ImGui::InputFloat("Z", &input_z);
@@ -909,7 +936,7 @@ int run_scout_app() {
                 ImGui::Checkbox("Show Timings (F3)", &state.settings.show_timings);
                 ImGui::Separator();
                 ImGui::Text("OCR Settings:");
-                ImGui::Checkbox("Auto updates new point coordinates", &state.settings.ocr_feed_newpoint_enabled);
+                ImGui::Checkbox("Auto updates new point coordinates", &state.settings.auto_update_ocr_newpoint_enabled);
                 ImGui::Checkbox("Auto updates active planet", &state.settings.ocr_feed_planet_update_enabled);
                 ImGui::EndTabItem();
             }
@@ -1240,7 +1267,7 @@ int run_scout_app() {
     }
     // Signal the OCR thread to stop and wait for it to finish before exiting
     ocr_instance.stop_and_wait();
-    
+
 
     ImGui_ImplOpenGL3_Shutdown();
     ImGui_ImplGlfw_Shutdown();

@@ -5,6 +5,9 @@
 #include <vector>
 #include <array>
 
+#ifdef SCOUT_HAS_ONNXRUNTIME
+#include <onnxruntime_cxx_api.h>
+#endif
 //
 // Define the POI type list once and generate enum + name arrays from it.
 #define POI_TYPE_LIST(X) \
@@ -94,3 +97,7 @@ void print_dump(const std::vector<DataPoint>& points);
 bool try_parse_xyz_from_ocr_text(const std::string& ocr_text, double& x, double& y, double& z, std::string& locationmarker);
 
 bool predict_labels_onnx(const std::string& model_path, const std::vector<float>& input_values, int64_t sample_count, std::vector<int64_t>& labels, std::string& error_message);
+#ifdef SCOUT_HAS_ONNXRUNTIME
+bool predict_labels_onnx_session(Ort::Session& session, const std::vector<float>& input_values, int64_t sample_count, std::vector<int64_t>& labels, std::string& error_message);
+Ort::Session* create_onnx_session(const std::string& model_path, std::string& error_message);
+#endif

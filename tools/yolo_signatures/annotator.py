@@ -490,7 +490,7 @@ def api_predict(imagename):
     try:
         # prefer predict API if available
         try:
-            results = MODEL.predict(source=path, conf=0.25, imgsz=640)
+            results = MODEL.predict(source=path, conf=0.02, imgsz=640)
         except Exception:
             results = MODEL(path)
     except Exception as e:

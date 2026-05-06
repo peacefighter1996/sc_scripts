@@ -69,7 +69,7 @@ def build_coco(image_dir, boxes_dict):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--input-dir', default='images/test/bb_unknown')
-    parser.add_argument('--annotations', default='annotations.csv')
+    parser.add_argument('--annotations', default='data/annotations.csv.bak')
     parser.add_argument('--output', default='dataset/coco_annotations.json')
     args = parser.parse_args()
 

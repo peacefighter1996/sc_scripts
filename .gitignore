@@ -12,3 +12,4 @@ third_party/
 *.pt
 runs/
 labels/
+images/test/bb_unknown/

@@ -67,14 +67,11 @@ if(SCOUT_BUILD_APP)
 	target_sources(scout_engine PRIVATE src/scout_app.cpp)
 
 	# SQLite3 for local storage
-	# Prefer a vendored amalgamation under build_app/_deps/sqlite (or _deps/sqllite),
-	# otherwise try to find a system SQLite3 via find_package.
+	# Prefer a vendored amalgamation under third_party/sqlite
+	# a system SQLite3 via find_package.
 	set(_vendored_sqlite_dir "")
-	if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/build_app/_deps/sqlite")
-		set(_vendored_sqlite_dir "${CMAKE_CURRENT_SOURCE_DIR}/build_app/_deps/sqlite")
-	elseif(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/build_app/_deps/sqllite")
-		# handle common misspelling
-		set(_vendored_sqlite_dir "${CMAKE_CURRENT_SOURCE_DIR}/build_app/_deps/sqllite")
+	if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/sqlite")
+		set(_vendored_sqlite_dir "${CMAKE_CURRENT_SOURCE_DIR}/third_party/sqlite")
 	endif()
 
 	if(NOT _vendored_sqlite_dir STREQUAL "")

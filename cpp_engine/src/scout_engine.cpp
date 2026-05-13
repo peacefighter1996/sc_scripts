@@ -1,7 +1,9 @@
 #include "scout_app.h"
 #include "scout_core.h"
+#include "point_store_csv.h"
 
 #include <algorithm>
+#include <filesystem>
 #include <cstdint>
 #include <iostream>
 #include <string>
@@ -22,7 +24,7 @@ int main(int argc, char** argv) {
             std::cerr << "usage: scout_engine dump <csv_path>\n";
             return 2;
         }
-        print_dump(load_points(argv[2]));
+        print_dump(load_points(std::filesystem::path(argv[2])));
         return 0;
     }
 
@@ -33,7 +35,7 @@ int main(int argc, char** argv) {
         }
 
         int max_id = 0;
-        for (const auto& point : load_points(argv[2])) {
+        for (const auto& point : load_points(std::filesystem::path(argv[2]))) {
             max_id = std::max(max_id, point.id);
         }
         std::cout << (max_id + 1) << '\n';
@@ -60,7 +62,7 @@ int main(int argc, char** argv) {
             point.note = argv[12];
             const auto material = to_lower(point.material);
             point.location = material == "location" || material == "cave";
-            return append_point(argv[2], point) ? 0 : 1;
+            return append_point_csv(argv[2], point) ? 0 : 1;
         } catch (...) {
             std::cerr << "invalid append arguments\n";
             return 2;

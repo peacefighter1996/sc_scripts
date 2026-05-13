@@ -66,17 +66,7 @@ namespace {
         {"Copper", "COPP"},
     };
 
-    int find_column_index(const std::vector<std::string>& headers, const std::vector<std::string>& candidates) {
-        for (size_t i = 0; i < headers.size(); ++i) {
-            const auto header = to_lower(trim(headers[i]));
-            for (const auto& candidate : candidates) {
-                if (header == candidate) {
-                    return static_cast<int>(i);
-                }
-            }
-        }
-        return -1;
-    }
+    
 
     // --- Simple datetime helpers for Time editing ---
     inline std::array<int, 5> now_ymdhm() {
@@ -169,274 +159,7 @@ namespace {
         return path.wstring();
     }
 
-    std::vector<std::string> load_server_ids_csv(const std::filesystem::path& path, const std::vector<std::string>& defaults) {
-        std::ifstream in(path);
-        if (!in.is_open()) {
-            return defaults;
-        }
-
-        bool header_parsed = false;
-        int value_index = 0;
-        std::vector<std::string> values;
-        std::string line;
-        while (std::getline(in, line)) {
-            const auto trimmed = trim(line);
-            if (trimmed.empty()) {
-                continue;
-            }
-
-            const auto cells = split_csv_row(trimmed);
-            if (cells.empty()) {
-                continue;
-            }
-
-            if (!header_parsed) {
-                value_index = find_column_index(cells, { "value", "server", "server_id", "id" });
-                if (value_index < 0) {
-                    value_index = 0;
-                }
-                header_parsed = true;
-                continue;
-            }
-
-            if (value_index >= static_cast<int>(cells.size())) {
-                continue;
-            }
-
-            const auto value = trim(cells[static_cast<size_t>(value_index)]);
-            if (value.empty()) {
-                continue;
-            }
-
-            if (std::find(values.begin(), values.end(), value) == values.end()) {
-                values.push_back(value);
-            }
-        }
-
-        return values.empty() ? defaults : values;
-    }
-
-    std::vector<Resource> load_material_catalog(const std::filesystem::path& path, const std::vector<std::string>& default_names, const std::unordered_map<std::string, std::string>& default_shorts) {
-        std::ifstream in(path);
-        if (!in.is_open()) {
-            return {};
-        }
-
-        std::vector<Resource> catalog;
-        bool header_parsed = false;
-        int name_index = -1;
-        int shortname_index = -1;
-        int id_index = -1;
-        int type_index = -1;
-        int harvest_type_index = -1;
-
-        std::string line;
-        while (std::getline(in, line)) {
-            const auto trimmed = trim(line);
-            if (trimmed.empty()) {
-                continue;
-            }
-
-            const auto cells = split_csv_row(trimmed);
-            if (cells.empty()) {
-                continue;
-            }
-
-            if (!header_parsed) {
-                id_index = find_column_index(cells, { "id" });
-                name_index = find_column_index(cells, { "name", "material", "value" });
-                shortname_index = find_column_index(cells, { "shortname", "short_name", "short", "code" });
-                if (name_index < 0) {
-                    name_index = std::min(1, static_cast<int>(cells.size()) - 1);
-                }
-                type_index = find_column_index(cells, { "type", "resourcetype", "resource_type" });
-                harvest_type_index = find_column_index(cells, { "harvest_type", "harvesttype" });
-
-                header_parsed = true;
-                continue;
-            }
-
-            if (name_index < 0 || name_index >= static_cast<int>(cells.size())) {
-                continue;
-            }
-
-            const auto name = trim(cells[static_cast<size_t>(name_index)]);
-            if (name.empty()) {
-                continue;
-            }
-
-            std::string shortname;
-            if (shortname_index >= 0 && shortname_index < static_cast<int>(cells.size())) {
-                shortname = trim(cells[static_cast<size_t>(shortname_index)]);
-            }
-
-            int id = -1;
-            if (id_index >= 0 && id_index < static_cast<int>(cells.size())) {
-                try {
-                    id = std::stoi(trim(cells[static_cast<size_t>(id_index)]));
-                }
-                catch (const std::exception&) {
-                    // ignore parse errors and just use default ids
-                }
-            }
-
-            ResourceType type = ResourceType::None;
-            if (type_index >= 0 && type_index < static_cast<int>(cells.size()))
-            {
-                const auto type_str = to_lower(trim(cells[static_cast<size_t>(type_index)]));
-                if (type_str == "mineral") {
-                    type = ResourceType::Mineral;
-                } else if (type_str == "plant") {
-                    type = ResourceType::Plant;
-                }
-            }
-
-            HarvestType harvest_type = HarvestType::None;
-            if (harvest_type_index >= 0 && harvest_type_index < static_cast<int>(cells.size()))
-            {
-                
-                const auto harvest_str = to_lower(trim(cells[static_cast<size_t>(harvest_type_index)]));
-                if (harvest_str.find("fps") != std::string::npos) {
-                    harvest_type = static_cast<HarvestType>(static_cast<int>(harvest_type) | static_cast<int>(HarvestType::FPS));
-                }
-                if (harvest_str.find("vehicle") != std::string::npos) {
-                    harvest_type = static_cast<HarvestType>(static_cast<int>(harvest_type) | static_cast<int>(HarvestType::Vehicle));
-                }
-                if (harvest_str.find("ship") != std::string::npos) {
-                    harvest_type = static_cast<HarvestType>(static_cast<int>(harvest_type) | static_cast<int>(HarvestType::Ship));
-                }
-            }
-
-
-            Resource material{ id, name, shortname, type, harvest_type };
-            catalog.push_back(material);
-        }
-
-        if (catalog.empty()) {
-            for (const auto& name : default_names) {
-                const auto it = default_shorts.find(name);
-                const auto short_name = it != default_shorts.end() ? it->second : name.substr(0, std::min<size_t>(4, name.size()));
-                catalog.push_back(Resource{ -1, name, short_name });
-            }
-        }
-
-		//split catolog where resource type is none / and defined. order defined by name. and combine them
-		std::vector<Resource> none_type_resources;
-		std::vector<Resource> defined_type_resources;
-
-        for (const auto& resource : catalog) {
-            if (resource.type == ResourceType::None) {
-                none_type_resources.push_back(resource);
-            }
-            else {
-                defined_type_resources.push_back(resource);
-            }
-        }
-
-        std::sort(defined_type_resources.begin(), defined_type_resources.end(), [](const Resource& a, const Resource& b) {
-			return a.name < b.name;
-        });
-
-		catalog.clear();
-        catalog.insert(catalog.end(), none_type_resources.begin(), none_type_resources.end());
-		catalog.insert(catalog.end(), defined_type_resources.begin(), defined_type_resources.end());
-
-        return catalog;
-    }
-
-    std::vector<Planet> load_planet_catalog(const std::filesystem::path& path, const std::vector<std::string>& defaults) {
-        std::ifstream in(path);
-        if (!in.is_open()) {
-            std::vector<Planet> catalog;
-            for (const auto& key : defaults) {
-                catalog.push_back(Planet{ -1, "", key, key, "" });
-            }
-            return catalog;
-        }
-
-        std::vector<Planet> catalog;
-        bool header_parsed = false;
-        int image_dir_index = -1;
-        int planet_name_index = -1;
-        int id_index = -1;
-        int system_index = -1;
-        int zone_id_index = -1;
-
-        std::string line;
-        while (std::getline(in, line)) {
-            const auto trimmed = trim(line);
-            if (trimmed.empty()) {
-                continue;
-            }
-
-            const auto cells = split_csv_row(trimmed);
-            if (cells.empty()) {
-                continue;
-            }
-
-            if (!header_parsed) {
-                //id,system,planet,image_dir,zone_id
-                id_index = find_column_index(cells, { "id", "planet_id", "key" });
-                image_dir_index = find_column_index(cells, { "image_dir", "imagedir", "image" });
-                planet_name_index = find_column_index(cells, { "planet", "name", "value" });
-                system_index = find_column_index(cells, { "system" });
-                zone_id_index = find_column_index(cells, { "zone_id", "zoneid", "zone" });
-                header_parsed = true;
-                continue;
-            }
-
-            int id = -1;
-            std::string system;
-            std::string zone_id;
-            std::string planet_name;
-            std::string img_dir;
-
-            if (id_index >= 0 && id_index < static_cast<int>(cells.size())) {
-                try {
-                    id = std::stoi(trim(cells[static_cast<size_t>(id_index)]));
-                }
-                catch (const std::exception&) {
-                    // ignore parse errors and just use default ids
-                }
-            }
-
-            if (system_index >= 0 && system_index < static_cast<int>(cells.size())) {
-                system = trim(cells[static_cast<size_t>(system_index)]);
-            }
-
-            if (zone_id_index >= 0 && zone_id_index < static_cast<int>(cells.size())) {
-                zone_id = trim(cells[static_cast<size_t>(zone_id_index)]);
-            }
-
-            if (planet_name_index >= 0 && planet_name_index < static_cast<int>(cells.size())) {
-                planet_name = trim(cells[static_cast<size_t>(planet_name_index)]);
-            }
-
-            if (image_dir_index >= 0 && image_dir_index < static_cast<int>(cells.size())) {
-                img_dir = trim(cells[static_cast<size_t>(image_dir_index)]);
-            }
-
-            if (planet_name.empty()) {
-                continue;
-            }
-
-            Planet planet{ id, system, planet_name, img_dir, zone_id };
-            catalog.push_back(planet);
-        }
-
-        if (catalog.empty()) {
-            for (const auto& key : defaults) {
-                catalog.push_back(Planet{ -1, "", key, key, "" });
-            }
-        }
-
-		// Ensure catalog is sorted by name for consistent ordering in UI
-        std::sort(catalog.begin(), catalog.end(), [](const Planet& a, const Planet& b) {
-            return a.name < b.name;
-			});
-
-        return catalog;
-    }
+    
 
     GLuint load_texture_file(const std::filesystem::path& path) {
         if (!std::filesystem::exists(path)) {
@@ -501,13 +224,9 @@ namespace {
         AppSettings settings;
 
         std::filesystem::path repo_root;
-        std::filesystem::path csv_path;
         std::filesystem::path onnx_model_path;
         std::filesystem::path label_map_path;
         std::filesystem::path planets_dir;
-        std::filesystem::path server_ids_path;
-        std::filesystem::path planets_csv_path;
-        std::filesystem::path materials_path;
 
         std::vector<DataPoint> points;
         std::vector<DataPoint> filtered_points;
@@ -540,6 +259,7 @@ namespace {
         std::optional<std::string> hovered_text;
 
         bool data_form_active{ false };
+        bool planets_form_active{ false };
 
         // OCR results pushed from worker thread are stored here for main-thread processing
         std::mutex ocr_mutex;
@@ -547,39 +267,13 @@ namespace {
 
         AppState()
             : repo_root(detect_repo_root()),
-            csv_path(repo_root / "data" / "geoscout.csv"),
             onnx_model_path(repo_root / "data" / "best_pareto_model.onnx"),
             label_map_path(repo_root / "data" / "label_map.json"),
-            planets_dir(repo_root / "images" / "planets"),
-            server_ids_path(repo_root / "data" / "server_ids.csv"),
-            planets_csv_path(repo_root / "data" / "planets.csv"),
-            materials_path(repo_root / "data" / "resources.csv") {
+            planets_dir(repo_root / "images" / "planets") {
 
             settings = load_settings(repo_root / "config" / "settings.ini");
 
-            server_ids = load_server_ids_csv(server_ids_path, kDefaultServerIds);
-            this->planet_catalog = load_planet_catalog(planets_csv_path, kDefaultPlanets);
-			this->systems = get_unique_systems(planet_catalog);
-			this->selected_system = systems.front();
-            for (const auto& planet : planet_catalog) {
-                this->planets.push_back(planet.name);
-            }
-            this->material_catalog = load_material_catalog(materials_path, kDefaultMaterials, kMaterialIds);
-
-            for (const auto& material : material_catalog) {
-                materials.push_back(material.name);
-                if (material.type == ResourceType::Mineral || material.type == ResourceType::Plant) {
-                    new_point_materials.push_back(material.name);
-                }
-            }
-            selected_planet = planets.front();
-            selected_material = materials.front();
-            selected_server = server_ids.front();
-            new_data.server = selected_server;
-            new_data.planet = selected_planet;
-            new_data.material = selected_material;
-            new_data.quality_min = 0;
-            new_data.quality_max = kMaxQuality;
+            // Defer loading of catalogs until after the point store is initialized so we can prefer sqlite-backed tables.
 
             // Initialize point store: prefer SQLite if configured and available, otherwise CSV adapter
             std::string db_path_str = settings.storage_db_path;
@@ -597,9 +291,65 @@ namespace {
             if (sqlite_store->init()) {
                 store = std::move(sqlite_store);
             } else {
-                store = std::make_unique<CsvPointStore>(csv_path.string());
+                // store = std::make_unique<CsvPointStore>(csv_path.string());
             }
 
+            // Load catalogs from chosen backend (prefer sqlite if available)
+            auto sqlite_backend = store.get();
+            if (sqlite_backend) {
+                server_ids = sqlite_backend->load_server_ids();
+                if (server_ids.empty()) server_ids = load_server_ids_csv(std::filesystem::path(repo_root / "data" / "server_ids.csv"), kDefaultServerIds);
+
+                planet_catalog = sqlite_backend->load_planets();
+                if (planet_catalog.empty()) planet_catalog = load_planet_catalog(std::filesystem::path(repo_root / "data" / "planets.csv"), kDefaultPlanets);
+
+                material_catalog = sqlite_backend->load_resources();
+                if (material_catalog.empty()) material_catalog = load_material_catalog(std::filesystem::path(repo_root / "data" / "resources.csv"), kDefaultMaterials, kMaterialIds);
+            } else {
+                server_ids = load_server_ids_csv(std::filesystem::path(repo_root / "data" / "server_ids.csv"), kDefaultServerIds);
+                planet_catalog = load_planet_catalog(std::filesystem::path(repo_root / "data" / "planets.csv"), kDefaultPlanets);
+                material_catalog = load_material_catalog(std::filesystem::path(repo_root / "data" / "resources.csv"), kDefaultMaterials, kMaterialIds);
+            }
+
+            // Populate derived lists
+            planets.clear();
+            for (const auto& planet : planet_catalog) planets.push_back(planet.name);
+            systems = get_unique_systems(planet_catalog);
+            if (systems.empty()) systems.push_back("All");
+            selected_system = systems.front();
+
+            if (selected_system == "All") {
+                system_planets = planets;
+            } else {
+                system_planets.clear();
+                for (const auto& p : planet_catalog) if (p.system == selected_system) system_planets.push_back(p.name);
+            }
+
+            materials.clear();
+            new_point_materials.clear();
+            for (const auto& material : material_catalog) {
+                materials.push_back(material.name);
+                if (material.type == ResourceType::Mineral || material.type == ResourceType::Plant) {
+                    new_point_materials.push_back(material.name);
+                }
+            }
+
+            if (planets.empty()) {
+                for (const auto& key : kDefaultPlanets) planets.push_back(key);
+            }
+            if (materials.empty()) {
+                for (const auto& name : kDefaultMaterials) materials.push_back(name);
+            }
+
+            selected_planet = planets.empty() ? kDefaultPlanets.front() : planets.front();
+            selected_material = materials.empty() ? kDefaultMaterials.front() : materials.front();
+            selected_server = server_ids.empty() ? kDefaultServerIds.front() : server_ids.front();
+            new_data.server = selected_server;
+            new_data.planet = selected_planet;
+            new_data.material = selected_material;
+            new_data.quality_min = 0;
+            new_data.quality_max = kMaxQuality;
+            
             // Start sync service if enabled
             if (settings.sync_enabled && !settings.sync_server_url.empty()) {
                 const std::string node_id = settings.sync_node_id.empty() ? "local-node" : settings.sync_node_id;
@@ -641,7 +391,7 @@ namespace {
             if (store) {
                 points = store->load_points();
             } else {
-                points = load_points(csv_path.string());
+                points = load_points(std::filesystem::path(repo_root / "data" / "geoscout.csv"));
             }
             int max_id = 0;
             for (const auto& point : points) {
@@ -650,13 +400,56 @@ namespace {
             new_data.id = max_id + 1;
         }
 
+        void reload_planet_catalog() {
+            if (store) {
+                auto sqlite_backend = dynamic_cast<SqlitePointStore*>(store.get());
+                if (sqlite_backend) {
+                    planet_catalog = sqlite_backend->load_planets();
+                } else {
+                    planet_catalog = load_planet_catalog(std::filesystem::path(repo_root / "data" / "planets.csv"), kDefaultPlanets);
+                }
+            } else {
+                planet_catalog = load_planet_catalog(std::filesystem::path(repo_root / "data" / "planets.csv"), kDefaultPlanets);
+            }
+            planets.clear();
+            for (const auto& p : planet_catalog) {
+                planets.push_back(p.name);
+            }
+            systems = get_unique_systems(planet_catalog);
+
+            // Rebuild system_planets for the current selection
+            if (selected_system == "All") {
+                system_planets = planets;
+            }
+            else {
+                system_planets.clear();
+                for (const auto& planet : planet_catalog) {
+                    if (planet.system == selected_system) {
+                        system_planets.push_back(planet.name);
+                    }
+                }
+            }
+
+            // Ensure selected values remain valid
+            if (systems.empty()) systems.push_back("All");
+            if (std::find(systems.begin(), systems.end(), selected_system) == systems.end()) {
+                selected_system = systems.front();
+            }
+            if (planets.empty()) {
+                for (const auto& key : kDefaultPlanets) planets.push_back(key);
+            }
+            if (std::find(planets.begin(), planets.end(), selected_planet) == planets.end()) {
+                selected_planet = planets.front();
+            }
+        }
+
         void filter_points() {
             filtered_points.clear();
             for (const auto& point : points) {
-                const bool material_match = point.material == selected_material || selected_material == "All" || point.location;
+                const bool material_match = point.material == selected_material || selected_material == "All";
                 const bool planet_match = point.planet == selected_planet;
-                const bool server_match = point.server == selected_server || selected_server == "All" || point.location;
-                if (material_match && planet_match && server_match) {
+                const bool server_match = point.server == selected_server || selected_server == "All";
+                if (planet_match && (material_match && server_match || point.poi_type == PoiType::Location)) {
                     filtered_points.push_back(point);
                 }
             }
@@ -694,6 +487,7 @@ namespace {
             texture_cache[selected_planet] = texture;
             return texture;
         }
+
         void save_settings() {
             std::ofstream out(repo_root / "config" / "settings.ini");
             if (!out.is_open()) {
@@ -708,6 +502,7 @@ namespace {
             out << "storage_db_path=" << settings.storage_db_path << '\n';
 			out << "sync_max_outbox_size=" << settings.sync_max_outbox_size << '\n';
         }
+
         AppSettings load_settings(const std::filesystem::path& path) {
             AppSettings settings;
             std::ifstream in(path);
@@ -843,38 +638,7 @@ namespace {
 
 } // namespace
 
-// Overwrite the CSV with the provided points vector. Matches append_point header/order.
-bool write_points_csv(const std::string& csv_path, const std::vector<DataPoint>& points) {
-    const auto parent = std::filesystem::path(csv_path).parent_path();
-    if (!parent.empty()) {
-        std::error_code ec;
-        std::filesystem::create_directories(parent, ec);
-    }
-
-    std::ofstream out(csv_path, std::ios::trunc);
-    if (!out.is_open()) {
-        return false;
-    }
-
-    out << "recordid,server,x,y,z,planet,material,quality_min,quality_max,note,poi_type,poi_time\n";
-    for (const auto& point : points) {
-        out << point.id << ','
-            << csv_escape(point.server) << ','
-            << std::setprecision(15) << point.x << ','
-            << std::setprecision(15) << point.y << ','
-            << std::setprecision(15) << point.z << ','
-            << csv_escape(point.planet) << ','
-            << csv_escape(point.material) << ','
-            << std::setprecision(15) << point.quality_min << ','
-            << std::setprecision(15) << point.quality_max << ','
-            << csv_escape(point.note) << ','
-            << csv_escape(poi_type_name(point.poi_type)) << ','
-            << csv_escape(point.time_info)
-            << '\n';
-    }
-
-    return true;
-}
+    
 
 
 int run_scout_app() {
@@ -998,6 +762,10 @@ int run_scout_app() {
             if (ImGui::BeginTabItem("Controls")) {
                 if (ImGui::Button("Open Data Form")) {
                     state.data_form_active = true;
+                }
+                ImGui::SameLine();
+                if (ImGui::Button("Open Planets Editor")) {
+                    state.planets_form_active = true;
                 }
 
                 ImGui::Separator();
@@ -1132,7 +900,7 @@ int run_scout_app() {
                             }
                         }
                     } else {
-                        if (append_point(state.csv_path.string(), new_point)) {
+                        if (append_point_csv(detect_repo_root() / "data" / "geoscout.csv", new_point)) {
                             state.points.push_back(new_point);
                             state.new_data.id += 1;
                         }
@@ -1375,7 +1143,7 @@ int run_scout_app() {
                 if (state.store) {
                     ok = state.store->overwrite_points(state.points);
                 } else {
-                    ok = write_points_csv(state.csv_path.string(), state.points);
+                    ok = write_points_csv((state.repo_root / "data" / "geoscout.csv"), state.points);
                 }
 
                 if (ok) {
@@ -1397,6 +1165,163 @@ int run_scout_app() {
             }
             ImGui::SameLine();
             ImGui::Text("%s", save_message.c_str());
+            ImGui::End();
+        }
+
+
+        if (state.planets_form_active) {
+            ImGui::Begin("Planets Editor", &state.planets_form_active);
+            static bool planets_dirty = false;
+            static std::string planets_save_message;
+
+            ImGui::Text("Edit planet catalog (changes are in-memory until you Save)");
+            ImGui::Separator();
+
+            ImGuiTableFlags table_flags = ImGuiTableFlags_Resizable | ImGuiTableFlags_Reorderable | ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerH | ImGuiTableFlags_ScrollY;
+            if (ImGui::BeginTable("PlanetsTable_v1", 6, table_flags, ImVec2(0, ImGui::GetContentRegionAvail().y - 80))) {
+                ImGui::TableSetupColumn("ID", ImGuiTableColumnFlags_WidthFixed, 50.0f);
+                ImGui::TableSetupColumn("System");
+                ImGui::TableSetupColumn("Planet");
+                ImGui::TableSetupColumn("Image Dir");
+                ImGui::TableSetupColumn("Zone ID");
+                ImGui::TableSetupColumn("Control", ImGuiTableColumnFlags_WidthFixed, 80.0f);
+                ImGui::TableSetupScrollFreeze(0, 1);
+                ImGui::TableHeadersRow();
+
+                std::vector<size_t> to_erase;
+                for (size_t i = 0; i < state.planet_catalog.size(); ++i) {
+                    Planet& pl = state.planet_catalog[i];
+                    ImGui::TableNextRow();
+
+                    // ID (read-only)
+                    ImGui::TableSetColumnIndex(0);
+                    ImGui::TextDisabled("%d", pl.id);
+
+                    // System
+                    ImGui::TableSetColumnIndex(1);
+                    char sysbuf[64] = { 0 };
+                    strncpy(sysbuf, pl.system.c_str(), sizeof(sysbuf) - 1);
+                    std::string lbl_sys = std::string("##system") + std::to_string(i);
+                    ImGui::PushItemWidth(-FLT_MIN);
+                    if (ImGui::InputText(lbl_sys.c_str(), sysbuf, IM_ARRAYSIZE(sysbuf))) {
+                        pl.system = sysbuf;
+                        planets_dirty = true;
+                    }
+                    ImGui::PopItemWidth();
+
+                    // Planet name
+                    ImGui::TableSetColumnIndex(2);
+                    char namebuf[128] = { 0 };
+                    strncpy(namebuf, pl.name.c_str(), sizeof(namebuf) - 1);
+                    std::string lbl_name = std::string("##planetname") + std::to_string(i);
+                    ImGui::PushItemWidth(-FLT_MIN);
+                    if (ImGui::InputText(lbl_name.c_str(), namebuf, IM_ARRAYSIZE(namebuf))) {
+                        pl.name = namebuf;
+                        planets_dirty = true;
+                    }
+                    ImGui::PopItemWidth();
+
+                    // Image Dir
+                    ImGui::TableSetColumnIndex(3);
+                    char imgbuf[128] = { 0 };
+                    strncpy(imgbuf, pl.image_dir.c_str(), sizeof(imgbuf) - 1);
+                    std::string lbl_img = std::string("##imgdir") + std::to_string(i);
+                    ImGui::PushItemWidth(-FLT_MIN);
+                    if (ImGui::InputText(lbl_img.c_str(), imgbuf, IM_ARRAYSIZE(imgbuf))) {
+                        pl.image_dir = imgbuf;
+                        planets_dirty = true;
+                    }
+                    ImGui::PopItemWidth();
+
+                    // Zone ID
+                    ImGui::TableSetColumnIndex(4);
+                    char zonebuf[64] = { 0 };
+                    strncpy(zonebuf, pl.zone_id.c_str(), sizeof(zonebuf) - 1);
+                    std::string lbl_zone = std::string("##zone") + std::to_string(i);
+                    ImGui::PushItemWidth(-FLT_MIN);
+                    if (ImGui::InputText(lbl_zone.c_str(), zonebuf, IM_ARRAYSIZE(zonebuf))) {
+                        pl.zone_id = zonebuf;
+                        planets_dirty = true;
+                    }
+                    ImGui::PopItemWidth();
+
+                    // Controls
+                    ImGui::TableSetColumnIndex(5);
+                    std::string del_lbl = std::string("Delete##pdel") + std::to_string(i);
+                    if (ImGui::SmallButton(del_lbl.c_str())) {
+                        to_erase.push_back(i);
+                    }
+                }
+
+                if (!to_erase.empty()) {
+                    std::sort(to_erase.rbegin(), to_erase.rend());
+                    for (size_t idx : to_erase) {
+                        if (idx < state.planet_catalog.size()) {
+                            state.planet_catalog.erase(state.planet_catalog.begin() + static_cast<std::ptrdiff_t>(idx));
+                            planets_dirty = true;
+                        }
+                    }
+                }
+
+                ImGui::EndTable();
+            }
+
+            ImGui::Separator();
+            ImGui::Text("Add new planet:");
+            static int new_planet_id = 0;
+            static char new_sys[64] = "";
+            static char new_name[128] = "";
+            static char new_img[128] = "";
+            static char new_zone[64] = "";
+            if (new_planet_id == 0) {
+                int maxid = -1;
+                for (const auto& p : state.planet_catalog) maxid = std::max(maxid, p.id);
+                new_planet_id = maxid + 1;
+            }
+            ImGui::InputInt("ID##newplanet", &new_planet_id);
+            ImGui::InputText("System##newplanet", new_sys, IM_ARRAYSIZE(new_sys));
+            ImGui::InputText("Planet##newplanet", new_name, IM_ARRAYSIZE(new_name));
+            ImGui::InputText("Image Dir##newplanet", new_img, IM_ARRAYSIZE(new_img));
+            ImGui::InputText("Zone ID##newplanet", new_zone, IM_ARRAYSIZE(new_zone));
+            if (ImGui::Button("Add Planet")) {
+                Planet p{ new_planet_id, std::string(new_sys), std::string(new_name), std::string(new_img), std::string(new_zone) };
+                state.planet_catalog.push_back(p);
+                planets_dirty = true;
+                // reset new fields
+                new_planet_id = 0;
+                new_sys[0] = '\0'; new_name[0] = '\0'; new_img[0] = '\0'; new_zone[0] = '\0';
+            }
+
+            ImGui::Separator();
+            if (ImGui::Button("Save Changes")) {
+                bool ok = false;
+                if (state.store) {
+                    auto sqlite_backend = dynamic_cast<SqlitePointStore*>(state.store.get());
+                    if (sqlite_backend) {
+                        ok = sqlite_backend->overwrite_planets(state.planet_catalog);
+                    } else {
+                        ok = write_planets_csv(std::filesystem::path(state.repo_root / "data" / "planets.csv"), state.planet_catalog);
+                    }
+                } else {
+                    ok = write_planets_csv(std::filesystem::path(state.repo_root / "data" / "planets.csv"), state.planet_catalog);
+                }
+
+                if (ok) {
+                    planets_save_message = "Saved successfully";
+                    state.reload_planet_catalog();
+                    planets_dirty = false;
+                } else {
+                    planets_save_message = "Save failed";
+                }
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Reload From CSV")) {
+                state.reload_planet_catalog();
+                planets_save_message = "Reloaded";
+                planets_dirty = false;
+            }
+            ImGui::SameLine();
+            ImGui::Text("%s", planets_save_message.c_str());
             ImGui::End();
         }
 

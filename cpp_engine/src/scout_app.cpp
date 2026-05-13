@@ -15,6 +15,11 @@
 #include <backends/imgui_impl_glfw.h>
 #include <backends/imgui_impl_opengl3.h>
 #include "scout_render.h"
+#include "point_store.h"
+#include "point_store_csv.h"
+#include "point_store_sqlite.h"
+#include "sync_service.h"
+#include <memory>
 
 #include <algorithm>
 #include <chrono>
@@ -481,6 +486,13 @@ namespace {
         bool show_timings{ false };
         bool auto_update_ocr_newpoint_enabled{ true };
         bool ocr_feed_planet_update_enabled{ true };
+
+        // Sync/storage settings
+        bool sync_enabled{ false };
+        std::string sync_server_url;
+        std::string sync_node_id;
+        std::string storage_db_path; // relative to repo_root or absolute path to geoscout.db
+        int sync_max_outbox_size{ 10000 };
     };
 
 
@@ -507,6 +519,8 @@ namespace {
         std::vector<std::string> new_point_materials;
         std::vector<Planet> planet_catalog;
         std::vector<Resource> material_catalog;
+        std::unique_ptr<IPointStore> store;
+        std::unique_ptr<ISyncService> sync_service;
         ScoutOcr::SubscriptionId ocr_subscription_id;
 
         double x;
@@ -566,6 +580,37 @@ namespace {
             new_data.material = selected_material;
             new_data.quality_min = 0;
             new_data.quality_max = kMaxQuality;
+
+            // Initialize point store: prefer SQLite if configured and available, otherwise CSV adapter
+            std::string db_path_str = settings.storage_db_path;
+            if (db_path_str.empty()) {
+                db_path_str = (repo_root / "data" / "geoscout.db").string();
+				settings.storage_db_path = db_path_str;
+            } else {
+                std::filesystem::path p(db_path_str);
+                if (!p.is_absolute()) {
+                    db_path_str = (repo_root / p).string();
+                }
+            }
+
+            auto sqlite_store = std::make_unique<SqlitePointStore>(db_path_str, settings.sync_node_id);
+            if (sqlite_store->init()) {
+                store = std::move(sqlite_store);
+            } else {
+                store = std::make_unique<CsvPointStore>(csv_path.string());
+            }
+
+            // Start sync service if enabled
+            if (settings.sync_enabled && !settings.sync_server_url.empty()) {
+                const std::string node_id = settings.sync_node_id.empty() ? "local-node" : settings.sync_node_id;
+                sync_service = std::make_unique<SyncService>(settings.sync_server_url, node_id);
+                // When sync pushes full updates, update in-memory points and re-filter
+                sync_service->set_on_points_updated([this](const std::vector<DataPoint>& pts) {
+                    this->points = pts;
+                    this->filter_points();
+                });
+                sync_service->start();
+            }
         }
 
         ~AppState() {
@@ -593,7 +638,11 @@ namespace {
 		}
 
         void reload_planet_data() {
-            points = load_points(csv_path.string());
+            if (store) {
+                points = store->load_points();
+            } else {
+                points = load_points(csv_path.string());
+            }
             int max_id = 0;
             for (const auto& point : points) {
                 max_id = std::max(max_id, point.id);
@@ -653,6 +702,11 @@ namespace {
             out << "show_timings=" << (settings.show_timings ? "1" : "0") << '\n';
             out << "ocr_feed_newpoint_enabled=" << (settings.auto_update_ocr_newpoint_enabled ? "1" : "0") << '\n';
             out << "ocr_feed_planet_update_enabled=" << (settings.ocr_feed_planet_update_enabled ? "1" : "0") << '\n';
+			out << "sync_enabled=" << (settings.sync_enabled ? "1" : "0") << '\n';
+            out << "sync_server_url=" << settings.sync_server_url << '\n';
+            out << "sync_node_id=" << settings.sync_node_id << '\n';
+            out << "storage_db_path=" << settings.storage_db_path << '\n';
+			out << "sync_max_outbox_size=" << settings.sync_max_outbox_size << '\n';
         }
         AppSettings load_settings(const std::filesystem::path& path) {
             AppSettings settings;
@@ -684,6 +738,24 @@ namespace {
                 }
                 else if (key == "ocr_feed_planet_update_enabled") {
                     settings.ocr_feed_planet_update_enabled = (value == "1");
+                }
+                else if (key == "sync.enabled" || key == "sync_enabled") {
+                    settings.sync_enabled = (value == "1" || value == "true");
+                }
+                else if (key == "sync.server_url" || key == "sync_server_url") {
+                    settings.sync_server_url = value;
+                }
+                else if (key == "sync.node_id" || key == "sync_node_id") {
+                    settings.sync_node_id = value;
+                }
+                else if (key == "storage.db_path" || key == "storage_db_path") {
+                    settings.storage_db_path = value;
+                }
+                else if (key == "sync.max_outbox_size" || key == "sync_max_outbox_size") {
+                    try {
+                        settings.sync_max_outbox_size = std::stoi(value);
+                    } catch (...) {
+                    }
                 }
             }
 
@@ -1036,9 +1108,34 @@ int run_scout_app() {
                     new_point.quality_max = state.new_data.quality_max;
                     new_point.poi_type = PoiType::Mineral;
                     new_point.time_info = format_iso_datetime(now_ymdhm());
-                    if (append_point(state.csv_path.string(), new_point)) {
-                        state.points.push_back(new_point);
-                        state.new_data.id += 1;
+                    if (state.store) {
+                        std::string change_id;
+                        if (state.store->append_point(new_point, &change_id)) {
+                            state.points.push_back(new_point);
+                            state.new_data.id += 1;
+                            // Persist an outbox event and notify sync service if present
+                            if (state.sync_service) {
+                                ChangeEvent ev;
+                                // generate a simple change_id if none provided
+                                if (change_id.empty()) {
+                                    ev.change_id = (state.settings.sync_node_id.empty() ? "local-node" : state.settings.sync_node_id) + std::string("-") + std::to_string(static_cast<int64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count()));
+                                } else {
+                                    ev.change_id = change_id;
+                                }
+                                ev.node_id = state.settings.sync_node_id.empty() ? "local-node" : state.settings.sync_node_id;
+                                ev.created_ts = static_cast<int64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count());
+                                ev.op = "upsert";
+                                ev.recordid = new_point.id;
+                                // The store already persisted the change event; just notify the sync service.
+                                ev.payload_json = "";
+                                state.sync_service->notify_new_local_event(ev);
+                            }
+                        }
+                    } else {
+                        if (append_point(state.csv_path.string(), new_point)) {
+                            state.points.push_back(new_point);
+                            state.new_data.id += 1;
+                        }
                     }
                 }
                 ImGui::EndTabItem();
@@ -1274,7 +1371,14 @@ int run_scout_app() {
 
             ImGui::Separator();
             if (ImGui::Button("Save Changes")) {
-                if (write_points_csv(state.csv_path.string(), state.points)) {
+                bool ok = false;
+                if (state.store) {
+                    ok = state.store->overwrite_points(state.points);
+                } else {
+                    ok = write_points_csv(state.csv_path.string(), state.points);
+                }
+
+                if (ok) {
                     save_message = "Saved successfully";
                     state.reload_planet_data();
                     state.filter_points();

@@ -1,4 +1,5 @@
 #include "point_store_sqlite.h"
+#include "point_store_csv.h"
 
 #include <sqlite3.h>
 #include <iostream>
@@ -362,7 +363,7 @@ bool SqlitePointStore::init() {
                 std::filesystem::path dbp(db_path_);
                 auto csv_path = dbp.parent_path() / "geoscout.csv";
                 if (std::filesystem::exists(csv_path)) {
-                    auto csv_points = ::load_points(csv_path.string());
+                    auto csv_points = ::load_points(csv_path);
                     if (!csv_points.empty()) {
                         if (exec_sql(db_handle_, "BEGIN TRANSACTION;")) {
                             const char* insert_point_sql = "INSERT OR REPLACE INTO points(recordid,server,x,y,z,planet,material,location,quality_min,quality_max,note,poi_type,poi_time,last_modified_ts,last_modified_node) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?);";
@@ -536,6 +537,118 @@ bool SqlitePointStore::append_point(const DataPoint& p, std::string* out_change_
         // event insertion failed, but point was inserted - report success for point
     }
     if (out_change_id) *out_change_id = ev.change_id;
+    return true;
+}
+
+std::vector<std::string> SqlitePointStore::load_server_ids() {
+    std::vector<std::string> result;
+    if (!db_handle_) return result;
+    const char* q = "SELECT value FROM server_ids ORDER BY value ASC;";
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(db_handle_, q, -1, &stmt, nullptr) != SQLITE_OK) return result;
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+        const unsigned char* t = sqlite3_column_text(stmt, 0);
+        if (t) result.emplace_back(reinterpret_cast<const char*>(t));
+    }
+    sqlite3_finalize(stmt);
+    return result;
+}
+
+std::vector<Planet> SqlitePointStore::load_planets() {
+    std::vector<Planet> result;
+    if (!db_handle_) return result;
+    const char* q = "SELECT id, system, planet, image_dir, zone_id FROM planets ORDER BY planet ASC;";
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(db_handle_, q, -1, &stmt, nullptr) != SQLITE_OK) return result;
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+        Planet p;
+        p.id = sqlite3_column_int(stmt, 0);
+        const unsigned char* t1 = sqlite3_column_text(stmt, 1);
+        const unsigned char* t2 = sqlite3_column_text(stmt, 2);
+        const unsigned char* t3 = sqlite3_column_text(stmt, 3);
+        const unsigned char* t4 = sqlite3_column_text(stmt, 4);
+        p.system = t1 ? reinterpret_cast<const char*>(t1) : std::string();
+        p.name = t2 ? reinterpret_cast<const char*>(t2) : std::string();
+        p.image_dir = t3 ? reinterpret_cast<const char*>(t3) : std::string();
+        p.zone_id = t4 ? reinterpret_cast<const char*>(t4) : std::string();
+        result.push_back(p);
+    }
+    sqlite3_finalize(stmt);
+    return result;
+}
+
+std::vector<Resource> SqlitePointStore::load_resources() {
+    std::vector<Resource> result;
+    if (!db_handle_) return result;
+    const char* q = "SELECT id, shortname, name, resource_type, harvest_type FROM resources;";
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(db_handle_, q, -1, &stmt, nullptr) != SQLITE_OK) return result;
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+        Resource r;
+        r.id = sqlite3_column_int(stmt, 0);
+        const unsigned char* t1 = sqlite3_column_text(stmt, 1);
+        const unsigned char* t2 = sqlite3_column_text(stmt, 2);
+        const unsigned char* t3 = sqlite3_column_text(stmt, 3);
+        const unsigned char* t4 = sqlite3_column_text(stmt, 4);
+        r.short_name = t1 ? reinterpret_cast<const char*>(t1) : std::string();
+        r.name = t2 ? reinterpret_cast<const char*>(t2) : std::string();
+        std::string rtype = t3 ? reinterpret_cast<const char*>(t3) : std::string();
+        std::string harvest = t4 ? reinterpret_cast<const char*>(t4) : std::string();
+
+        std::string rt = to_lower(trim(rtype));
+        if (rt == "mineral") r.type = ResourceType::Mineral;
+        else if (rt == "plant") r.type = ResourceType::Plant;
+        else r.type = ResourceType::None;
+
+        HarvestType h = HarvestType::None;
+        std::string hs = to_lower(trim(harvest));
+        if (hs.find("fps") != std::string::npos) h = static_cast<HarvestType>(static_cast<int>(h) | static_cast<int>(HarvestType::FPS));
+        if (hs.find("vehicle") != std::string::npos) h = static_cast<HarvestType>(static_cast<int>(h) | static_cast<int>(HarvestType::Vehicle));
+        if (hs.find("ship") != std::string::npos) h = static_cast<HarvestType>(static_cast<int>(h) | static_cast<int>(HarvestType::Ship));
+        r.harvest_type = h;
+
+        result.push_back(r);
+    }
+    sqlite3_finalize(stmt);
+    return result;
+}
+
+bool SqlitePointStore::overwrite_planets(const std::vector<Planet>& planets) {
+    if (!db_handle_) return false;
+    if (!exec_sql(db_handle_, "BEGIN TRANSACTION;")) return false;
+    if (!exec_sql(db_handle_, "DELETE FROM planets;")) {
+        exec_sql(db_handle_, "ROLLBACK;");
+        return false;
+    }
+
+    const char* insert_sql = "INSERT OR REPLACE INTO planets(id,system,planet,image_dir,zone_id) VALUES(?,?,?,?,?);";
+    sqlite3_stmt* ins = nullptr;
+    if (sqlite3_prepare_v2(db_handle_, insert_sql, -1, &ins, nullptr) != SQLITE_OK) {
+        exec_sql(db_handle_, "ROLLBACK;");
+        return false;
+    }
+
+    for (const auto& p : planets) {
+        if (p.id >= 0) sqlite3_bind_int(ins, 1, p.id); else sqlite3_bind_null(ins, 1);
+        sqlite3_bind_text(ins, 2, p.system.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(ins, 3, p.name.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(ins, 4, p.image_dir.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(ins, 5, p.zone_id.c_str(), -1, SQLITE_TRANSIENT);
+
+        int rc = sqlite3_step(ins);
+        if (rc != SQLITE_DONE) {
+            sqlite3_finalize(ins);
+            exec_sql(db_handle_, "ROLLBACK;");
+            return false;
+        }
+        sqlite3_reset(ins);
+    }
+
+    sqlite3_finalize(ins);
+    if (!exec_sql(db_handle_, "COMMIT;")) {
+        exec_sql(db_handle_, "ROLLBACK;");
+        return false;
+    }
     return true;
 }
 

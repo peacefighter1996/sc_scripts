@@ -17,6 +17,11 @@ public:
     bool append_point(const DataPoint& p, std::string* out_change_id = nullptr) override;
     bool overwrite_points(const std::vector<DataPoint>& points) override;
     bool push_change_event(const ChangeEvent& ev) override;
+    // Reference table accessors
+    std::vector<std::string> load_server_ids();
+    std::vector<Planet> load_planets();
+    std::vector<Resource> load_resources();
+    bool overwrite_planets(const std::vector<Planet>& planets);
 
 private:
     std::string db_path_;

@@ -23,4 +23,7 @@ struct IPointStore {
     virtual bool append_point(const DataPoint& p, std::string* out_change_id = nullptr) = 0;
     virtual bool overwrite_points(const std::vector<DataPoint>& points) = 0;
     virtual bool push_change_event(const ChangeEvent& ev) = 0;
+    virtual std::vector<std::string> load_server_ids() = 0;
+    virtual std::vector<Planet> load_planets() = 0;
+    virtual std::vector<Resource> load_resources() = 0;
 };

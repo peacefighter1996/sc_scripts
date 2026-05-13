@@ -303,7 +303,7 @@ namespace {
             }
 
 
-            Resource material{ id, name, shortname };
+            Resource material{ id, name, shortname, type, harvest_type };
             catalog.push_back(material);
         }
 
@@ -314,6 +314,27 @@ namespace {
                 catalog.push_back(Resource{ -1, name, short_name });
             }
         }
+
+		//split catolog where resource type is none / and defined. order defined by name. and combine them
+		std::vector<Resource> none_type_resources;
+		std::vector<Resource> defined_type_resources;
+
+        for (const auto& resource : catalog) {
+            if (resource.type == ResourceType::None) {
+                none_type_resources.push_back(resource);
+            }
+            else {
+                defined_type_resources.push_back(resource);
+            }
+        }
+
+        std::sort(defined_type_resources.begin(), defined_type_resources.end(), [](const Resource& a, const Resource& b) {
+			return a.name < b.name;
+        });
+
+		catalog.clear();
+        catalog.insert(catalog.end(), none_type_resources.begin(), none_type_resources.end());
+		catalog.insert(catalog.end(), defined_type_resources.begin(), defined_type_resources.end());
 
         return catalog;
     }
@@ -480,7 +501,10 @@ namespace {
         std::vector<DataPoint> filtered_points;
         std::vector<std::string> server_ids;
         std::vector<std::string> planets;
+		std::vector<std::string> systems;
+        std::vector<std::string> system_planets;
         std::vector<std::string> materials;
+        std::vector<std::string> new_point_materials;
         std::vector<Planet> planet_catalog;
         std::vector<Resource> material_catalog;
         ScoutOcr::SubscriptionId ocr_subscription_id;
@@ -489,6 +513,7 @@ namespace {
         double y;
         double z;
 
+		std::string selected_system;
         std::string selected_planet;
         std::string last_detected_region;
         std::string selected_material;
@@ -520,6 +545,8 @@ namespace {
 
             server_ids = load_server_ids_csv(server_ids_path, kDefaultServerIds);
             this->planet_catalog = load_planet_catalog(planets_csv_path, kDefaultPlanets);
+			this->systems = get_unique_systems(planet_catalog);
+			this->selected_system = systems.front();
             for (const auto& planet : planet_catalog) {
                 this->planets.push_back(planet.name);
             }
@@ -527,6 +554,9 @@ namespace {
 
             for (const auto& material : material_catalog) {
                 materials.push_back(material.name);
+                if (material.type == ResourceType::Mineral || material.type == ResourceType::Plant) {
+                    new_point_materials.push_back(material.name);
+                }
             }
             selected_planet = planets.front();
             selected_material = materials.front();
@@ -545,6 +575,22 @@ namespace {
                 }
             }
         }
+
+        std::vector<std::string> get_unique_systems(const std::vector<Planet>& planet_catalog) {
+			std::vector<std::string> systems = {};
+			std::vector<std::string> nsystems = {};
+            systems.push_back("All");
+
+            for (const auto& planet : planet_catalog) {
+                if (std::find(nsystems.begin(),nsystems.end(), planet.system) == nsystems.end()) {
+                    nsystems.push_back(planet.system);
+                }
+			}
+			std::sort(nsystems.begin(), nsystems.end());
+			systems.insert(systems.end(), nsystems.begin(), nsystems.end());
+
+			return systems;
+		}
 
         void reload_planet_data() {
             points = load_points(csv_path.string());
@@ -904,14 +950,36 @@ int run_scout_app() {
                         }
                     }
                 }
-
-                if (combo_string("Planet", state.planets, state.selected_planet)) {
-                    state.new_data.planet = state.selected_planet;
+                if (combo_string("System", state.systems, state.selected_system)) {
+                    if (state.selected_system == "All") {
+                        state.system_planets = state.planets;
+                    }
+                    else {
+                        state.system_planets.clear();
+                        for (const auto& planet : state.planet_catalog) {
+                            if (planet.system == state.selected_system) {
+                                state.system_planets.push_back(planet.name);
+                            }
+                        }
+                    }
+                    
                     state.filter_points();
+				}
+
+                if (state.selected_system != "All") {
+                    if (combo_string("Planet", state.system_planets, state.selected_planet)) {
+                        state.new_data.planet = state.selected_planet;
+                        state.filter_points();
+                    }
                 }
+                else {
+                     if (combo_string("Planet", state.planets, state.selected_planet)) {
+                        state.new_data.planet = state.selected_planet;
+                        state.filter_points();
+                    }
+				}
 
                 if (combo_string("Resource", state.materials, state.selected_material)) {
-                    state.new_data.material = state.selected_material;
                     state.filter_points();
                 }
 
@@ -926,10 +994,12 @@ int run_scout_app() {
                 //     }
                 // }
 
+                ImGui::Checkbox("Auto updates new point coordinates", &state.settings.auto_update_ocr_newpoint_enabled);
+
                 float input_x = static_cast<float>(state.new_data.x);
                 float input_y = static_cast<float>(state.new_data.y);
                 float input_z = static_cast<float>(state.new_data.z);
-                ImGui::Checkbox("Auto updates new point coordinates", &state.settings.auto_update_ocr_newpoint_enabled);
+                
                 if (!state.settings.auto_update_ocr_newpoint_enabled) {
                     ImGui::Text("Last OCR values: X=%.2f Y=%.2f Z=%.2f", state.x, state.y, state.z);
                     if(ImGui::Button("Use Last OCR Values")) {
@@ -938,6 +1008,11 @@ int run_scout_app() {
                         input_z = static_cast<float>(state.z);
                     };
                 }
+
+                if (combo_string("Resource Record", state.new_point_materials, state.new_data.material)) {
+                    //state.new_data.material = state.selected_material;
+                }
+
                 ImGui::InputFloat("X", &input_x);
                 ImGui::InputFloat("Y", &input_y);
                 ImGui::InputFloat("Z", &input_z);

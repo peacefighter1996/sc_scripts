@@ -199,7 +199,7 @@ bool ScoutRenderer::init() {
 std::optional<std::string> ScoutRenderer::render_map(GLuint texture,
                                                      const std::vector<DataPoint>& points,
                                                      std::optional<std::pair<float, float>> mouse_pos,
-                                                     const std::vector<Material>& material_catalog) {
+                                                     const std::vector<Resource>& material_catalog) {
     // Draw textured quad
     glUseProgram(quad_shader_);
     glActiveTexture(GL_TEXTURE0);
@@ -214,13 +214,13 @@ std::optional<std::string> ScoutRenderer::render_map(GLuint texture,
     std::vector<float> buf;
     buf.reserve(points.size() * 6);
     for (const auto& point : points) {
-        const auto lat_lon_alt = point.to_lat_lon_alt();
+        const auto lat_lon_alt = point.get_lat_lon_alt();
         const auto uv = latlon_to_uv(lat_lon_alt[0], lat_lon_alt[1]);
         const float x = (uv.first * 2.0f) - 1.0f;
         const float y = (uv.second * 2.0f) - 1.0f;
 
         float r = 1.0f, g = 1.0f, b = 1.0f, a = 0.85f;
-        if (!point.location) {
+        if (point.poi_type == PoiType::Mineral) {
             double quality_norm = (point.quality_max - 0.0) / (1000.0 - 0.0);
             quality_norm = std::clamp(quality_norm, 0.0, 1.0);
             if (quality_norm < 0.5) {
@@ -260,7 +260,7 @@ std::optional<std::string> ScoutRenderer::render_map(GLuint texture,
     const auto [mx, my] = *mouse_pos;
     constexpr float closest_dist = 0.02f;
     for (const auto& point : points) {
-        const auto lat_lon_alt = point.to_lat_lon_alt();
+        const auto lat_lon_alt = point.get_lat_lon_alt();
         const auto uv = latlon_to_uv(lat_lon_alt[0], lat_lon_alt[1]);
         const float px = (uv.first * 2.0f) - 1.0f;
         const float py = (uv.second * 2.0f) - 1.0f;
@@ -268,14 +268,14 @@ std::optional<std::string> ScoutRenderer::render_map(GLuint texture,
         const float dy = my - py;
         const float dist = std::sqrt((dx * dx) + (dy * dy));
         if (dist < closest_dist) {
-            const auto it = std::find_if(material_catalog.begin(), material_catalog.end(), [&](const Material& m) {
+            const auto it = std::find_if(material_catalog.begin(), material_catalog.end(), [&](const Resource& m) {
                 return m.name == point.material;
             });
             const auto material_id = it != material_catalog.end() ? it->short_name : point.material.substr(0, std::min<size_t>(4, point.material.size()));
-            if (point.location) {
-                return point.note;
+            if (point.poi_type == PoiType::Mineral) {
+                return material_id + " Quality: " + std::to_string(int(point.quality_max)) + "\n" + point.note;
             }
-            return material_id + " Quality: " + std::to_string(int(point.quality_max)) + "\n" + point.note;
+            return point.note;
         }
     }
 

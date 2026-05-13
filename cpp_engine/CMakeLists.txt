@@ -18,6 +18,9 @@ set(SCOUT_ENGINE_SOURCES
 	src/timer_metric.cpp
 	src/timer_display.cpp
 	src/timer_footer_renderer.cpp
+    src/point_store_csv.cpp
+    src/point_store_sqlite.cpp
+    src/sync_service.cpp
 )
 
 add_executable(scout_engine ${SCOUT_ENGINE_SOURCES}
@@ -62,7 +65,45 @@ if(SCOUT_BUILD_APP)
 	target_link_libraries(imgui PUBLIC glfw glad)
 
 	target_sources(scout_engine PRIVATE src/scout_app.cpp)
-	target_link_libraries(scout_engine PRIVATE imgui glfw opengl32 gdiplus)
+
+	# SQLite3 for local storage
+	# Prefer a vendored amalgamation under build_app/_deps/sqlite (or _deps/sqllite),
+	# otherwise try to find a system SQLite3 via find_package.
+	set(_vendored_sqlite_dir "")
+	if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/build_app/_deps/sqlite")
+		set(_vendored_sqlite_dir "${CMAKE_CURRENT_SOURCE_DIR}/build_app/_deps/sqlite")
+	elseif(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/build_app/_deps/sqllite")
+		# handle common misspelling
+		set(_vendored_sqlite_dir "${CMAKE_CURRENT_SOURCE_DIR}/build_app/_deps/sqllite")
+	endif()
+
+	if(NOT _vendored_sqlite_dir STREQUAL "")
+		message(STATUS "Using vendored SQLite at ${_vendored_sqlite_dir}")
+		target_include_directories(scout_engine PRIVATE ${_vendored_sqlite_dir})
+		if(EXISTS "${_vendored_sqlite_dir}/sqlite3.c")
+			target_sources(scout_engine PRIVATE ${_vendored_sqlite_dir}/sqlite3.c)
+		endif()
+		target_link_libraries(scout_engine PRIVATE imgui glfw opengl32 gdiplus)
+	else()
+		# Try to find an imported target first; fall back to include/lib variables.
+		find_package(SQLite3 QUIET)
+		if(SQLite3_FOUND)
+			if(TARGET SQLite::SQLite3)
+				target_link_libraries(scout_engine PRIVATE imgui glfw opengl32 gdiplus SQLite::SQLite3)
+			else()
+				if(DEFINED SQLite3_INCLUDE_DIRS)
+					target_include_directories(scout_engine PRIVATE ${SQLite3_INCLUDE_DIRS})
+				endif()
+				if(DEFINED SQLite3_LIBRARIES)
+					target_link_libraries(scout_engine PRIVATE imgui glfw opengl32 gdiplus ${SQLite3_LIBRARIES})
+				else()
+					target_link_libraries(scout_engine PRIVATE imgui glfw opengl32 gdiplus)
+				endif()
+			endif()
+		else()
+			message(WARNING "SQLite3 development files not found. Install SQLite3 dev package (headers + lib) or use vcpkg and pass -DCMAKE_TOOLCHAIN_FILE=... . Alternatively, add the sqlite3 amalgamation to build_app/_deps/sqlite or build_app/_deps/sqllite.")
+		endif()
+	endif()
 endif()
 
 if(SCOUT_ENABLE_ONNXRUNTIME)

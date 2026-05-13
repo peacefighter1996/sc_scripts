@@ -15,6 +15,11 @@
 #include <backends/imgui_impl_glfw.h>
 #include <backends/imgui_impl_opengl3.h>
 #include "scout_render.h"
+#include "point_store.h"
+#include "point_store_csv.h"
+#include "point_store_sqlite.h"
+#include "sync_service.h"
+#include <memory>
 
 #include <algorithm>
 #include <chrono>
@@ -211,17 +216,19 @@ namespace {
         return values.empty() ? defaults : values;
     }
 
-    std::vector<Material> load_material_catalog(const std::filesystem::path& path, const std::vector<std::string>& default_names, const std::unordered_map<std::string, std::string>& default_shorts) {
+    std::vector<Resource> load_material_catalog(const std::filesystem::path& path, const std::vector<std::string>& default_names, const std::unordered_map<std::string, std::string>& default_shorts) {
         std::ifstream in(path);
         if (!in.is_open()) {
             return {};
         }
 
-        std::vector<Material> catalog;
+        std::vector<Resource> catalog;
         bool header_parsed = false;
         int name_index = -1;
         int shortname_index = -1;
         int id_index = -1;
+        int type_index = -1;
+        int harvest_type_index = -1;
 
         std::string line;
         while (std::getline(in, line)) {
@@ -242,6 +249,9 @@ namespace {
                 if (name_index < 0) {
                     name_index = std::min(1, static_cast<int>(cells.size()) - 1);
                 }
+                type_index = find_column_index(cells, { "type", "resourcetype", "resource_type" });
+                harvest_type_index = find_column_index(cells, { "harvest_type", "harvesttype" });
+
                 header_parsed = true;
                 continue;
             }
@@ -270,7 +280,35 @@ namespace {
                 }
             }
 
-            Material material{ id, name, shortname };
+            ResourceType type = ResourceType::None;
+            if (type_index >= 0 && type_index < static_cast<int>(cells.size()))
+            {
+                const auto type_str = to_lower(trim(cells[static_cast<size_t>(type_index)]));
+                if (type_str == "mineral") {
+                    type = ResourceType::Mineral;
+                } else if (type_str == "plant") {
+                    type = ResourceType::Plant;
+                }
+            }
+
+            HarvestType harvest_type = HarvestType::None;
+            if (harvest_type_index >= 0 && harvest_type_index < static_cast<int>(cells.size()))
+            {
+                
+                const auto harvest_str = to_lower(trim(cells[static_cast<size_t>(harvest_type_index)]));
+                if (harvest_str.find("fps") != std::string::npos) {
+                    harvest_type = static_cast<HarvestType>(static_cast<int>(harvest_type) | static_cast<int>(HarvestType::FPS));
+                }
+                if (harvest_str.find("vehicle") != std::string::npos) {
+                    harvest_type = static_cast<HarvestType>(static_cast<int>(harvest_type) | static_cast<int>(HarvestType::Vehicle));
+                }
+                if (harvest_str.find("ship") != std::string::npos) {
+                    harvest_type = static_cast<HarvestType>(static_cast<int>(harvest_type) | static_cast<int>(HarvestType::Ship));
+                }
+            }
+
+
+            Resource material{ id, name, shortname, type, harvest_type };
             catalog.push_back(material);
         }
 
@@ -278,9 +316,30 @@ namespace {
             for (const auto& name : default_names) {
                 const auto it = default_shorts.find(name);
                 const auto short_name = it != default_shorts.end() ? it->second : name.substr(0, std::min<size_t>(4, name.size()));
-                catalog.push_back(Material{ -1, name, short_name });
+                catalog.push_back(Resource{ -1, name, short_name });
             }
         }
+
+		//split catolog where resource type is none / and defined. order defined by name. and combine them
+		std::vector<Resource> none_type_resources;
+		std::vector<Resource> defined_type_resources;
+
+        for (const auto& resource : catalog) {
+            if (resource.type == ResourceType::None) {
+                none_type_resources.push_back(resource);
+            }
+            else {
+                defined_type_resources.push_back(resource);
+            }
+        }
+
+        std::sort(defined_type_resources.begin(), defined_type_resources.end(), [](const Resource& a, const Resource& b) {
+			return a.name < b.name;
+        });
+
+		catalog.clear();
+        catalog.insert(catalog.end(), none_type_resources.begin(), none_type_resources.end());
+		catalog.insert(catalog.end(), defined_type_resources.begin(), defined_type_resources.end());
 
         return catalog;
     }
@@ -371,6 +430,11 @@ namespace {
             }
         }
 
+		// Ensure catalog is sorted by name for consistent ordering in UI
+        std::sort(catalog.begin(), catalog.end(), [](const Planet& a, const Planet& b) {
+            return a.name < b.name;
+			});
+
         return catalog;
     }
 
@@ -420,8 +484,15 @@ namespace {
 
     struct AppSettings {
         bool show_timings{ false };
-        bool ocr_feed_newpoint_enabled{ true };
+        bool auto_update_ocr_newpoint_enabled{ true };
         bool ocr_feed_planet_update_enabled{ true };
+
+        // Sync/storage settings
+        bool sync_enabled{ false };
+        std::string sync_server_url;
+        std::string sync_node_id;
+        std::string storage_db_path; // relative to repo_root or absolute path to geoscout.db
+        int sync_max_outbox_size{ 10000 };
     };
 
 
@@ -442,11 +513,21 @@ namespace {
         std::vector<DataPoint> filtered_points;
         std::vector<std::string> server_ids;
         std::vector<std::string> planets;
+		std::vector<std::string> systems;
+        std::vector<std::string> system_planets;
         std::vector<std::string> materials;
+        std::vector<std::string> new_point_materials;
         std::vector<Planet> planet_catalog;
-        std::vector<Material> material_catalog;
-        SubscriptionId ocr_subscription_id;
+        std::vector<Resource> material_catalog;
+        std::unique_ptr<IPointStore> store;
+        std::unique_ptr<ISyncService> sync_service;
+        ScoutOcr::SubscriptionId ocr_subscription_id;
 
+        double x;
+        double y;
+        double z;
+
+		std::string selected_system;
         std::string selected_planet;
         std::string last_detected_region;
         std::string selected_material;
@@ -459,7 +540,7 @@ namespace {
         std::optional<std::string> hovered_text;
 
         bool data_form_active{ false };
-        
+
         // OCR results pushed from worker thread are stored here for main-thread processing
         std::mutex ocr_mutex;
         std::vector<OcrResult> ocr_results;
@@ -472,12 +553,14 @@ namespace {
             planets_dir(repo_root / "images" / "planets"),
             server_ids_path(repo_root / "data" / "server_ids.csv"),
             planets_csv_path(repo_root / "data" / "planets.csv"),
-            materials_path(repo_root / "data" / "materials.csv") {
+            materials_path(repo_root / "data" / "resources.csv") {
 
             settings = load_settings(repo_root / "config" / "settings.ini");
 
             server_ids = load_server_ids_csv(server_ids_path, kDefaultServerIds);
             this->planet_catalog = load_planet_catalog(planets_csv_path, kDefaultPlanets);
+			this->systems = get_unique_systems(planet_catalog);
+			this->selected_system = systems.front();
             for (const auto& planet : planet_catalog) {
                 this->planets.push_back(planet.name);
             }
@@ -485,6 +568,9 @@ namespace {
 
             for (const auto& material : material_catalog) {
                 materials.push_back(material.name);
+                if (material.type == ResourceType::Mineral || material.type == ResourceType::Plant) {
+                    new_point_materials.push_back(material.name);
+                }
             }
             selected_planet = planets.front();
             selected_material = materials.front();
@@ -494,6 +580,37 @@ namespace {
             new_data.material = selected_material;
             new_data.quality_min = 0;
             new_data.quality_max = kMaxQuality;
+
+            // Initialize point store: prefer SQLite if configured and available, otherwise CSV adapter
+            std::string db_path_str = settings.storage_db_path;
+            if (db_path_str.empty()) {
+                db_path_str = (repo_root / "data" / "geoscout.db").string();
+				settings.storage_db_path = db_path_str;
+            } else {
+                std::filesystem::path p(db_path_str);
+                if (!p.is_absolute()) {
+                    db_path_str = (repo_root / p).string();
+                }
+            }
+
+            auto sqlite_store = std::make_unique<SqlitePointStore>(db_path_str, settings.sync_node_id);
+            if (sqlite_store->init()) {
+                store = std::move(sqlite_store);
+            } else {
+                store = std::make_unique<CsvPointStore>(csv_path.string());
+            }
+
+            // Start sync service if enabled
+            if (settings.sync_enabled && !settings.sync_server_url.empty()) {
+                const std::string node_id = settings.sync_node_id.empty() ? "local-node" : settings.sync_node_id;
+                sync_service = std::make_unique<SyncService>(settings.sync_server_url, node_id);
+                // When sync pushes full updates, update in-memory points and re-filter
+                sync_service->set_on_points_updated([this](const std::vector<DataPoint>& pts) {
+                    this->points = pts;
+                    this->filter_points();
+                });
+                sync_service->start();
+            }
         }
 
         ~AppState() {
@@ -504,8 +621,28 @@ namespace {
             }
         }
 
+        std::vector<std::string> get_unique_systems(const std::vector<Planet>& planet_catalog) {
+			std::vector<std::string> systems = {};
+			std::vector<std::string> nsystems = {};
+            systems.push_back("All");
+
+            for (const auto& planet : planet_catalog) {
+                if (std::find(nsystems.begin(),nsystems.end(), planet.system) == nsystems.end()) {
+                    nsystems.push_back(planet.system);
+                }
+			}
+			std::sort(nsystems.begin(), nsystems.end());
+			systems.insert(systems.end(), nsystems.begin(), nsystems.end());
+
+			return systems;
+		}
+
         void reload_planet_data() {
-            points = load_points(csv_path.string());
+            if (store) {
+                points = store->load_points();
+            } else {
+                points = load_points(csv_path.string());
+            }
             int max_id = 0;
             for (const auto& point : points) {
                 max_id = std::max(max_id, point.id);
@@ -563,8 +700,13 @@ namespace {
                 return;
             }
             out << "show_timings=" << (settings.show_timings ? "1" : "0") << '\n';
-            out << "ocr_feed_newpoint_enabled=" << (settings.ocr_feed_newpoint_enabled ? "1" : "0") << '\n';
+            out << "ocr_feed_newpoint_enabled=" << (settings.auto_update_ocr_newpoint_enabled ? "1" : "0") << '\n';
             out << "ocr_feed_planet_update_enabled=" << (settings.ocr_feed_planet_update_enabled ? "1" : "0") << '\n';
+			out << "sync_enabled=" << (settings.sync_enabled ? "1" : "0") << '\n';
+            out << "sync_server_url=" << settings.sync_server_url << '\n';
+            out << "sync_node_id=" << settings.sync_node_id << '\n';
+            out << "storage_db_path=" << settings.storage_db_path << '\n';
+			out << "sync_max_outbox_size=" << settings.sync_max_outbox_size << '\n';
         }
         AppSettings load_settings(const std::filesystem::path& path) {
             AppSettings settings;
@@ -592,10 +734,28 @@ namespace {
                     settings.show_timings = (value == "1");
                 }
                 else if (key == "ocr_feed_newpoint_enabled") {
-                    settings.ocr_feed_newpoint_enabled = (value == "1");
+                    settings.auto_update_ocr_newpoint_enabled = (value == "1");
                 }
                 else if (key == "ocr_feed_planet_update_enabled") {
                     settings.ocr_feed_planet_update_enabled = (value == "1");
+                }
+                else if (key == "sync.enabled" || key == "sync_enabled") {
+                    settings.sync_enabled = (value == "1" || value == "true");
+                }
+                else if (key == "sync.server_url" || key == "sync_server_url") {
+                    settings.sync_server_url = value;
+                }
+                else if (key == "sync.node_id" || key == "sync_node_id") {
+                    settings.sync_node_id = value;
+                }
+                else if (key == "storage.db_path" || key == "storage_db_path") {
+                    settings.storage_db_path = value;
+                }
+                else if (key == "sync.max_outbox_size" || key == "sync_max_outbox_size") {
+                    try {
+                        settings.sync_max_outbox_size = std::stoi(value);
+                    } catch (...) {
+                    }
                 }
             }
 
@@ -611,30 +771,44 @@ namespace {
             }
 
             if (results_to_process.empty()) {
-                return {};
+                return {}; 
             }
             std::vector<double> ocr_values;
 
             for (const auto& result : results_to_process) {
-                if (settings.ocr_feed_newpoint_enabled && result.rock.has_value()) {
-                    new_data.material = result.rock.value();
-                    if (result.x.has_value() && result.y.has_value() && result.z.has_value()) {
-                        new_data.x = result.x.value();
-                        new_data.y = result.y.value();
-                        new_data.z = result.z.value();
-                    }
+                if (settings.auto_update_ocr_newpoint_enabled
+                    && result.x.has_value()
+                    && result.y.has_value()
+                    && result.z.has_value()) {
+                    new_data.x = result.x.value();
+                    new_data.y = result.y.value();
+                    new_data.z = result.z.value();
                 }
+                else if(result.x.has_value()
+                    && result.y.has_value()
+                    && result.z.has_value() ) {
+                    x = result.x.value();
+                    y = result.y.value();
+                    z = result.z.value();
+                }
+
+                //if (result.rock.has_value()) {
+                //    if 
+                //    new_data.material = result.rock.value();
+                //}
 
                 if (settings.ocr_feed_planet_update_enabled) {
                     if (result.locationmarker.has_value()) {
-                        selected_planet = result.locationmarker.value();
-                    }
-                    else if (result.rock.has_value()) {
-                        // If no location marker, but we have a rock, try to infer the planet from the rock name (e.g., "Pyro_A5_Ignis_HEPH" -> "Pyro_A5_Ignis")
-                        const auto& rock_name = result.rock.value();
-                        for (const auto& planet : planets) {
-                            if (rock_name.find(planet) != std::string::npos) {
-                                selected_planet = planet;
+                        for (const auto& planet : planet_catalog) {
+                            if (planet.zone_id.empty() ) {
+                                continue;
+                            }
+                            if (result.locationmarker.value().find(planet.zone_id) != std::string::npos) {
+                                // only update if different
+                                if (planet.name != selected_planet) {
+                                    selected_planet = planet.name;
+                                    filter_points();
+                                }
                                 break;
                             }
                         }
@@ -705,7 +879,7 @@ bool write_points_csv(const std::string& csv_path, const std::vector<DataPoint>&
 
 int run_scout_app() {
     GdiplusSession gdiplus_session;
-    
+
 
 
     if (!glfwInit()) {
@@ -825,7 +999,7 @@ int run_scout_app() {
                 if (ImGui::Button("Open Data Form")) {
                     state.data_form_active = true;
                 }
-                
+
                 ImGui::Separator();
 
                 if (combo_string("Server", state.server_ids, state.selected_server)) {
@@ -848,14 +1022,36 @@ int run_scout_app() {
                         }
                     }
                 }
-
-                if (combo_string("Planet", state.planets, state.selected_planet)) {
-                    state.new_data.planet = state.selected_planet;
+                if (combo_string("System", state.systems, state.selected_system)) {
+                    if (state.selected_system == "All") {
+                        state.system_planets = state.planets;
+                    }
+                    else {
+                        state.system_planets.clear();
+                        for (const auto& planet : state.planet_catalog) {
+                            if (planet.system == state.selected_system) {
+                                state.system_planets.push_back(planet.name);
+                            }
+                        }
+                    }
+                    
                     state.filter_points();
-                }
+				}
 
-                if (combo_string("Material", state.materials, state.selected_material)) {
-                    state.new_data.material = state.selected_material;
+                if (state.selected_system != "All") {
+                    if (combo_string("Planet", state.system_planets, state.selected_planet)) {
+                        state.new_data.planet = state.selected_planet;
+                        state.filter_points();
+                    }
+                }
+                else {
+                     if (combo_string("Planet", state.planets, state.selected_planet)) {
+                        state.new_data.planet = state.selected_planet;
+                        state.filter_points();
+                    }
+				}
+
+                if (combo_string("Resource", state.materials, state.selected_material)) {
                     state.filter_points();
                 }
 
@@ -870,9 +1066,25 @@ int run_scout_app() {
                 //     }
                 // }
 
+                ImGui::Checkbox("Auto updates new point coordinates", &state.settings.auto_update_ocr_newpoint_enabled);
+
                 float input_x = static_cast<float>(state.new_data.x);
                 float input_y = static_cast<float>(state.new_data.y);
                 float input_z = static_cast<float>(state.new_data.z);
+                
+                if (!state.settings.auto_update_ocr_newpoint_enabled) {
+                    ImGui::Text("Last OCR values: X=%.2f Y=%.2f Z=%.2f", state.x, state.y, state.z);
+                    if(ImGui::Button("Use Last OCR Values")) {
+                        input_x = static_cast<float>(state.x);
+                        input_y = static_cast<float>(state.y);
+                        input_z = static_cast<float>(state.z);
+                    };
+                }
+
+                if (combo_string("Resource Record", state.new_point_materials, state.new_data.material)) {
+                    //state.new_data.material = state.selected_material;
+                }
+
                 ImGui::InputFloat("X", &input_x);
                 ImGui::InputFloat("Y", &input_y);
                 ImGui::InputFloat("Z", &input_z);
@@ -896,9 +1108,34 @@ int run_scout_app() {
                     new_point.quality_max = state.new_data.quality_max;
                     new_point.poi_type = PoiType::Mineral;
                     new_point.time_info = format_iso_datetime(now_ymdhm());
-                    if (append_point(state.csv_path.string(), new_point)) {
-                        state.points.push_back(new_point);
-                        state.new_data.id += 1;
+                    if (state.store) {
+                        std::string change_id;
+                        if (state.store->append_point(new_point, &change_id)) {
+                            state.points.push_back(new_point);
+                            state.new_data.id += 1;
+                            // Persist an outbox event and notify sync service if present
+                            if (state.sync_service) {
+                                ChangeEvent ev;
+                                // generate a simple change_id if none provided
+                                if (change_id.empty()) {
+                                    ev.change_id = (state.settings.sync_node_id.empty() ? "local-node" : state.settings.sync_node_id) + std::string("-") + std::to_string(static_cast<int64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count()));
+                                } else {
+                                    ev.change_id = change_id;
+                                }
+                                ev.node_id = state.settings.sync_node_id.empty() ? "local-node" : state.settings.sync_node_id;
+                                ev.created_ts = static_cast<int64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count());
+                                ev.op = "upsert";
+                                ev.recordid = new_point.id;
+                                // The store already persisted the change event; just notify the sync service.
+                                ev.payload_json = "";
+                                state.sync_service->notify_new_local_event(ev);
+                            }
+                        }
+                    } else {
+                        if (append_point(state.csv_path.string(), new_point)) {
+                            state.points.push_back(new_point);
+                            state.new_data.id += 1;
+                        }
                     }
                 }
                 ImGui::EndTabItem();
@@ -909,7 +1146,7 @@ int run_scout_app() {
                 ImGui::Checkbox("Show Timings (F3)", &state.settings.show_timings);
                 ImGui::Separator();
                 ImGui::Text("OCR Settings:");
-                ImGui::Checkbox("Auto updates new point coordinates", &state.settings.ocr_feed_newpoint_enabled);
+                ImGui::Checkbox("Auto updates new point coordinates", &state.settings.auto_update_ocr_newpoint_enabled);
                 ImGui::Checkbox("Auto updates active planet", &state.settings.ocr_feed_planet_update_enabled);
                 ImGui::EndTabItem();
             }
@@ -939,7 +1176,7 @@ int run_scout_app() {
                 ImGui::TableSetupColumn("Z"); // 5
                 ImGui::TableSetupColumn("Planet"); // 6
                 ImGui::TableSetupColumn("POI Type", ImGuiTableColumnFlags_WidthFixed, 100.0f); // 7
-                ImGui::TableSetupColumn("Material"); // 8
+                ImGui::TableSetupColumn("Resource"); // 8
                 ImGui::TableSetupColumn("QMin"); // 9
                 ImGui::TableSetupColumn("QMax"); // 10
                 ImGui::TableSetupColumn("Note"); // 11
@@ -1050,7 +1287,7 @@ int run_scout_app() {
                         ImGui::PopItemWidth();
                     }
 
-                    // Material (combo)
+                    // Resource (combo)
                     ImGui::TableSetColumnIndex(8);
                     {
                         std::string lbl = std::string("##material") + std::to_string(i);
@@ -1134,7 +1371,14 @@ int run_scout_app() {
 
             ImGui::Separator();
             if (ImGui::Button("Save Changes")) {
-                if (write_points_csv(state.csv_path.string(), state.points)) {
+                bool ok = false;
+                if (state.store) {
+                    ok = state.store->overwrite_points(state.points);
+                } else {
+                    ok = write_points_csv(state.csv_path.string(), state.points);
+                }
+
+                if (ok) {
                     save_message = "Saved successfully";
                     state.reload_planet_data();
                     state.filter_points();
@@ -1240,7 +1484,7 @@ int run_scout_app() {
     }
     // Signal the OCR thread to stop and wait for it to finish before exiting
     ocr_instance.stop_and_wait();
-    
+
 
     ImGui_ImplOpenGL3_Shutdown();
     ImGui_ImplGlfw_Shutdown();

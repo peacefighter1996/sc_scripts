@@ -22,7 +22,7 @@ public:
     std::optional<std::string> render_map(GLuint texture,
                                           const std::vector<DataPoint>& points,
                                           std::optional<std::pair<float, float>> mouse_pos,
-                                          const std::vector<Material>& material_catalog);
+                                          const std::vector<Resource>& material_catalog);
 
     // Render a single marker at normalized device coords (x,y in [-1,1]).
     void render_marker(float x, float y, float r, float g, float b, float a, float size = 5.0f);

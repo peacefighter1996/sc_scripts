@@ -34,7 +34,7 @@ def extract_characters_rtl(image, char_w=7.5, char_h=12, threshold=200):
     return chars
 
 
-def save_rtl_dataset(chars, ground_truth, output_dir="dataset"):
+def save_rtl_dataset(chars, ground_truth, output_dir="dataset/ocr_displayinfo"):
     os.makedirs(output_dir, exist_ok=True)
 
     counts = {}
@@ -90,14 +90,14 @@ def save_rtl_dataset(chars, ground_truth, output_dir="dataset"):
 
 
 data_set = [
-    ["images/test/iron1.jpg", ["       Zone: pyro5e Pos: -57.3461km -86.32m 463.2079km"]],
-    ["images/test/rc1.jpg", ["         Zone: rockcrack_assembled_002 Pos: 245.61m 230.61m 1058.94m", "                    ShardId: pub_use1b_11518367_190"]],
-    ["images/test/rc2.jpg", ["         Zone: rockcrack_assembled_002 Pos: 563.55m -45.74m 1032.75m","                    ShardId: pub_use1b_11518367_190"]],
-    ["images/test/rc3.jpg", ["                           Zone: rockcrack_assembled_002 Pos: 593.61m -272.91m 1020.80m", "ShardId: pub_use1b_11518367_190"]],
-    ["images/test/pyro4.jpg", ["                         Zone: SolarSystem_9732643902588 Pos: -3704446.6793km -43071658.6120km -92.0411km"]],
-    ["images/test/rc4.jpg", ["                     Zone: Keeger_segment_rckcrk_080 Pos: 6865.44m -31.4662km 18.7257km"]],
-    ["images/test/rc5.jpg", ["                         Zone: rockcrack_assembled_002 Pos: -41.34m -190.38m 938.69m", "                         ShardId: pub_euw1b_11592622_180"]],
-    ["images/test/rc6.jpg", ["                      Zone: rockcrack_assembled_002 Pos: -147.38m 116.84m 1042.10m", "                                     ShardId: pub_euw1b_11592622_180"]]
+    ["images/test/ocr_displayinfo/iron1.jpg", ["       Zone: pyro5e Pos: -57.3461km -86.32m 463.2079km"]],
+    ["images/test/ocr_displayinfo/rc1.jpg", ["         Zone: rockcrack_assembled_002 Pos: 245.61m 230.61m 1058.94m", "                    ShardId: pub_use1b_11518367_190"]],
+    ["images/test/ocr_displayinfo/rc2.jpg", ["         Zone: rockcrack_assembled_002 Pos: 563.55m -45.74m 1032.75m","                    ShardId: pub_use1b_11518367_190"]],
+    ["images/test/ocr_displayinfo/rc3.jpg", ["                           Zone: rockcrack_assembled_002 Pos: 593.61m -272.91m 1020.80m", "ShardId: pub_use1b_11518367_190"]],
+    ["images/test/ocr_displayinfo/pyro4.jpg", ["                         Zone: SolarSystem_9732643902588 Pos: -3704446.6793km -43071658.6120km -92.0411km"]],
+    ["images/test/ocr_displayinfo/rc4.jpg", ["                     Zone: Keeger_segment_rckcrk_080 Pos: 6865.44m -31.4662km 18.7257km"]],
+    ["images/test/ocr_displayinfo/rc5.jpg", ["                         Zone: rockcrack_assembled_002 Pos: -41.34m -190.38m 938.69m", "                         ShardId: pub_euw1b_11592622_180"]],
+    ["images/test/ocr_displayinfo/rc6.jpg", ["                      Zone: rockcrack_assembled_002 Pos: -147.38m 116.84m 1042.10m", "                                     ShardId: pub_euw1b_11592622_180"]]
 ]
 
 DATASET_PATH = "../dataset"

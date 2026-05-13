@@ -10,9 +10,25 @@
 #include <sstream>
 #include <unordered_map>
 
-#ifdef SCOUT_HAS_ONNXRUNTIME
-#include <onnxruntime_cxx_api.h>
-#endif
+const double rad_to_deg = 180.0 / 3.14159265358979323846;
+const double deg_to_rad = 3.14159265358979323846 / 180.0;
+
+std::vector<double> DataPoint::get_lat_lon_alt() const {
+    if (!lat_lon_alt_cache_.empty()) {
+        return lat_lon_alt_cache_;
+    }
+    const double r = std::sqrt((x * x) + (y * y) + (z * z));
+    if (r == 0.0) {
+        return {0.0, 0.0, 0.0};
+    }
+
+    const double lat = std::asin(z / r) * rad_to_deg;
+    const double lon = std::atan2(y, x) * rad_to_deg;
+
+    lat_lon_alt_cache_ = {lat, lon, r};
+
+    return lat_lon_alt_cache_;
+}
 
 std::vector<double> DataPoint::to_lat_lon_alt() const {
     const double r = std::sqrt((x * x) + (y * y) + (z * z));
@@ -20,9 +36,12 @@ std::vector<double> DataPoint::to_lat_lon_alt() const {
         return {0.0, 0.0, 0.0};
     }
 
-    const double lat = std::asin(z / r) * 180.0 / 3.14159265358979323846;
-    const double lon = std::atan2(y, x) * 180.0 / 3.14159265358979323846;
-    return {lat, lon, r};
+    const double lat = std::asin(z / r) * rad_to_deg;
+    const double lon = std::atan2(y, x) * rad_to_deg;
+
+    lat_lon_alt_cache_ = {lat, lon, r};
+
+    return lat_lon_alt_cache_;
 }
 
 std::string trim(const std::string& value) {
@@ -305,9 +324,33 @@ bool predict_labels_onnx(const std::string& model_path, const std::vector<float>
             it = sessions.emplace(model_path, std::move(session)).first;
         }
 
+        // Delegate to session-based variant to allow reuse of loaded sessions
+        return predict_labels_onnx_session(*it->second, input_values, sample_count, labels, error_message);
+    } catch (const std::exception& ex) {
+        error_message = ex.what();
+        return false;
+    }
+#endif
+}
+
+#ifdef SCOUT_HAS_ONNXRUNTIME
+bool predict_labels_onnx_session(Ort::Session& session, const std::vector<float>& input_values, int64_t sample_count, std::vector<int64_t>& labels, std::string& error_message) {
+    if (sample_count <= 0) {
+        error_message = "sample_count must be > 0";
+        return false;
+    }
+
+    constexpr size_t values_per_sample = 14 * 9;
+    const size_t expected_values = static_cast<size_t>(sample_count) * values_per_sample;
+    if (input_values.size() != expected_values) {
+        error_message = "input size does not match expected tensor shape";
+        return false;
+    }
+
+    try {
         Ort::AllocatorWithDefaultOptions allocator;
-        auto input_name = it->second->GetInputNameAllocated(0, allocator);
-        auto output_name = it->second->GetOutputNameAllocated(0, allocator);
+        auto input_name = session.GetInputNameAllocated(0, allocator);
+        auto output_name = session.GetOutputNameAllocated(0, allocator);
 
         std::vector<int64_t> input_shape = {sample_count, 14, 9, 1};
         Ort::MemoryInfo memory_info = Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);
@@ -321,7 +364,7 @@ bool predict_labels_onnx(const std::string& model_path, const std::vector<float>
 
         const char* input_names[] = {input_name.get()};
         const char* output_names[] = {output_name.get()};
-        auto outputs = it->second->Run(Ort::RunOptions{nullptr}, input_names, &input_tensor, 1, output_names, 1);
+        auto outputs = session.Run(Ort::RunOptions{nullptr}, input_names, &input_tensor, 1, output_names, 1);
         if (outputs.empty() || !outputs[0].IsTensor()) {
             error_message = "model output is not a tensor";
             return false;
@@ -354,5 +397,25 @@ bool predict_labels_onnx(const std::string& model_path, const std::vector<float>
         error_message = ex.what();
         return false;
     }
-#endif
 }
+
+Ort::Session* create_onnx_session(const std::string& model_path, std::string& error_message) {
+    try {
+        static Ort::Env env(ORT_LOGGING_LEVEL_WARNING, "scout_engine");
+        Ort::SessionOptions session_options;
+        session_options.SetIntraOpNumThreads(1);
+        session_options.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_EXTENDED);
+#if defined(_WIN32)
+        const std::wstring wide_model_path(model_path.begin(), model_path.end());
+        return new Ort::Session(env, wide_model_path.c_str(), session_options);
+#else
+        return new Ort::Session(env, model_path.c_str(), session_options);
+#endif
+    } catch (const std::exception& ex) {
+        error_message = ex.what();
+        std::cerr << "Failed to create ONNX session: " << error_message <<
+            "\nMake sure the model path is correct and ONNX Runtime is properly set up.\n";
+        return nullptr;
+    }
+}
+#endif

@@ -220,7 +220,7 @@ std::optional<std::string> ScoutRenderer::render_map(GLuint texture,
         const float y = (uv.second * 2.0f) - 1.0f;
 
         float r = 1.0f, g = 1.0f, b = 1.0f, a = 0.85f;
-        if (!point.location) {
+        if (point.poi_type == PoiType::Mineral) {
             double quality_norm = (point.quality_max - 0.0) / (1000.0 - 0.0);
             quality_norm = std::clamp(quality_norm, 0.0, 1.0);
             if (quality_norm < 0.5) {
@@ -272,10 +272,10 @@ std::optional<std::string> ScoutRenderer::render_map(GLuint texture,
                 return m.name == point.material;
             });
             const auto material_id = it != material_catalog.end() ? it->short_name : point.material.substr(0, std::min<size_t>(4, point.material.size()));
-            if (point.location) {
-                return point.note;
+            if (point.poi_type == PoiType::Mineral) {
+                return material_id + " Quality: " + std::to_string(int(point.quality_max)) + "\n" + point.note;
             }
-            return material_id + " Quality: " + std::to_string(int(point.quality_max)) + "\n" + point.note;
+            return point.note;
         }
     }
 

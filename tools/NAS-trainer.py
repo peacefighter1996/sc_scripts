@@ -368,7 +368,7 @@ def get_model_signature(model):
     return tuple(signature)
 
 # %%
-X, y, label_map = load_dataset("../dataset")
+X, y, label_map = load_dataset("../dataset/ocr_displayinfo")
 
 # save label map to file
 with open("label_map.json", "w") as f:

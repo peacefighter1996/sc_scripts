@@ -69,14 +69,34 @@ struct DataPoint {
     // Optional timestamp when the point was added or last updated, for potential future use in filtering/sorting
     // for instance when SC is updated and old mineral points are no longer valid.
     std::string time_info;
-
-    [[nodiscard]] std::vector<double> to_lat_lon_alt() const;
+    
+    [[nodiscard]] std::vector<double> to_lat_lon_alt() const; // force recalculation, bypassing cache (useful if point coordinates have been modified after initial calculation)
+    [[nodiscard]] std::vector<double> get_lat_lon_alt() const;
+    
+    private:
+    mutable std::vector<double> lat_lon_alt_cache_;
 };
 
-struct Material{
+enum class ResourceType {
+    None = 0,
+    Mineral = 1,
+    Plant = 2
+};
+
+// flag enum for harvest types, allowing bitwise combination of multiple types if needed in the future (e.g., a resource that can be harvested both by FPS and Vehicle methods)
+enum class HarvestType {
+    None = 0,
+    FPS = 1 << 0,
+    Vehicle = 1 << 1,
+    Ship = 1 << 2
+};
+
+struct Resource{
     int id{};
     std::string name;
     std::string short_name;
+    ResourceType type{};
+    HarvestType harvest_type{};
 };
 //id,system,planet,image_dir,zone_id
 struct Planet{

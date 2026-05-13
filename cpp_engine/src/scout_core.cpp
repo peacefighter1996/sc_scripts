@@ -10,7 +10,25 @@
 #include <sstream>
 #include <unordered_map>
 
+const double rad_to_deg = 180.0 / 3.14159265358979323846;
+const double deg_to_rad = 3.14159265358979323846 / 180.0;
 
+std::vector<double> DataPoint::get_lat_lon_alt() const {
+    if (!lat_lon_alt_cache_.empty()) {
+        return lat_lon_alt_cache_;
+    }
+    const double r = std::sqrt((x * x) + (y * y) + (z * z));
+    if (r == 0.0) {
+        return {0.0, 0.0, 0.0};
+    }
+
+    const double lat = std::asin(z / r) * rad_to_deg;
+    const double lon = std::atan2(y, x) * rad_to_deg;
+
+    lat_lon_alt_cache_ = {lat, lon, r};
+
+    return lat_lon_alt_cache_;
+}
 
 std::vector<double> DataPoint::to_lat_lon_alt() const {
     const double r = std::sqrt((x * x) + (y * y) + (z * z));
@@ -18,9 +36,12 @@ std::vector<double> DataPoint::to_lat_lon_alt() const {
         return {0.0, 0.0, 0.0};
     }
 
-    const double lat = std::asin(z / r) * 180.0 / 3.14159265358979323846;
-    const double lon = std::atan2(y, x) * 180.0 / 3.14159265358979323846;
-    return {lat, lon, r};
+    const double lat = std::asin(z / r) * rad_to_deg;
+    const double lon = std::atan2(y, x) * rad_to_deg;
+
+    lat_lon_alt_cache_ = {lat, lon, r};
+
+    return lat_lon_alt_cache_;
 }
 
 std::string trim(const std::string& value) {

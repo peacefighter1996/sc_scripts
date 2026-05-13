@@ -211,17 +211,19 @@ namespace {
         return values.empty() ? defaults : values;
     }
 
-    std::vector<Material> load_material_catalog(const std::filesystem::path& path, const std::vector<std::string>& default_names, const std::unordered_map<std::string, std::string>& default_shorts) {
+    std::vector<Resource> load_material_catalog(const std::filesystem::path& path, const std::vector<std::string>& default_names, const std::unordered_map<std::string, std::string>& default_shorts) {
         std::ifstream in(path);
         if (!in.is_open()) {
             return {};
         }
 
-        std::vector<Material> catalog;
+        std::vector<Resource> catalog;
         bool header_parsed = false;
         int name_index = -1;
         int shortname_index = -1;
         int id_index = -1;
+        int type_index = -1;
+        int harvest_type_index = -1;
 
         std::string line;
         while (std::getline(in, line)) {
@@ -242,6 +244,9 @@ namespace {
                 if (name_index < 0) {
                     name_index = std::min(1, static_cast<int>(cells.size()) - 1);
                 }
+                type_index = find_column_index(cells, { "type", "resourcetype", "resource_type" });
+                harvest_type_index = find_column_index(cells, { "harvest_type", "harvesttype" });
+
                 header_parsed = true;
                 continue;
             }
@@ -270,7 +275,35 @@ namespace {
                 }
             }
 
-            Material material{ id, name, shortname };
+            ResourceType type = ResourceType::None;
+            if (type_index >= 0 && type_index < static_cast<int>(cells.size()))
+            {
+                const auto type_str = to_lower(trim(cells[static_cast<size_t>(type_index)]));
+                if (type_str == "mineral") {
+                    type = ResourceType::Mineral;
+                } else if (type_str == "plant") {
+                    type = ResourceType::Plant;
+                }
+            }
+
+            HarvestType harvest_type = HarvestType::None;
+            if (harvest_type_index >= 0 && harvest_type_index < static_cast<int>(cells.size()))
+            {
+                
+                const auto harvest_str = to_lower(trim(cells[static_cast<size_t>(harvest_type_index)]));
+                if (harvest_str.find("fps") != std::string::npos) {
+                    harvest_type = static_cast<HarvestType>(static_cast<int>(harvest_type) | static_cast<int>(HarvestType::FPS));
+                }
+                if (harvest_str.find("vehicle") != std::string::npos) {
+                    harvest_type = static_cast<HarvestType>(static_cast<int>(harvest_type) | static_cast<int>(HarvestType::Vehicle));
+                }
+                if (harvest_str.find("ship") != std::string::npos) {
+                    harvest_type = static_cast<HarvestType>(static_cast<int>(harvest_type) | static_cast<int>(HarvestType::Ship));
+                }
+            }
+
+
+            Resource material{ id, name, shortname };
             catalog.push_back(material);
         }
 
@@ -278,7 +311,7 @@ namespace {
             for (const auto& name : default_names) {
                 const auto it = default_shorts.find(name);
                 const auto short_name = it != default_shorts.end() ? it->second : name.substr(0, std::min<size_t>(4, name.size()));
-                catalog.push_back(Material{ -1, name, short_name });
+                catalog.push_back(Resource{ -1, name, short_name });
             }
         }
 
@@ -371,6 +404,11 @@ namespace {
             }
         }
 
+		// Ensure catalog is sorted by name for consistent ordering in UI
+        std::sort(catalog.begin(), catalog.end(), [](const Planet& a, const Planet& b) {
+            return a.name < b.name;
+			});
+
         return catalog;
     }
 
@@ -444,7 +482,7 @@ namespace {
         std::vector<std::string> planets;
         std::vector<std::string> materials;
         std::vector<Planet> planet_catalog;
-        std::vector<Material> material_catalog;
+        std::vector<Resource> material_catalog;
         ScoutOcr::SubscriptionId ocr_subscription_id;
 
         double x;
@@ -476,7 +514,7 @@ namespace {
             planets_dir(repo_root / "images" / "planets"),
             server_ids_path(repo_root / "data" / "server_ids.csv"),
             planets_csv_path(repo_root / "data" / "planets.csv"),
-            materials_path(repo_root / "data" / "materials.csv") {
+            materials_path(repo_root / "data" / "resources.csv") {
 
             settings = load_settings(repo_root / "config" / "settings.ini");
 
@@ -872,7 +910,7 @@ int run_scout_app() {
                     state.filter_points();
                 }
 
-                if (combo_string("Material", state.materials, state.selected_material)) {
+                if (combo_string("Resource", state.materials, state.selected_material)) {
                     state.new_data.material = state.selected_material;
                     state.filter_points();
                 }
@@ -966,7 +1004,7 @@ int run_scout_app() {
                 ImGui::TableSetupColumn("Z"); // 5
                 ImGui::TableSetupColumn("Planet"); // 6
                 ImGui::TableSetupColumn("POI Type", ImGuiTableColumnFlags_WidthFixed, 100.0f); // 7
-                ImGui::TableSetupColumn("Material"); // 8
+                ImGui::TableSetupColumn("Resource"); // 8
                 ImGui::TableSetupColumn("QMin"); // 9
                 ImGui::TableSetupColumn("QMax"); // 10
                 ImGui::TableSetupColumn("Note"); // 11
@@ -1077,7 +1115,7 @@ int run_scout_app() {
                         ImGui::PopItemWidth();
                     }
 
-                    // Material (combo)
+                    // Resource (combo)
                     ImGui::TableSetColumnIndex(8);
                     {
                         std::string lbl = std::string("##material") + std::to_string(i);

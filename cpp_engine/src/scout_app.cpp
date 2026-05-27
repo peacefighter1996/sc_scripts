@@ -870,7 +870,7 @@ int run_scout_app() {
                     new_point.y = state.new_data.y;
                     new_point.z = state.new_data.z;
                     new_point.planet = state.selected_planet;
-                    new_point.material = state.selected_material;
+                    new_point.material = state.new_data.material;
                     new_point.location = false;
                     new_point.quality_min = state.new_data.quality_min;
                     new_point.quality_max = state.new_data.quality_max;

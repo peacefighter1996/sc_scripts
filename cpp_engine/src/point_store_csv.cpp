@@ -210,6 +210,16 @@ std::vector<Planet> load_planet_catalog(const std::filesystem::path& path, const
     int id_index = -1;
     int system_index = -1;
     int zone_id_index = -1;
+    int zone_type_index = -1;
+    int quantumable_index = -1;
+    int center_x_index = -1;
+    int center_y_index = -1;
+    int center_z_index = -1;
+    int min_x_index = -1;
+    int max_x_index = -1;
+    int min_y_index = -1;
+    int max_y_index = -1;
+    // grid spacing/angle are global settings; not parsed per-zone from CSV anymore
 
     std::string line;
     while (std::getline(in, line)) {
@@ -230,6 +240,16 @@ std::vector<Planet> load_planet_catalog(const std::filesystem::path& path, const
             planet_name_index = find_column_index(cells, { "planet", "name", "value" });
             system_index = find_column_index(cells, { "system" });
             zone_id_index = find_column_index(cells, { "zone_id", "zoneid", "zone" });
+            zone_type_index = find_column_index(cells, { "zone_type", "type", "planet_type" });
+            quantumable_index = find_column_index(cells, { "quantumable", "quantum", "quantumable_value" });
+            center_x_index = find_column_index(cells, { "center_x", "cx", "centerx" });
+            center_y_index = find_column_index(cells, { "center_y", "cy", "centery" });
+            center_z_index = find_column_index(cells, { "center_z", "cz", "centerz" });
+            min_x_index = find_column_index(cells, { "min_x_km", "min_x", "minx" });
+            max_x_index = find_column_index(cells, { "max_x_km", "max_x", "maxx" });
+            min_y_index = find_column_index(cells, { "min_y_km", "min_y", "miny" });
+            max_y_index = find_column_index(cells, { "max_y_km", "max_y", "maxy" });
+            // previously supported per-zone grid fields removed
             header_parsed = true;
             continue;
         }
@@ -270,6 +290,38 @@ std::vector<Planet> load_planet_catalog(const std::filesystem::path& path, const
         }
 
         Planet planet{ id, system, planet_name, img_dir, zone_id };
+        // optional extended fields
+        if (zone_type_index >= 0 && zone_type_index < static_cast<int>(cells.size())) {
+            std::string zstr = trim(cells[static_cast<size_t>(zone_type_index)]);
+            ZoneType zt = ZoneType::CelestialBody;
+            if (zone_type_from_string(zstr, zt)) planet.zone_type = zt;
+        }
+        if (quantumable_index >= 0 && quantumable_index < static_cast<int>(cells.size())) {
+            const auto q = to_lower(trim(cells[static_cast<size_t>(quantumable_index)]));
+            if (q == "0" || q == "false" || q == "no") planet.quantumable = false;
+        }
+        if (center_x_index >= 0 && center_x_index < static_cast<int>(cells.size())) {
+            try { planet.center_x = std::stod(trim(cells[static_cast<size_t>(center_x_index)])); } catch(...) {}
+        }
+        if (center_y_index >= 0 && center_y_index < static_cast<int>(cells.size())) {
+            try { planet.center_y = std::stod(trim(cells[static_cast<size_t>(center_y_index)])); } catch(...) {}
+        }
+        if (center_z_index >= 0 && center_z_index < static_cast<int>(cells.size())) {
+            try { planet.center_z = std::stod(trim(cells[static_cast<size_t>(center_z_index)])); } catch(...) {}
+        }
+        if (min_x_index >= 0 && min_x_index < static_cast<int>(cells.size())) {
+            try { planet.min_x_km = static_cast<int>(std::round(std::stod(trim(cells[static_cast<size_t>(min_x_index)])))); } catch(...) {}
+        }
+        if (max_x_index >= 0 && max_x_index < static_cast<int>(cells.size())) {
+            try { planet.max_x_km = static_cast<int>(std::round(std::stod(trim(cells[static_cast<size_t>(max_x_index)])))); } catch(...) {}
+        }
+        if (min_y_index >= 0 && min_y_index < static_cast<int>(cells.size())) {
+            try { planet.min_y_km = static_cast<int>(std::round(std::stod(trim(cells[static_cast<size_t>(min_y_index)])))); } catch(...) {}
+        }
+        if (max_y_index >= 0 && max_y_index < static_cast<int>(cells.size())) {
+            try { planet.max_y_km = static_cast<int>(std::round(std::stod(trim(cells[static_cast<size_t>(max_y_index)])))); } catch(...) {}
+        }
+        // per-zone grid fields removed; ignore if present in legacy CSVs
         catalog.push_back(planet);
     }
 
@@ -442,13 +494,23 @@ bool write_planets_csv(const std::filesystem::path& csv_path, const std::vector<
         return false;
     }
 
-    out << "id,system,planet,image_dir,zone_id\n";
+    out << "id,system,name,image_dir,zone_id,zone_type,quantumable,center_x,center_y,center_z,min_x_km,max_x_km,min_y_km,max_y_km\n";
     for (const auto& p : planets) {
         out << p.id << ','
             << csv_escape(p.system) << ','
             << csv_escape(p.name) << ','
             << csv_escape(p.image_dir) << ','
-            << csv_escape(p.zone_id) << '\n';
+            << csv_escape(p.zone_id) << ','
+            << csv_escape(zone_type_name(p.zone_type)) << ','
+            << (p.quantumable ? 1 : 0) << ','
+            << std::setprecision(15) << p.center_x << ','
+            << std::setprecision(15) << p.center_y << ','
+            << std::setprecision(15) << p.center_z << ','
+            << p.min_x_km << ','
+            << p.max_x_km << ','
+            << p.min_y_km << ','
+            << p.max_y_km << ','
+            << '\n';
     }
 
     return true;

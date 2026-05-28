@@ -2,162 +2,120 @@
 
 #include "scout_ocr.h"
 #include "scout_core.h"
-#include "timer_display.h"
-#include "timer_footer_renderer.h"
+#include "scout_render.h"
 
-#define NOMINMAX
-#include <Windows.h>
+#include <iostream>
+#include <fstream>
+#include <sstream>
+#include <iomanip>
+#include <vector>
+#include <algorithm>
+#include <thread>
+#include <chrono>
+#include <mutex>
+#include <optional>
+#include <filesystem>
+#include <memory>
+#include <cstring>
+
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX 1
+#endif
+#include <windows.h>
 #include <gdiplus.h>
-#include <glad/glad.h>
+#endif
 
+#include <glad/glad.h>
 #include <GLFW/glfw3.h>
 #include <imgui.h>
-#include <backends/imgui_impl_glfw.h>
-#include <backends/imgui_impl_opengl3.h>
-#include "scout_render.h"
-#include "point_store.h"
-#include "point_store_csv.h"
-#include "point_store_sqlite.h"
-#include "sync_service.h"
-#include <memory>
+#include "imgui_impl_glfw.h"
+#include "imgui_impl_opengl3.h"
 
-#include <algorithm>
-#include <chrono>
-#include <cmath>
-#include <cstring>
-#include <cfloat>
-#include <filesystem>
-#include <fstream>
-#include <iostream>
-#include <optional>
-#include <stdexcept>
-#include <string>
-#include <thread>
-#include <unordered_map>
-#include <utility>
-#include <vector>
-
-#pragma comment(lib, "gdiplus.lib")
-
-namespace {
-
-    constexpr double kPi = 3.14159265358979323846;
-    constexpr int kMaxQuality = 1000;
-    constexpr int kMinQuality = 0;
-    constexpr double kTargetHz = 30.0;
-    constexpr double kFrameTime = 1.0 / kTargetHz;
-
-    const std::vector<std::string> kDefaultServerIds{ "eu10", "eu180", "us170", "All" };
-    const std::vector<std::string> kDefaultPlanets{ "Pyro_A5_Ignis", "Pyro_E5_Fuego", "Pyro_Pyro2_Monox", "Pyro_Pyro4" };
-    const std::vector<std::string> kDefaultMaterials{ "All", "Aphorite", "Aslarite", "Beryl", "Borase", "Copper", "Dolivine", "Gold", "Hephaestanite", "Iron", "Janalite", "Laranite", "Riccite", "Stileron", "Taranite", "Tin" };
-
-    const std::unordered_map<std::string, std::string> kMaterialIds = {
-        {"Hephaestanite", "HEPH"},
-        {"Iron", "IRON"},
-        {"Gold", "GOLD"},
-        {"Janalite", "JANA"},
-        {"Aphorite", "APHO"},
-        {"Dolivine", "DOLI"},
-        {"Aslarite", "ASLAR"},
-        {"Beryl", "BERY"},
-        {"Taranite", "TARA"},
-        {"Laranite", "LARA"},
-        {"Stileron", "SILI"},
-        {"Copper", "COPP"},
-    };
-
-    
-
-    // --- Simple datetime helpers for Time editing ---
-    inline std::array<int, 5> now_ymdhm() {
-        using namespace std::chrono;
-        const auto t = system_clock::now();
-        std::time_t tt = system_clock::to_time_t(t);
-        std::tm tm;
-#if defined(_WIN32)
-        localtime_s(&tm, &tt);
+// Simple RAII for GDI+ initialization on Windows
+#ifdef _WIN32
+struct GdiplusSession {
+    ULONG_PTR token{0};
+    GdiplusSession() {
+        Gdiplus::GdiplusStartupInput input;
+        Gdiplus::GdiplusStartup(&token, &input, nullptr);
+    }
+    ~GdiplusSession() {
+        if (token) Gdiplus::GdiplusShutdown(token);
+    }
+};
 #else
-        localtime_r(&tt, &tm);
+struct GdiplusSession {};
 #endif
-        return { tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday, tm.tm_hour, tm.tm_min };
+
+std::filesystem::path detect_repo_root() {
+    std::vector<std::filesystem::path> candidates;
+#ifdef _WIN32
+    wchar_t exe_path[MAX_PATH];
+    const auto len = GetModuleFileNameW(nullptr, exe_path, MAX_PATH);
+    if (len > 0) {
+        candidates.push_back(std::filesystem::path(exe_path).parent_path());
     }
+#endif
+    candidates.push_back(std::filesystem::current_path());
 
-    inline bool parse_iso_datetime(const std::string& s, std::array<int, 5>& out) {
-        if (s.empty()) return false;
-        int y = 0, m = 0, d = 0, hh = 0, mm = 0;
-        // Accept formats: YYYY-MM-DD HH:MM or YYYY-MM-DDTHH:MM or YYYY-MM-DD
-        if (std::sscanf(s.c_str(), "%4d-%2d-%2d %2d:%2d", &y, &m, &d, &hh, &mm) >= 3) {
-            out = { y,m,d,hh,mm };
-            return true;
-        }
-        if (std::sscanf(s.c_str(), "%4d-%2d-%2dT%2d:%2d", &y, &m, &d, &hh, &mm) >= 3) {
-            out = { y,m,d,hh,mm };
-            return true;
-        }
-        if (std::sscanf(s.c_str(), "%4d-%2d-%2d", &y, &m, &d) == 3) {
-            out = { y,m,d,0,0 };
-            return true;
-        }
-        return false;
-    }
-
-    inline std::string format_iso_datetime(const std::array<int, 5>& v) {
-        char buf[64];
-        std::snprintf(buf, sizeof(buf), "%04d-%02d-%02d %02d:%02d", v[0], v[1], v[2], v[3], v[4]);
-        return std::string(buf);
-    }
-
-    struct TextureEntry {
-        GLuint texture{};
-        int width{};
-        int height{};
-    };
-
-    class GdiplusSession {
-    public:
-        GdiplusSession() {
-            Gdiplus::GdiplusStartupInput startup_input;
-            Gdiplus::GdiplusStartup(&token_, &startup_input, nullptr);
-        }
-
-        ~GdiplusSession() {
-            if (token_ != 0) {
-                Gdiplus::GdiplusShutdown(token_);
+    for (auto candidate : candidates) {
+        for (int depth = 0; depth < 6; ++depth) {
+            if (std::filesystem::exists(candidate / "data" / "label_map.json")) {
+                return candidate;
             }
-        }
-
-    private:
-        ULONG_PTR token_{};
-    };
-
-    std::filesystem::path detect_repo_root() {
-        std::vector<std::filesystem::path> candidates;
-        candidates.push_back(std::filesystem::current_path());
-
-        wchar_t exe_path[MAX_PATH];
-        const auto len = GetModuleFileNameW(nullptr, exe_path, MAX_PATH);
-        if (len > 0) {
-            candidates.push_back(std::filesystem::path(exe_path).parent_path());
-        }
-
-        for (auto candidate : candidates) {
-            for (int depth = 0; depth < 6; ++depth) {
-                if (std::filesystem::exists(candidate / "data" / "label_map.json")) {
-                    return candidate;
-                }
-                if (!candidate.has_parent_path()) {
-                    break;
-                }
-                candidate = candidate.parent_path();
+            if (!candidate.has_parent_path()) {
+                break;
             }
+            candidate = candidate.parent_path();
         }
-
-        return std::filesystem::current_path();
     }
 
-    std::wstring to_wstring(const std::filesystem::path& path) {
-        return path.wstring();
-    }
+    return std::filesystem::current_path();
+}
+
+std::wstring to_wstring(const std::filesystem::path& path) {
+    return path.wstring();
+}
+
+#include "point_store.h"
+#include "point_store_sqlite.h"
+#include "point_store_csv.h"
+#include "sync_service.h"
+#include "timer_footer_renderer.h"
+
+#include "timer_display.h"
+
+#include <unordered_map>
+
+// Fallback defaults (original defaults may live elsewhere; provide minimal fallbacks to compile)
+static const std::vector<std::string> kDefaultPlanets = { "Default" };
+static const std::vector<std::string> kDefaultMaterials = { "All" };
+static const std::vector<std::string> kDefaultServerIds = { "All" };
+static const std::unordered_map<std::string, std::string> kMaterialIds = {};
+static const int kMinQuality = 0;
+static const int kMaxQuality = 100;
+
+// Simple time helpers used for point timestamps
+static std::chrono::system_clock::time_point now_ymdhm() {
+    return std::chrono::system_clock::now();
+}
+
+static std::string format_iso_datetime(const std::chrono::system_clock::time_point& tp) {
+    std::time_t t = std::chrono::system_clock::to_time_t(tp);
+    std::tm tm;
+#ifdef _WIN32
+    gmtime_s(&tm, &t);
+#else
+    gmtime_r(&t, &tm);
+#endif
+    char buf[64];
+    std::strftime(buf, sizeof(buf), "%Y-%m-%dT%H:%M:%SZ", &tm);
+    return std::string(buf);
+}
+
+// Frame timing (seconds per frame)
+static constexpr double kFrameTime = 1.0 / 60.0;
 
     
 
@@ -216,6 +174,8 @@ namespace {
         std::string sync_node_id;
         std::string storage_db_path; // relative to repo_root or absolute path to geoscout.db
         int sync_max_outbox_size{ 10000 };
+        double grid_spacing_km{ 100.0 };
+        double planet_grid_spacing_degrees{ 22.5 }; // for celestial bodies, grid spacing in degrees (e.g., 22.5° = 16x16 grid); for asteroid fields, grid spacing is in kilometers and defined per-zone
     };
 
 
@@ -245,6 +205,7 @@ namespace {
         double x;
         double y;
         double z;
+        double grid_spacing{100.0};
 
 		std::string selected_system;
         std::string selected_planet;
@@ -342,6 +303,9 @@ namespace {
             }
 
             selected_planet = planets.empty() ? kDefaultPlanets.front() : planets.front();
+			update_grid_spacing();
+            
+
             selected_material = materials.empty() ? kDefaultMaterials.front() : materials.front();
             selected_server = server_ids.empty() ? kDefaultServerIds.front() : server_ids.front();
             new_data.server = selected_server;
@@ -386,6 +350,20 @@ namespace {
 
 			return systems;
 		}
+
+        void update_grid_spacing() {
+            auto it = std::find_if(planet_catalog.begin(), planet_catalog.end(), [this](const Planet& p) {
+                return p.name == selected_planet;
+                });
+            if (it != planet_catalog.end()) {
+                if (it->zone_type == ZoneType::AsteroidField) {
+                    grid_spacing = settings.grid_spacing_km;
+                }
+                else {
+                    grid_spacing = settings.planet_grid_spacing_degrees; // default for non-asteroid zones
+                }
+            }
+        }
 
         void reload_planet_data() {
             if (store) {
@@ -484,6 +462,9 @@ namespace {
             if (texture == 0) {
                 texture = load_texture_file(planets_dir / (selected_planet + ".jpg"));
             }
+            if (texture == 0) {
+                texture = load_texture_file(repo_root / "images" / "planets" / "skybox" / "default.jpg");
+            }
             texture_cache[selected_planet] = texture;
             return texture;
         }
@@ -501,6 +482,8 @@ namespace {
             out << "sync_node_id=" << settings.sync_node_id << '\n';
             out << "storage_db_path=" << settings.storage_db_path << '\n';
 			out << "sync_max_outbox_size=" << settings.sync_max_outbox_size << '\n';
+            out << "grid_spacing_km=" << settings.grid_spacing_km << '\n';
+			out << "planet_grid_spacing_degrees=" << settings.planet_grid_spacing_degrees << '\n'; // legacy key
         }
 
         AppSettings load_settings(const std::filesystem::path& path) {
@@ -552,6 +535,19 @@ namespace {
                     } catch (...) {
                     }
                 }
+                else if (key == "grid_spacing_km" || key == "grid_spacing") {
+                    try {
+                        settings.grid_spacing_km = std::stod(value);
+                    } catch (...) {
+                    }
+                }
+                else if (key == "planet_grid_spacing_degrees") {
+                    try {
+                        settings.planet_grid_spacing_degrees = std::stod(value);
+                    }
+                    catch (...) {
+                    }
+                }
             }
 
             return settings;
@@ -600,7 +596,7 @@ namespace {
                             }
                             if (result.locationmarker.value().find(planet.zone_id) != std::string::npos) {
                                 // only update if different
-                                if (planet.name != selected_planet) {
+                                 if (planet.name != selected_planet) {
                                     selected_planet = planet.name;
                                     filter_points();
                                 }
@@ -635,10 +631,6 @@ namespace {
         }
         return false;
     }
-
-} // namespace
-
-    
 
 
 int run_scout_app() {
@@ -801,21 +793,28 @@ int run_scout_app() {
                                 state.system_planets.push_back(planet.name);
                             }
                         }
+                        if (std::find(state.system_planets.begin(), state.system_planets.end(), state.selected_planet) == state.system_planets.end()) {
+                            state.selected_planet = state.system_planets.front();
+                            state.new_data.planet = state.selected_planet;
+                            state.update_grid_spacing();
+						}
                     }
                     
                     state.filter_points();
 				}
 
                 if (state.selected_system != "All") {
-                    if (combo_string("Planet", state.system_planets, state.selected_planet)) {
+                    if (combo_string("Zone", state.system_planets, state.selected_planet)) {
                         state.new_data.planet = state.selected_planet;
                         state.filter_points();
+                        state.update_grid_spacing();
                     }
                 }
                 else {
-                     if (combo_string("Planet", state.planets, state.selected_planet)) {
+                     if (combo_string("Zone", state.planets, state.selected_planet)) {
                         state.new_data.planet = state.selected_planet;
                         state.filter_points();
+                        state.update_grid_spacing();
                     }
 				}
 
@@ -897,6 +896,15 @@ int run_scout_app() {
                                 // The store already persisted the change event; just notify the sync service.
                                 ev.payload_json = "";
                                 state.sync_service->notify_new_local_event(ev);
+                            }
+                            // Ensure asteroid zone bounding boxes expand to include the new point when needed
+                            if (state.store) {
+                                if (auto sqlite_backend = dynamic_cast<SqlitePointStore*>(state.store.get())) {
+                                    if (sqlite_backend->ensure_zone_contains_point(new_point.planet, new_point.x, new_point.y, state.settings.grid_spacing_km)) {
+                                        state.reload_planet_catalog();
+                                        state.filter_points();
+                                    }
+                                }
                             }
                         }
                     } else {
@@ -1178,17 +1186,20 @@ int run_scout_app() {
             ImGui::Separator();
 
             ImGuiTableFlags table_flags = ImGuiTableFlags_Resizable | ImGuiTableFlags_Reorderable | ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerH | ImGuiTableFlags_ScrollY;
-            if (ImGui::BeginTable("PlanetsTable_v1", 6, table_flags, ImVec2(0, ImGui::GetContentRegionAvail().y - 80))) {
+            // added one more column for Zone Type selection
+            if (ImGui::BeginTable("PlanetsTable_v1", 7, table_flags, ImVec2(0, ImGui::GetContentRegionAvail().y - 80))) {
                 ImGui::TableSetupColumn("ID", ImGuiTableColumnFlags_WidthFixed, 50.0f);
                 ImGui::TableSetupColumn("System");
                 ImGui::TableSetupColumn("Planet");
                 ImGui::TableSetupColumn("Image Dir");
                 ImGui::TableSetupColumn("Zone ID");
+                ImGui::TableSetupColumn("Zone Type");
                 ImGui::TableSetupColumn("Control", ImGuiTableColumnFlags_WidthFixed, 80.0f);
                 ImGui::TableSetupScrollFreeze(0, 1);
                 ImGui::TableHeadersRow();
 
                 std::vector<size_t> to_erase;
+                static std::unordered_map<size_t, std::array<int,4>> bbox_edits;
                 for (size_t i = 0; i < state.planet_catalog.size(); ++i) {
                     Planet& pl = state.planet_catalog[i];
                     ImGui::TableNextRow();
@@ -1245,11 +1256,66 @@ int run_scout_app() {
                     }
                     ImGui::PopItemWidth();
 
-                    // Controls
+                    // Zone Type
                     ImGui::TableSetColumnIndex(5);
+                    int zt_idx = zone_type_to_int(pl.zone_type);
+                    const char* zone_items[] = { zone_type_name(ZoneType::CelestialBody), zone_type_name(ZoneType::AsteroidField), zone_type_name(ZoneType::Solar) };
+                    std::string lbl_zt = std::string("##zonetype") + std::to_string(i);
+                    ImGui::PushItemWidth(-FLT_MIN);
+                    if (ImGui::Combo(lbl_zt.c_str(), &zt_idx, zone_items, IM_ARRAYSIZE(zone_items))) {
+                        ZoneType newzt;
+                        if (zone_type_from_int(zt_idx, newzt)) {
+                            pl.zone_type = newzt;
+                            planets_dirty = true;
+                        }
+                    }
+                    ImGui::PopItemWidth();
+
+                    // Controls (Delete + optional BBox editor for asteroid fields)
+                    ImGui::TableSetColumnIndex(6);
+                    if (pl.zone_type == ZoneType::AsteroidField) {
+                        std::string bbox_btn = std::string("BBox##bbox") + std::to_string(i);
+                        if (ImGui::SmallButton(bbox_btn.c_str())) {
+                            bbox_edits[i] = { pl.min_x_km, pl.max_x_km, pl.min_y_km, pl.max_y_km };
+                            std::string popup_name = std::string("Edit BBox##popup") + std::to_string(i);
+                            ImGui::OpenPopup(popup_name.c_str());
+                        }
+                        ImGui::SameLine();
+                    }
                     std::string del_lbl = std::string("Delete##pdel") + std::to_string(i);
                     if (ImGui::SmallButton(del_lbl.c_str())) {
                         to_erase.push_back(i);
+                    }
+
+                    // Popup modal for editing bbox
+                    std::string popup_name = std::string("Edit BBox##popup") + std::to_string(i);
+                    if (ImGui::BeginPopupModal(popup_name.c_str(), nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+                        auto it = bbox_edits.find(i);
+                        if (it != bbox_edits.end()) {
+                            auto& vals = it->second;
+                            ImGui::InputInt((std::string("Min X (km)##minx") + std::to_string(i)).c_str(), &vals[0]);
+                            ImGui::InputInt((std::string("Max X (km)##maxx") + std::to_string(i)).c_str(), &vals[1]);
+                            ImGui::InputInt((std::string("Min Y (km)##miny") + std::to_string(i)).c_str(), &vals[2]);
+                            ImGui::InputInt((std::string("Max Y (km)##maxy") + std::to_string(i)).c_str(), &vals[3]);
+                            if (ImGui::Button((std::string("Save##bboxsave") + std::to_string(i)).c_str())) {
+                                pl.min_x_km = vals[0];
+                                pl.max_x_km = vals[1];
+                                pl.min_y_km = vals[2];
+                                pl.max_y_km = vals[3];
+                                planets_dirty = true;
+                                bbox_edits.erase(it);
+                                ImGui::CloseCurrentPopup();
+                            }
+                            ImGui::SameLine();
+                            if (ImGui::Button((std::string("Cancel##bboxcancel") + std::to_string(i)).c_str())) {
+                                bbox_edits.erase(it);
+                                ImGui::CloseCurrentPopup();
+                            }
+                        } else {
+                            ImGui::Text("No bbox data available");
+                            if (ImGui::Button("Close")) ImGui::CloseCurrentPopup();
+                        }
+                        ImGui::EndPopup();
                     }
                 }
 
@@ -1283,13 +1349,35 @@ int run_scout_app() {
             ImGui::InputText("Planet##newplanet", new_name, IM_ARRAYSIZE(new_name));
             ImGui::InputText("Image Dir##newplanet", new_img, IM_ARRAYSIZE(new_img));
             ImGui::InputText("Zone ID##newplanet", new_zone, IM_ARRAYSIZE(new_zone));
+            static int new_zone_type = zone_type_to_int(ZoneType::CelestialBody);
+            const char* zone_items_new[] = { zone_type_name(ZoneType::CelestialBody), zone_type_name(ZoneType::AsteroidField), zone_type_name(ZoneType::Solar) };
+            ImGui::Combo("Zone Type##newplanet", &new_zone_type, zone_items_new, IM_ARRAYSIZE(zone_items_new));
+            static int new_min_x = -300;
+            static int new_max_x = 300;
+            static int new_min_y = -300;
+            static int new_max_y = 300;
+            if (static_cast<ZoneType>(new_zone_type) == ZoneType::AsteroidField) {
+                ImGui::InputInt("Min X (km)##new_minx", &new_min_x);
+                ImGui::InputInt("Max X (km)##new_maxx", &new_max_x);
+                ImGui::InputInt("Min Y (km)##new_miny", &new_min_y);
+                ImGui::InputInt("Max Y (km)##new_maxy", &new_max_y);
+            }
             if (ImGui::Button("Add Planet")) {
                 Planet p{ new_planet_id, std::string(new_sys), std::string(new_name), std::string(new_img), std::string(new_zone) };
+                p.zone_type = static_cast<ZoneType>(new_zone_type);
+                if (p.zone_type == ZoneType::AsteroidField) {
+                    p.min_x_km = new_min_x;
+                    p.max_x_km = new_max_x;
+                    p.min_y_km = new_min_y;
+                    p.max_y_km = new_max_y;
+                }
                 state.planet_catalog.push_back(p);
                 planets_dirty = true;
                 // reset new fields
                 new_planet_id = 0;
                 new_sys[0] = '\0'; new_name[0] = '\0'; new_img[0] = '\0'; new_zone[0] = '\0';
+                new_zone_type = zone_type_to_int(ZoneType::CelestialBody);
+                new_min_x = -300; new_max_x = 300; new_min_y = -300; new_max_y = 300;
             }
 
             ImGui::Separator();
@@ -1352,7 +1440,15 @@ int run_scout_app() {
 
         state.hovered_text.reset();
         if (texture != 0) {
-            state.hovered_text = renderer.render_map(texture, state.filtered_points, mouse_pos, state.material_catalog);
+            const Planet* selected_zone = nullptr;
+            for (const auto& z : state.planet_catalog) {
+                if (z.name == state.selected_planet) { 
+                    selected_zone = &z; break; 
+                }
+            }
+            
+
+            state.hovered_text = renderer.render_map(texture, state.filtered_points, mouse_pos, state.material_catalog, selected_zone, state.grid_spacing);
             const auto toggle_now = std::chrono::steady_clock::now();
             if (std::chrono::duration<double>(toggle_now - last_toggle).count() > 0.25) {
                 last_toggle = toggle_now;
@@ -1381,6 +1477,74 @@ int run_scout_app() {
             ImGui::Begin("##hover_tooltip", nullptr, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_AlwaysAutoResize);
             ImGui::TextUnformatted(state.hovered_text->c_str());
             ImGui::End();
+        }
+
+        // Coordinate display (bottom-right). Shows Lat/Lon for planetary zones,
+        // or X/Y (km) for asteroid fields. If the mouse is in the bottom-right
+        // 25% x 25% sector, move the widget to the top-right to avoid overlap.
+        if (mouse_pos) {
+            const auto [mx, my] = *mouse_pos; // NDC coords in [-1,1]
+            std::string coords_str;
+            const Planet* sel_zone = nullptr;
+            for (const auto& z : state.planet_catalog) {
+                if (z.name == state.selected_planet) { sel_zone = &z; break; }
+            }
+            if (sel_zone && sel_zone->zone_type == ZoneType::AsteroidField) {
+                double minx = static_cast<double>(sel_zone->min_x_km);
+                double maxx = static_cast<double>(sel_zone->max_x_km);
+                double miny = static_cast<double>(sel_zone->min_y_km);
+                double maxy = static_cast<double>(sel_zone->max_y_km);
+                double cx = 0.0, cy = 0.0;
+                double half_w = 0.0, half_h = 0.0;
+                if (maxx > minx) {
+                    cx = (minx + maxx) * 0.5;
+                    half_w = (maxx - minx) * 0.5;
+                }
+                if (maxy > miny) {
+                    cy = (miny + maxy) * 0.5;
+                    half_h = (maxy - miny) * 0.5;
+                }
+                if (half_w <= 0.0) {
+                    half_w = std::max(1.0, static_cast<double>(state.settings.grid_spacing_km) * 3.0);
+                    cx = 0.0;
+                }
+                if (half_h <= 0.0) {
+                    half_h = std::max(1.0, static_cast<double>(state.settings.grid_spacing_km) * 3.0);
+                    cy = 0.0;
+                }
+                double world_x = mx * half_w + cx;
+                double world_y = my * half_h + cy;
+                std::ostringstream ss;
+                ss << std::fixed << std::setprecision(2) << "X: " << world_x << " km  Y: " << world_y << " km";
+                coords_str = ss.str();
+            } else {
+                // Planetary / Solar: interpret NDC as UV and invert to lat/lon
+                double u = (mx + 1.0) * 0.5;
+                double v = (my + 1.0) * 0.5;
+                double lon = u * 360.0 - 180.0;
+                double lat = v * 180.0 - 90.0;
+                std::ostringstream ss;
+                ss << std::fixed << std::setprecision(4) << "Lat: " << lat << "  Lon: " << lon;
+                coords_str = ss.str();
+            }
+
+            if (!coords_str.empty()) {
+                // Determine widget position
+                const float widget_w = 220.0f;
+                const float widget_h = 0.0f; // autosize
+                float pos_x = static_cast<float>(width) - widget_w - 10.0f;
+                float pos_y = static_cast<float>(height) - 40.0f - 10.0f;
+                // If cursor is in the bottom-right 25% x 25% sector, move to top-right
+                if (cursor_x > static_cast<double>(width) * 0.75 && cursor_y > static_cast<double>(height) * 0.75) {
+                    pos_y = 10.0f;
+                }
+
+                ImGui::SetNextWindowPos(ImVec2(pos_x, pos_y));
+                ImGui::SetNextWindowBgAlpha(0.5f);
+                ImGui::Begin("##coords_display", nullptr, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_AlwaysAutoResize);
+                ImGui::TextUnformatted(coords_str.c_str());
+                ImGui::End();
+            }
         }
 
         timer_display.render_time_ms().record_time_since_stamp();

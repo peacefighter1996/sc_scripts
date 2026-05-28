@@ -22,6 +22,8 @@ public:
     std::vector<Planet> load_planets();
     std::vector<Resource> load_resources();
     bool overwrite_planets(const std::vector<Planet>& planets);
+    // Ensure the named zone contains the given point; expand bounding box if necessary.
+    bool ensure_zone_contains_point(const std::string& zone_name, double x, double y, double grid_spacing_km);
 
 private:
     std::string db_path_;
@@ -30,6 +32,7 @@ private:
     bool ensure_migrations();
     bool populate_reference_tables_if_empty();
     bool migrate_to_v1();
+    bool migrate_to_v2();
     std::string data_point_to_json(const DataPoint& p);
     std::string generate_uuid_v4();
 };

@@ -23,6 +23,17 @@ enum class PoiType : int {
 #undef POI_ENUM
 };
 
+#define ZONE_TYPE_LIST(X) \
+    X(CelestialBody, 0)    \
+    X(AsteroidField, 1)    \
+    X(Solar, 2)
+
+enum class ZoneType : int {
+    #define ZONE_ENUM(name, val) name = val,
+        ZONE_TYPE_LIST(ZONE_ENUM)
+    #undef ZONE_ENUM
+    };
+
 namespace poi_impl {
     constexpr size_t poi_type_count = 5;
     inline constexpr std::array<const char*, poi_type_count> poi_type_names_arr = {
@@ -98,14 +109,40 @@ struct Resource{
     ResourceType type{};
     HarvestType harvest_type{};
 };
-//id,system,planet,image_dir,zone_id
-struct Planet{
-    int id;
+// Historical planets table is being generalized to "zones".
+// Zones can represent planets, asteroid fields, solar/system locations, etc.
+struct Zone {
+    int id{};
     std::string system;
-    std::string name;
-    std::string image_dir;
-    std::string zone_id;
+    std::string name;       // human-friendly name of the zone (planet name or field name)
+    std::string image_dir;  // optional image directory or key
+    std::string zone_id;    // external id string
+
+    // Zone metadata
+    // Zone type: use X-macro to define canonical types
+
+
+    
+
+    ZoneType zone_type{ZoneType::CelestialBody};  // e.g. CelestialBody (planets/moons), AsteroidField, Solar
+    bool quantumable{true}; // whether this zone can be targeted by a quantum beacon
+
+    // Optional center coordinate for zones that have a stable location (e.g., solar system)
+    double center_x{0.0};
+    double center_y{0.0};
+    double center_z{0.0};
+
+    // Projection/grid settings are global (stored in AppSettings) rather than per-zone.
+    // Bounding box for planar zones (asteroid fields) in kilometers, aligned to grid spacing.
+    // Stored as integer multiples of kilometers for simplicity.
+    int min_x_km{ -300 };
+    int max_x_km{ 300 };
+    int min_y_km{ -300 };
+    int max_y_km{ 300 };
 };
+
+// Keep `Planet` as an alias for backwards compatibility with existing code.
+using Planet = Zone;
 
 std::string trim(const std::string& value);
 std::string to_lower(std::string value);
@@ -113,6 +150,37 @@ std::vector<std::string> split_csv_row(const std::string& line);
 std::string csv_escape(const std::string& value);
 void print_dump(const std::vector<DataPoint>& points);
 bool try_parse_xyz_from_ocr_text(const std::string& ocr_text, double& x, double& y, double& z, std::string& locationmarker);
+
+// Zone type helpers
+inline const char* zone_type_name(ZoneType t) {
+    switch (t) {
+    case ZoneType::CelestialBody: return "celestial";
+    case ZoneType::AsteroidField: return "asteroid";
+    case ZoneType::Solar: return "solar";
+    default: return "celestial";
+    }
+}
+
+inline bool zone_type_from_string(const std::string& s, ZoneType& out) {
+    const std::string v = to_lower(s);
+    if (v == "celestial" || v == "planet" || v == "planetary" || v == "celestialbody" || v == "celestial_body") { out = ZoneType::CelestialBody; return true; }
+    if (v == "asteroid" || v == "asteroidfield" || v == "asteroid_field") { out = ZoneType::AsteroidField; return true; }
+    if (v == "solar" || v == "system" || v == "solar_system") { out = ZoneType::Solar; return true; }
+    return false;
+}
+
+inline int zone_type_to_int(ZoneType t) {
+    return static_cast<int>(t);
+}
+
+inline bool zone_type_from_int(int v, ZoneType& out) {
+    switch (v) {
+    case static_cast<int>(ZoneType::CelestialBody): out = ZoneType::CelestialBody; return true;
+    case static_cast<int>(ZoneType::AsteroidField): out = ZoneType::AsteroidField; return true;
+    case static_cast<int>(ZoneType::Solar): out = ZoneType::Solar; return true;
+    default: return false;
+    }
+}
 
 bool predict_labels_onnx(const std::string& model_path, const std::vector<float>& input_values, int64_t sample_count, std::vector<int64_t>& labels, std::string& error_message);
 #ifdef SCOUT_HAS_ONNXRUNTIME

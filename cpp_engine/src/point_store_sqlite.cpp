@@ -115,7 +115,7 @@ bool SqlitePointStore::ensure_migrations() {
     if (!db_handle_) return false;
         // Use PRAGMA user_version to manage schema version.
         const int current = get_user_version(db_handle_);
-        const int target = 1;
+        const int target = 2;
         if (current >= target) return true;
 
         for (int v = current + 1; v <= target; ++v) {
@@ -123,6 +123,9 @@ bool SqlitePointStore::ensure_migrations() {
                 switch (v) {
                 case 1:
                         ok = migrate_to_v1();
+                        break;
+                case 2:
+                        ok = migrate_to_v2();
                         break;
                 default:
                         ok = false;
@@ -193,12 +196,37 @@ CREATE TABLE IF NOT EXISTS resources (
 )SQL";
 
         if (!exec_sql(db_handle_, sql)) return false;
-
-        // populate server_ids/planets/resources from CSV if present and table empty (non-fatal)
-        if (!populate_reference_tables_if_empty()) {
-                // log but continue
-        }
         return true;
+}
+
+bool SqlitePointStore::migrate_to_v2() {
+    if (!db_handle_) return false;
+    // create zones table and populate/migrate reference data
+    std::string sql = R"SQL(
+    CREATE TABLE IF NOT EXISTS zones (
+        id INTEGER PRIMARY KEY,
+        system TEXT,
+        name TEXT,
+        image_dir TEXT,
+        zone_id TEXT,
+        zone_type INTEGER,
+        quantumable INTEGER,
+        center_x REAL,
+        center_y REAL,
+        center_z REAL,
+        min_x_km INTEGER,
+        max_x_km INTEGER,
+        min_y_km INTEGER,
+        max_y_km INTEGER
+    );
+    )SQL";
+    if (!exec_sql(db_handle_, sql)) return false;
+
+    // populate server_ids/zones/resources from CSV if present and table empty (non-fatal)
+    if (!populate_reference_tables_if_empty()) {
+        // log but continue
+    }
+    return true;
 }
 
 bool SqlitePointStore::populate_reference_tables_if_empty() {
@@ -251,44 +279,77 @@ bool SqlitePointStore::populate_reference_tables_if_empty() {
         sqlite3_finalize(ins);
     }
 
-    // planets
-    int64_t pcnt = table_count("planets");
-    auto planets_csv = base_dir / "planets.csv";
-    if (pcnt == 0 && std::filesystem::exists(planets_csv)) {
-        std::ifstream in(planets_csv);
-        std::string line;
-        bool first = true;
-        sqlite3_stmt* ins = nullptr;
-        const char* insert_sql = "INSERT OR REPLACE INTO planets(id,system,planet,image_dir,zone_id) VALUES(?,?,?,?,?);";
-        if (sqlite3_prepare_v2(db_handle_, insert_sql, -1, &ins, nullptr) != SQLITE_OK) {
-            return false;
-        }
-        while (std::getline(in, line)) {
-            const auto trimmed = trim(line);
-            if (trimmed.empty()) continue;
-            auto cells = split_csv_row(trimmed);
-            if (cells.empty()) continue;
-            if (first) {
-                first = false;
-                const auto h = to_lower(trim(cells[0]));
-                if (h == "id" || h == "recordid") continue;
-            }
-            int id = -1;
-            try { id = std::stoi(trim(cells[0])); } catch(...) { id = -1; }
-            const std::string system = cells.size() > 1 ? trim(cells[1]) : std::string();
-            const std::string planet = cells.size() > 2 ? trim(cells[2]) : std::string();
-            const std::string image_dir = cells.size() > 3 ? trim(cells[3]) : std::string();
-            const std::string zone_id = cells.size() > 4 ? trim(cells[4]) : std::string();
+    // If zones table empty but legacy planets table exists, migrate rows from planets -> zones
+    int64_t zcnt_check = table_count("zones");
+    int64_t legacy_pcnt = table_count("planets");
+    if (zcnt_check == 0 && legacy_pcnt > 0) {
+        // simple SQL migration: copy columns we know, set defaults for new columns
+        const std::string migrate_sql =
+            "INSERT OR REPLACE INTO zones(id,system,name,image_dir,zone_id,zone_type,quantumable,center_x,center_y,center_z,min_x_km,max_x_km,min_y_km,max_y_km) "
+            "SELECT id, system, planet, image_dir, zone_id, 0, 1, NULL, NULL, NULL, NULL, NULL, NULL, NULL FROM planets;";
+        exec_sql(db_handle_, migrate_sql);
+    }
 
-            if (id >= 0) sqlite3_bind_int(ins, 1, id); else sqlite3_bind_null(ins, 1);
-            sqlite3_bind_text(ins, 2, system.c_str(), -1, SQLITE_TRANSIENT);
-            sqlite3_bind_text(ins, 3, planet.c_str(), -1, SQLITE_TRANSIENT);
-            sqlite3_bind_text(ins, 4, image_dir.c_str(), -1, SQLITE_TRANSIENT);
-            sqlite3_bind_text(ins, 5, zone_id.c_str(), -1, SQLITE_TRANSIENT);
-            sqlite3_step(ins);
-            sqlite3_reset(ins);
+    // zones (previously planets)
+    int64_t pcnt = table_count("zones");
+    auto zones_csv = base_dir / "zones.csv";
+    auto planets_csv = base_dir / "planets.csv"; // fallback for legacy files
+    if (pcnt == 0 && std::filesystem::exists(zones_csv)) {
+        // Use centralized CSV parser to read catalog and insert rows
+        const auto catalog = ::load_planet_catalog(zones_csv, {});
+        if (!catalog.empty()) {
+            const char* insert_sql = "INSERT OR REPLACE INTO zones(id,system,name,image_dir,zone_id,zone_type,quantumable,center_x,center_y,center_z,min_x_km,max_x_km,min_y_km,max_y_km) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?);";
+            sqlite3_stmt* ins = nullptr;
+            if (sqlite3_prepare_v2(db_handle_, insert_sql, -1, &ins, nullptr) == SQLITE_OK) {
+                for (const auto& plt : catalog) {
+                    if (plt.id >= 0) sqlite3_bind_int(ins, 1, plt.id); else sqlite3_bind_null(ins, 1);
+                    sqlite3_bind_text(ins, 2, plt.system.c_str(), -1, SQLITE_TRANSIENT);
+                    sqlite3_bind_text(ins, 3, plt.name.c_str(), -1, SQLITE_TRANSIENT);
+                    sqlite3_bind_text(ins, 4, plt.image_dir.c_str(), -1, SQLITE_TRANSIENT);
+                    sqlite3_bind_text(ins, 5, plt.zone_id.c_str(), -1, SQLITE_TRANSIENT);
+                    sqlite3_bind_int(ins, 6, zone_type_to_int(plt.zone_type));
+                    sqlite3_bind_int(ins, 7, plt.quantumable ? 1 : 0);
+                    sqlite3_bind_double(ins, 8, plt.center_x);
+                    sqlite3_bind_double(ins, 9, plt.center_y);
+                    sqlite3_bind_double(ins, 10, plt.center_z);
+                    sqlite3_bind_int(ins, 11, plt.min_x_km);
+                    sqlite3_bind_int(ins, 12, plt.max_x_km);
+                    sqlite3_bind_int(ins, 13, plt.min_y_km);
+                    sqlite3_bind_int(ins, 14, plt.max_y_km);
+                    sqlite3_step(ins);
+                    sqlite3_reset(ins);
+                }
+                sqlite3_finalize(ins);
+            }
         }
-        sqlite3_finalize(ins);
+    } else if (pcnt == 0 && std::filesystem::exists(planets_csv)) {
+        // fallback: load legacy planets.csv into zones table via CSV parser
+        const auto catalog = ::load_planet_catalog(planets_csv, {});
+        if (!catalog.empty()) {
+            const char* insert_sql = "INSERT OR REPLACE INTO zones(id,system,name,image_dir,zone_id,zone_type,quantumable,center_x,center_y,center_z,min_x_km,max_x_km,min_y_km,max_y_km) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?);";
+            sqlite3_stmt* ins = nullptr;
+            if (sqlite3_prepare_v2(db_handle_, insert_sql, -1, &ins, nullptr) == SQLITE_OK) {
+                for (const auto& plt : catalog) {
+                    if (plt.id >= 0) sqlite3_bind_int(ins, 1, plt.id); else sqlite3_bind_null(ins, 1);
+                    sqlite3_bind_text(ins, 2, plt.system.c_str(), -1, SQLITE_TRANSIENT);
+                    sqlite3_bind_text(ins, 3, plt.name.c_str(), -1, SQLITE_TRANSIENT);
+                    sqlite3_bind_text(ins, 4, plt.image_dir.c_str(), -1, SQLITE_TRANSIENT);
+                    sqlite3_bind_text(ins, 5, plt.zone_id.c_str(), -1, SQLITE_TRANSIENT);
+                    sqlite3_bind_int(ins, 6, zone_type_to_int(plt.zone_type));
+                    sqlite3_bind_int(ins, 7, plt.quantumable ? 1 : 0);
+                    sqlite3_bind_double(ins, 8, plt.center_x);
+                    sqlite3_bind_double(ins, 9, plt.center_y);
+                    sqlite3_bind_double(ins, 10, plt.center_z);
+                    sqlite3_bind_int(ins, 11, plt.min_x_km);
+                    sqlite3_bind_int(ins, 12, plt.max_x_km);
+                    sqlite3_bind_int(ins, 13, plt.min_y_km);
+                    sqlite3_bind_int(ins, 14, plt.max_y_km);
+                    sqlite3_step(ins);
+                    sqlite3_reset(ins);
+                }
+                sqlite3_finalize(ins);
+            }
+        }
     }
 
     // resources
@@ -557,7 +618,7 @@ std::vector<std::string> SqlitePointStore::load_server_ids() {
 std::vector<Planet> SqlitePointStore::load_planets() {
     std::vector<Planet> result;
     if (!db_handle_) return result;
-    const char* q = "SELECT id, system, planet, image_dir, zone_id FROM planets ORDER BY planet ASC;";
+    const char* q = "SELECT id, system, name, image_dir, zone_id, zone_type, quantumable, center_x, center_y, center_z, min_x_km, max_x_km, min_y_km, max_y_km FROM zones ORDER BY name ASC;";
     sqlite3_stmt* stmt = nullptr;
     if (sqlite3_prepare_v2(db_handle_, q, -1, &stmt, nullptr) != SQLITE_OK) return result;
     while (sqlite3_step(stmt) == SQLITE_ROW) {
@@ -567,10 +628,23 @@ std::vector<Planet> SqlitePointStore::load_planets() {
         const unsigned char* t2 = sqlite3_column_text(stmt, 2);
         const unsigned char* t3 = sqlite3_column_text(stmt, 3);
         const unsigned char* t4 = sqlite3_column_text(stmt, 4);
+        // 5: zone_type (int), 6: quantumable, 7: center_x, 8: center_y, 9: center_z, 10: min_x_km, 11: max_x_km, 12: min_y_km, 13: max_y_km
         p.system = t1 ? reinterpret_cast<const char*>(t1) : std::string();
         p.name = t2 ? reinterpret_cast<const char*>(t2) : std::string();
         p.image_dir = t3 ? reinterpret_cast<const char*>(t3) : std::string();
         p.zone_id = t4 ? reinterpret_cast<const char*>(t4) : std::string();
+        int zt_int = sqlite3_column_int(stmt, 5);
+        ZoneType zt = ZoneType::CelestialBody;
+        if (!zone_type_from_int(zt_int, zt)) zt = ZoneType::CelestialBody;
+        p.zone_type = zt;
+        p.quantumable = sqlite3_column_int(stmt, 6) != 0;
+        p.center_x = sqlite3_column_double(stmt, 7);
+        p.center_y = sqlite3_column_double(stmt, 8);
+        p.center_z = sqlite3_column_double(stmt, 9);
+        p.min_x_km = sqlite3_column_int(stmt, 10);
+        p.max_x_km = sqlite3_column_int(stmt, 11);
+        p.min_y_km = sqlite3_column_int(stmt, 12);
+        p.max_y_km = sqlite3_column_int(stmt, 13);
         result.push_back(p);
     }
     sqlite3_finalize(stmt);
@@ -616,12 +690,12 @@ std::vector<Resource> SqlitePointStore::load_resources() {
 bool SqlitePointStore::overwrite_planets(const std::vector<Planet>& planets) {
     if (!db_handle_) return false;
     if (!exec_sql(db_handle_, "BEGIN TRANSACTION;")) return false;
-    if (!exec_sql(db_handle_, "DELETE FROM planets;")) {
+    if (!exec_sql(db_handle_, "DELETE FROM zones;")) {
         exec_sql(db_handle_, "ROLLBACK;");
         return false;
     }
 
-    const char* insert_sql = "INSERT OR REPLACE INTO planets(id,system,planet,image_dir,zone_id) VALUES(?,?,?,?,?);";
+    const char* insert_sql = "INSERT OR REPLACE INTO zones(id,system,name,image_dir,zone_id,zone_type,quantumable,center_x,center_y,center_z,min_x_km,max_x_km,min_y_km,max_y_km) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?);";
     sqlite3_stmt* ins = nullptr;
     if (sqlite3_prepare_v2(db_handle_, insert_sql, -1, &ins, nullptr) != SQLITE_OK) {
         exec_sql(db_handle_, "ROLLBACK;");
@@ -634,6 +708,15 @@ bool SqlitePointStore::overwrite_planets(const std::vector<Planet>& planets) {
         sqlite3_bind_text(ins, 3, p.name.c_str(), -1, SQLITE_TRANSIENT);
         sqlite3_bind_text(ins, 4, p.image_dir.c_str(), -1, SQLITE_TRANSIENT);
         sqlite3_bind_text(ins, 5, p.zone_id.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_int(ins, 6, zone_type_to_int(p.zone_type));
+        sqlite3_bind_int(ins, 7, p.quantumable ? 1 : 0);
+        sqlite3_bind_double(ins, 8, p.center_x);
+        sqlite3_bind_double(ins, 9, p.center_y);
+        sqlite3_bind_double(ins, 10, p.center_z);
+        sqlite3_bind_int(ins, 11, p.min_x_km);
+        sqlite3_bind_int(ins, 12, p.max_x_km);
+        sqlite3_bind_int(ins, 13, p.min_y_km);
+        sqlite3_bind_int(ins, 14, p.max_y_km);
 
         int rc = sqlite3_step(ins);
         if (rc != SQLITE_DONE) {
@@ -720,4 +803,59 @@ bool SqlitePointStore::overwrite_points(const std::vector<DataPoint>& points) {
         exec_sql(db_handle_, "ROLLBACK;");
         return false;
     }
+}
+
+bool SqlitePointStore::ensure_zone_contains_point(const std::string& zone_name, double x, double y, double grid_spacing_km) {
+    if (!db_handle_) return false;
+    sqlite3_stmt* stmt = nullptr;
+    const char* q = "SELECT id, zone_type, min_x_km, max_x_km, min_y_km, max_y_km FROM zones WHERE name = ? LIMIT 1;";
+    if (sqlite3_prepare_v2(db_handle_, q, -1, &stmt, nullptr) != SQLITE_OK) return false;
+    sqlite3_bind_text(stmt, 1, zone_name.c_str(), -1, SQLITE_TRANSIENT);
+    bool changed = false;
+    int zone_id = -1;
+    int zt_int = 0;
+    int min_x = 0, max_x = 0, min_y = 0, max_y = 0;
+    if (sqlite3_step(stmt) == SQLITE_ROW) {
+        zone_id = sqlite3_column_int(stmt, 0);
+        zt_int = sqlite3_column_int(stmt, 1);
+        min_x = sqlite3_column_int(stmt, 2);
+        max_x = sqlite3_column_int(stmt, 3);
+        min_y = sqlite3_column_int(stmt, 4);
+        max_y = sqlite3_column_int(stmt, 5);
+    }
+    sqlite3_finalize(stmt);
+    ZoneType zt;
+    if (!zone_type_from_int(zt_int, zt)) return false;
+    if (zt != ZoneType::AsteroidField) return false;
+
+    // If bounding box uninitialized (0,0), set defaults
+    if (min_x == 0 && max_x == 0 && min_y == 0 && max_y == 0) {
+        min_x = -300; max_x = 300; min_y = -300; max_y = 300;
+    }
+
+    const double g = std::max(1.0, grid_spacing_km);
+    const int px_min = static_cast<int>(std::floor(x / g) * g);
+    const int px_max = static_cast<int>(std::ceil(x / g) * g);
+    const int py_min = static_cast<int>(std::floor(y / g) * g);
+    const int py_max = static_cast<int>(std::ceil(y / g) * g);
+
+    int new_min_x = std::min(min_x, px_min);
+    int new_max_x = std::max(max_x, px_max);
+    int new_min_y = std::min(min_y, py_min);
+    int new_max_y = std::max(max_y, py_max);
+
+    if (new_min_x != min_x || new_max_x != max_x || new_min_y != min_y || new_max_y != max_y) {
+        const char* up = "UPDATE zones SET min_x_km = ?, max_x_km = ?, min_y_km = ?, max_y_km = ? WHERE id = ?;";
+        sqlite3_stmt* ups = nullptr;
+        if (sqlite3_prepare_v2(db_handle_, up, -1, &ups, nullptr) != SQLITE_OK) return false;
+        sqlite3_bind_int(ups, 1, new_min_x);
+        sqlite3_bind_int(ups, 2, new_max_x);
+        sqlite3_bind_int(ups, 3, new_min_y);
+        sqlite3_bind_int(ups, 4, new_max_y);
+        sqlite3_bind_int(ups, 5, zone_id);
+        if (sqlite3_step(ups) == SQLITE_DONE) changed = true;
+        sqlite3_finalize(ups);
+    }
+
+    return changed;
 }

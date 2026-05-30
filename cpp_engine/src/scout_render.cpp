@@ -427,3 +427,42 @@ void ScoutRenderer::render_marker(float x, float y, float r, float g, float b, f
 	glDrawArrays(GL_POINTS, 0, 1);
 	glBindVertexArray(0);
 }
+
+void ScoutRenderer::render_track(const std::vector<DataPoint>& track, const Planet* selected_zone, double grid_spacing_km) {
+	if (track.empty()) return;
+
+	std::vector<float> pts;
+	pts.reserve(track.size() * 2);
+	for (const auto& p : track) {
+		std::pair<float, float> ndc;
+		if (selected_zone && selected_zone->zone_type == ZoneType::AsteroidField) {
+			ndc = zone_point_to_ndc(selected_zone, p.x, p.y, grid_spacing_km);
+		} else {
+			const auto lla = p.get_lat_lon_alt();
+			ndc = latlon_to_ndc(lla[0], lla[1]);
+		}
+		pts.push_back(ndc.first);
+		pts.push_back(ndc.second);
+	}
+
+	// Draw line strip in marker shader with a distinct color
+	glUseProgram(marker_shader_);
+	glBindVertexArray(marker_vao_);
+	glBindBuffer(GL_ARRAY_BUFFER, marker_vbo_);
+	glBufferData(GL_ARRAY_BUFFER, pts.size() * sizeof(float), pts.data(), GL_DYNAMIC_DRAW);
+	const GLint color_loc = glGetUniformLocation(marker_shader_, "u_color");
+	// subtle blue with some transparency
+	glUniform4f(color_loc, 1.0f, 0.0f, 1.0f, 0.75f);
+	// draw as connected line
+	glDrawArrays(GL_LINE_STRIP, 0, static_cast<GLsizei>(pts.size() / 2));
+
+	// Draw start (yellow) and end (red) markers for quick orientation
+	if (!pts.empty()) {
+		const float sx = pts[0]; const float sy = pts[1];
+		render_marker(sx, sy, 1.0f, 1.0f, 1.0f, 0.95f, 3.0f);
+		//const float ex = pts[pts.size() - 2]; const float ey = pts[pts.size() - 1];
+		//render_marker(ex, ey, 1.0f, 0.0f, 1.0f, 0.95f, 3.0f);
+	}
+
+	glBindVertexArray(0);
+}

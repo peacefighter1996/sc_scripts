@@ -21,6 +21,7 @@ set(SCOUT_ENGINE_SOURCES
     src/point_store_csv.cpp
     src/point_store_sqlite.cpp
     src/sync_service.cpp
+    src/travel_log.cpp
 )
 
 add_executable(scout_engine ${SCOUT_ENGINE_SOURCES}
@@ -49,6 +50,14 @@ if(SCOUT_BUILD_APP)
 		GIT_TAG v1.91.9b
 	)
 	FetchContent_MakeAvailable(glfw glad imgui)
+
+	# JSON parsing library (header-only)
+	FetchContent_Declare(
+		nlohmann_json
+		GIT_REPOSITORY https://github.com/nlohmann/json.git
+		GIT_TAG v3.11.2
+	)
+	FetchContent_MakeAvailable(nlohmann_json)
 
 	add_library(imgui STATIC
 		${imgui_SOURCE_DIR}/imgui.cpp
@@ -95,7 +104,11 @@ if(SCOUT_BUILD_APP)
 			target_link_libraries(scout_engine PRIVATE ${_base_libs})
 		endif()
 	endif()
-endif()
+
+	# Link nlohmann_json (header-only target) to make include available
+	target_link_libraries(scout_engine PRIVATE nlohmann_json::nlohmann_json)
+
+	endif()
 
 if(SCOUT_ENABLE_ONNXRUNTIME)
 	set(_scout_onnx_enabled OFF)

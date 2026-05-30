@@ -25,6 +25,8 @@ public:
     // Ensure the named zone contains the given point; expand bounding box if necessary.
     bool ensure_zone_contains_point(const std::string& zone_name, double x, double y, double grid_spacing_km);
 
+    static std::string generate_uuid_v4();
+
 private:
     std::string db_path_;
     std::string node_id_;
@@ -34,5 +36,4 @@ private:
     bool migrate_to_v1();
     bool migrate_to_v2();
     std::string data_point_to_json(const DataPoint& p);
-    std::string generate_uuid_v4();
 };

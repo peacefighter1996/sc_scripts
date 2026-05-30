@@ -26,6 +26,11 @@ public:
                                           const Planet* selected_zone = nullptr,
                                           double grid_spacing_km = 100.0);
 
+    // Render a travel track (connected line strip) in NDC using the supplied DataPoint list.
+    void render_track(const std::vector<DataPoint>& track,
+                      const Planet* selected_zone = nullptr,
+                      double grid_spacing_km = 100.0);
+
     // Render a single marker at normalized device coords (x,y in [-1,1]).
     void render_marker(float x, float y, float r, float g, float b, float a, float size = 5.0f);
 

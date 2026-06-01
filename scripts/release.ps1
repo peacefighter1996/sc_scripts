@@ -82,15 +82,15 @@ foreach ($f in $files) {
 }
 
 # geoscout.location_only.csv -> data/geoscout.csv (fallback to data/geoscout.csv)
-$geoAlt = Join-Path $repoRoot 'data/geoscout.location_only.csv'
-$geo = Join-Path $repoRoot 'data/geoscout.csv'
-if (Test-Path $geoAlt) {
-    Copy-IfExists $geoAlt (Join-Path $dataDir 'geoscout.csv') | Out-Null
-} elseif (Test-Path $geo) {
-    Copy-IfExists $geo (Join-Path $dataDir 'geoscout.csv') | Out-Null
-} else {
-    Write-Host "Missing: geoscout source file (neither geoscout.location_only.csv nor geoscout.csv found)"
-}
+# $geoAlt = Join-Path $repoRoot 'data/geoscout.location_only.csv'
+# $geo = Join-Path $repoRoot 'data/geoscout.csv'
+# if (Test-Path $geoAlt) {
+#     Copy-IfExists $geoAlt (Join-Path $dataDir 'geoscout.csv') | Out-Null
+# } elseif (Test-Path $geo) {
+#     Copy-IfExists $geo (Join-Path $dataDir 'geoscout.csv') | Out-Null
+# } else {
+#     Write-Host "Missing: geoscout source file (neither geoscout.location_only.csv nor geoscout.csv found)"
+# }
 
 # label map (try common variants) -> data/labelmap.json
 $labelCandidates = @('data/labelmap.json','data/label_map.json','data/label-map.json')

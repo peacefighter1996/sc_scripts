@@ -471,7 +471,7 @@ void TravelLog::persist_locked(const std::filesystem::path& full_path) {
     // Push small metadata record into store (without blob)
     if (store_) {
         ChangeEvent ev;
-        ev.change_id = "travellog-" + std::to_string(static_cast<long long>(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count()));
+		ev.change_id = uuid::generate_uuid_v4();
         ev.node_id = "local";
         ev.created_ts = static_cast<int64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count());
         ev.op = "travel_log";

@@ -97,3 +97,12 @@ Python-only benchmark:
 Set-Location "C:\path\to\sc_scripts"
 python .\tools\benchmark_xyz_inference.py --skip-cpp
 ```
+
+
+### adding exiting POI from starmap to the store
+
+By default no poi are added to the store on new installation. However they can be imported from `https://starmap.space/api/v3/pois/index.php` you can use the following command set (assuming geoscout.db is on default location) head over to your scout_engine build directory and run the following commands:
+```
+curl -o ./data/starmap_locations.json https://starmap.space/api/v3/pois/index.php
+dbimport-starmap-json ./data/starmap_locations.json ./data/geoscout.db
+```

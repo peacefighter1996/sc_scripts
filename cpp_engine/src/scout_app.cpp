@@ -1124,10 +1124,12 @@ int run_scout_app() {
 					new_point.location = false;
 					new_point.quality_min = state.new_data.quality_min;
 					new_point.quality_max = state.new_data.quality_max;
+					new_point.subtype = PoiSubType::None;
+					new_point.qt_persistent = false;
 					new_point.poi_type = PoiType::Mineral;
 					new_point.time_info = format_iso_datetime(now_ymdhm());
 					if (state.store) {
-						std::string change_id;
+						uuid change_id;
 						if (state.store->append_point(new_point, &change_id)) {
 							state.points.push_back(new_point);
 							state.new_data.id += 1;
@@ -1136,8 +1138,8 @@ int run_scout_app() {
 							if (state.sync_service) {
 								ChangeEvent ev;
 								// generate a simple change_id if none provided
-								if (change_id.empty()) {
-									ev.change_id = (state.settings.sync_node_id.empty() ? "local-node" : state.settings.sync_node_id) + std::string("-") + std::to_string(static_cast<int64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count()));
+								if (change_id == nil_uuid) {
+									ev.change_id = uuid::generate_uuid_v4();
 								} else {
 									ev.change_id = change_id;
 								}
@@ -1181,18 +1183,20 @@ int run_scout_app() {
 					new_point.location = false;
 					new_point.quality_min = 1;
 					new_point.quality_max = 1;
+					new_point.subtype = state.new_data.subtype;
+					new_point.qt_persistent = state.new_data.qt_persistent;
 					new_point.poi_type = PoiType::Mineral;
 					new_point.time_info = format_iso_datetime(now_ymdhm());
 					if (state.store) {
-						std::string change_id;
+						uuid change_id;
 						if (state.store->append_point(new_point, &change_id)) {
 							state.points.push_back(new_point);
 							state.new_data.id += 1;
 							push_recent_resource(state, new_point.material);
 							if (state.sync_service) {
 								ChangeEvent ev;
-								if (change_id.empty()) {
-									ev.change_id = (state.settings.sync_node_id.empty() ? "local-node" : state.settings.sync_node_id) + std::string("-") + std::to_string(static_cast<int64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count()));
+								if (change_id == nil_uuid) {
+									ev.change_id = uuid::generate_uuid_v4();
 								} else {
 									ev.change_id = change_id;
 								}
@@ -1247,7 +1251,7 @@ int run_scout_app() {
 
 			ImGuiTableFlags table_flags = ImGuiTableFlags_Resizable | ImGuiTableFlags_Reorderable | ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerH | ImGuiTableFlags_ScrollY;
 			// Use a distinct table ID to avoid legacy table-layout mismatches across builds
-			if (ImGui::BeginTable("DataPointsTable_v3", 13, table_flags, ImVec2(0, ImGui::GetContentRegionAvail().y - 30))) {
+			if (ImGui::BeginTable("DataPointsTable_v3", 15, table_flags, ImVec2(0, ImGui::GetContentRegionAvail().y - 30))) {
 				ImGui::TableSetupColumn("ID", ImGuiTableColumnFlags_WidthFixed, 30.0f); // 0
 				ImGui::TableSetupColumn("Record Time", ImGuiTableColumnFlags_WidthFixed, 100.0f); // 1
 				ImGui::TableSetupColumn("Server"); // 2
@@ -1256,11 +1260,13 @@ int run_scout_app() {
 				ImGui::TableSetupColumn("Z"); // 5
 				ImGui::TableSetupColumn("Planet"); // 6
 				ImGui::TableSetupColumn("POI Type", ImGuiTableColumnFlags_WidthFixed, 100.0f); // 7
-				ImGui::TableSetupColumn("Resource"); // 8
-				ImGui::TableSetupColumn("QMin"); // 9
-				ImGui::TableSetupColumn("QMax"); // 10
-				ImGui::TableSetupColumn("Note"); // 11
-				ImGui::TableSetupColumn("Control", ImGuiTableColumnFlags_WidthFixed, 80.0f); //12
+				ImGui::TableSetupColumn("Subtype", ImGuiTableColumnFlags_WidthFixed, 160.0f); // 8
+				ImGui::TableSetupColumn("Resource"); // 9
+				ImGui::TableSetupColumn("QMin"); // 10
+				ImGui::TableSetupColumn("QMax"); // 11
+				ImGui::TableSetupColumn("Note"); // 12
+				ImGui::TableSetupColumn("QT Persist", ImGuiTableColumnFlags_WidthFixed, 80.0f); // 13
+				ImGui::TableSetupColumn("Control", ImGuiTableColumnFlags_WidthFixed, 80.0f); //14
 				ImGui::TableSetupScrollFreeze(0, 1);
 				ImGui::TableHeadersRow();
 
@@ -1366,8 +1372,24 @@ int run_scout_app() {
 						ImGui::PopItemWidth();
 					}
 
-					// Resource (combo)
+					// Subtype (enum-backed combo)
 					ImGui::TableSetColumnIndex(8);
+					{
+						std::string lbl = std::string("##subtype") + std::to_string(i);
+						int cur = static_cast<int>(dp.subtype);
+						std::vector<const char*> cstrs;
+						cstrs.reserve(poi_impl::poi_subtype_count);
+						for (size_t si = 0; si < poi_impl::poi_subtype_count; ++si) cstrs.push_back(poi_impl::poi_subtype_names_arr[si]);
+						ImGui::PushItemWidth(-FLT_MIN);
+						if (ImGui::Combo(lbl.c_str(), &cur, cstrs.data(), static_cast<int>(cstrs.size()))) {
+							dp.subtype = static_cast<PoiSubType>(cur);
+							data_dirty = true;
+						}
+						ImGui::PopItemWidth();
+					}
+
+					// Resource (combo)
+					ImGui::TableSetColumnIndex(9);
 					{
 						std::string lbl = std::string("##material") + std::to_string(i);
 						auto it = std::find(state.materials.begin(), state.materials.end(), dp.material);
@@ -1385,7 +1407,7 @@ int run_scout_app() {
 
 
 					// QMin
-					ImGui::TableSetColumnIndex(9);
+					ImGui::TableSetColumnIndex(10);
 					{
 						int val = int(dp.quality_min);
 						std::string lbl = std::string("##qmin") + std::to_string(i);
@@ -1398,7 +1420,7 @@ int run_scout_app() {
 					}
 
 					// QMax
-					ImGui::TableSetColumnIndex(10);
+					ImGui::TableSetColumnIndex(11);
 					{
 						int val = int(dp.quality_max);
 						std::string lbl = std::string("##qmax") + std::to_string(i);
@@ -1411,7 +1433,7 @@ int run_scout_app() {
 					}
 
 					// Note
-					ImGui::TableSetColumnIndex(11);
+					ImGui::TableSetColumnIndex(12);
 					{
 						char buf[256] = { 0 };
 						strncpy(buf, dp.note.c_str(), sizeof(buf) - 1);
@@ -1424,8 +1446,19 @@ int run_scout_app() {
 						ImGui::PopItemWidth();
 					}
 
+					// QT persistent checkbox
+					ImGui::TableSetColumnIndex(13);
+					{
+						std::string lbl = std::string("##qt_persistent") + std::to_string(i);
+						bool val = dp.qt_persistent;
+						if (ImGui::Checkbox(lbl.c_str(), &val)) {
+							dp.qt_persistent = val;
+							data_dirty = true;
+						}
+					}
+
 					// Controls (Delete)
-					ImGui::TableSetColumnIndex(12);
+					ImGui::TableSetColumnIndex(14);
 					{
 						std::string del_lbl = std::string("Delete##del") + std::to_string(i);
 						if (ImGui::SmallButton(del_lbl.c_str())) {

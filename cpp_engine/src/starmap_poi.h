@@ -7,6 +7,9 @@
 #include <limits>
 #include <nlohmann/json.hpp>
 #include <point_store_sqlite.h>
+#include "uuid.h"
+#include <algorithm>
+#include <iostream>
 
 struct StarmapPoi {
 	int item_id = 0;
@@ -115,7 +118,7 @@ inline void from_json(const nlohmann::json& j, StarmapPoi& p) {
 	if (j.contains("ZONE_Temperature_Max") && !j["ZONE_Temperature_Max"].is_null()) p.ZONE_Temperature_Max = j["ZONE_Temperature_Max"].get<std::string>();
 
 	if (j.contains("GUID") && !j["GUID"].is_null())	p.GUID = j.value("GUID", "");
-	else p.GUID = SqlitePointStore::generate_uuid_v4();
+	else p.GUID = uuid::generate_uuid_v4().to_string();
 	if (j.contains("ImageLabels") && !j["ImageLabels"].is_null()) {
 		if (j["ImageLabels"].is_string()) p.ImageLabels = j["ImageLabels"].get<std::string>();
 		else p.ImageLabels = j["ImageLabels"].dump();
@@ -182,21 +185,32 @@ inline void from_json(const nlohmann::json& j, StarmapPoi& p) {
 //Type : Station
 //Type : LandingZone
 
-inline PoiType get_PoiType(const StarmapPoi& poi) {
+inline std::pair<PoiType, PoiSubType> get_PoiType(const StarmapPoi& poi) {
 	auto type_str = poi.Type.empty() ? "Unknown" : poi.Type;
 
 	if (type_str.empty()) {
-		return PoiType::Unknown;
+		return {PoiType::Unknown, PoiSubType::None};
 	}
-	if (type_str == "Cave" || type_str == "Rock Cave" || type_str == "Sand Cave" || type_str == "Sink Hole") {
-		return PoiType::Cave;
+	if (type_str == "Cave") {
+		auto subtype_str = poi.POI_Subtype.empty() ? "None" : poi.POI_Subtype;
+		PoiSubType subtype;
+		if (!poi_subtype_from_string(subtype_str, subtype)) {
+			subtype = PoiSubType::None;
+		}
+		if (subtype == PoiSubType::None){
+			if (poi.PoiName.find("Sand Cave") != std::string::npos) subtype = PoiSubType::Sand_Cave;
+			else if (poi.PoiName.find("Rock Cave") != std::string::npos || poi.PoiName.find("RockCave") != std::string::npos) subtype = PoiSubType::Rock_Cave;
+			else if (poi.PoiName.find("Sink Hole") != std::string::npos) subtype = PoiSubType::Sink_Hole;
+			else if (poi.PoiName.find("Acidic Cave") != std::string::npos || poi.PoiName.find("Acidic") != std::string::npos) subtype = PoiSubType::Acidic_Cave;
+		}
+
+		return {PoiType::Cave, subtype};
 	}
 	auto locationtypes = { 
 		"Underground Facility",
 		"Security Outpost",
 		"Derelict Outpost",
 		"Outpost",
-		"Wreck",
 		"Druglab",
 		"Easteregg",
 		"Animal Area",
@@ -206,7 +220,6 @@ inline PoiType get_PoiType(const StarmapPoi& poi) {
 		"Landing Zone",
 		"Racetrack(Community)",
 		"Racetrack",
-		"River",
 		"Onyx Facility",
 		"Comm Array",
 		"Abandoned Outpost",
@@ -229,26 +242,98 @@ inline PoiType get_PoiType(const StarmapPoi& poi) {
 		"Asteroid Belt",
 		"Station",
 		"LandingZone"
+		
 	};
 	
+
 	auto it = std::find(locationtypes.begin(), locationtypes.end(), type_str);
 	if (it != locationtypes.end()) {
-		return PoiType::Location;
+		auto subtype_str = poi.POI_Subtype.empty() ? poi.Type : poi.POI_Subtype;
+		PoiSubType subtype;
+		if (!poi_subtype_from_string(subtype_str, subtype)) {
+			subtype = PoiSubType::None;
+		}
+		return {PoiType::Location, subtype};
 	}
-	return PoiType::Unknown;
+
+	auto wreck_types = {
+		"Wreck"
+	};
+	it = std::find(wreck_types.begin(), wreck_types.end(), type_str);
+	if (it != wreck_types.end()) {
+		auto subtype_str = poi.POI_Subtype.empty() ? "None" : poi.POI_Subtype;
+		PoiSubType subtype;
+		if (!poi_subtype_from_string(subtype_str, subtype)) {
+			subtype = PoiSubType::None;
+		}
+
+		if (subtype == PoiSubType::None){
+			if (poi.Classification.find("Derelict Crash Site") != std::string::npos) subtype = PoiSubType::Ship_Wreck;
+			else if (poi.PoiName.find("Ship Wreck") != std::string::npos || poi.PoiName.find("Shipwreck") != std::string::npos || poi.Classification.find("Ship") != std::string::npos|| poi.Classification.find("ship") != std::string::npos) subtype = PoiSubType::Ship_Wreck;
+			else if (to_lower(poi.PoiName).find("satellite") != std::string::npos || to_lower(poi.PoiName).find("satelite") != std::string::npos) subtype = PoiSubType::Satellite_Wreck;
+			else if (poi.PoiName.find("Caterpillar Puzzle Wreck") != std::string::npos) subtype = PoiSubType::Caterpillar_Puzzle_Wreck;
+		}
+		return {PoiType::Wreck, subtype};
+	}
+
+	if (poi.PoiName.find("Mining Tower") != std::string::npos) {
+		return {PoiType::Location, PoiSubType::Mining_Tower};
+	}
+
+	auto other_types = {
+		"River"
+	};
+
+	it = std::find(other_types.begin(), other_types.end(), type_str);
+	if (it != other_types.end()) {
+		return {PoiType::Other, PoiSubType::River};
+	}
+
+	// add Lazarus Transport Hub based on name 
+	if (poi.PoiName.find("Lazarus Transport Hub") != std::string::npos) {
+		return {PoiType::Location, PoiSubType::Lazarus_Transport_Hub};
+	}
+
+	return {PoiType::Unknown, PoiSubType::None};
 }
 
-inline DataPoint starmap_poi_to_datapoint(const StarmapPoi& poi) {
-	DataPoint p;
+inline bool starmap_poi_to_datapoint(const StarmapPoi& poi, DataPoint& p) {
 	p.id = poi.item_id; // to be set by store
 	p.server = "All"; // not applicable
 	p.planet = poi.Planet;
 	p.x = poi.XCoord;
 	p.y = poi.YCoord;
 	p.z = poi.ZCoord;
-	p.poi_type = get_PoiType(poi);
-	p.material = poi.POI_Subtype.empty() ? poi.Type : (poi.Type + "/" + poi.POI_Subtype);
+	auto [type, subtype] = get_PoiType(poi);
+	p.poi_type = type;
+	p.subtype = subtype;
+	if (poi.GUID.empty()) {
+		std::cerr << "Warning : POI " << poi.PoiName << ". Skipping due to missing GUID, and no fallback UUID could be generated.\n";
+		return false;
+	} else {
+		try {
+			if (poi.GUID.find('_') != std::string::npos) {
+				// Handle split and use first part as UUID if multiple GUIDs are present separated by underscores
+				auto parts = poi.GUID.substr(0, poi.GUID.find('_'));
+				if (!parts.empty()) {
+					p.uuid = uuid::from_string(parts);
+				}
+				else {
+					std::cerr << "Warning : POI " << poi.PoiName << ". Skipping due to missing GUID, and no fallback UUID could be generated.\n";
+					return false;
+				}
+			}
+			else {
+				p.uuid = uuid::from_string(poi.GUID);
+			}
+		}
+		catch (std::invalid_argument& e) {
+			std::cerr << "Warning : POI " << poi.PoiName << ". Skipping due to missing GUID, and no fallback UUID could be generated.\n";
+			return false;
+		}
+	}
+	p.qt_persistent = poi.QTMarker.has_value() && poi.QTMarker == 1;
 	p.quality_max = 0; // not applicable
-	p.note = poi.PoiName;
-	return p;
+	p.note = poi.PoiName; //+ " | Type: " + poi.Type + (poi.POI_Subtype.empty() ? "" : (", Subtype: " + poi.POI_Subtype)) + " | Description: " + poi.Description;
+	return true;
 }

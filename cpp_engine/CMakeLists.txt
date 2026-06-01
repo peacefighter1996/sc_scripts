@@ -10,6 +10,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 option(SCOUT_BUILD_APP "Build standalone scout_engine desktop application" ON)
 option(SCOUT_ENABLE_ONNXRUNTIME "Enable ONNX Runtime inference commands" ON)
 set(ONNXRUNTIME_ROOT "" CACHE PATH "Path to ONNX Runtime SDK root (contains include/ and lib/)")
+option(SCOUT_USE_LIBSODIUM "Enable libsodium for secure random UUID generation" ON)
 
 set(SCOUT_ENGINE_SOURCES
 	src/scout_engine.cpp
@@ -22,6 +23,7 @@ set(SCOUT_ENGINE_SOURCES
     src/point_store_sqlite.cpp
     src/sync_service.cpp
     src/travel_log.cpp
+	src/uuid.cpp
 )
 
 add_executable(scout_engine ${SCOUT_ENGINE_SOURCES}
@@ -109,6 +111,29 @@ if(SCOUT_BUILD_APP)
 	target_link_libraries(scout_engine PRIVATE nlohmann_json::nlohmann_json)
 
 	endif()
+
+# Optional: use libsodium for secure random bytes (UUIDv4)
+if(SCOUT_USE_LIBSODIUM)
+	# Prefer vendored libsodium under cpp_engine/third_party/libsodium
+	find_path(SODIUM_INCLUDE_DIR sodium.h
+		PATHS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/libsodium/include"
+			  "${CMAKE_CURRENT_SOURCE_DIR}/third_party/libsodium"
+			  ENV PATH
+		)
+	find_library(SODIUM_LIBRARY NAMES sodium libsodium sodium.lib libsodium.lib
+		PATHS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/libsodium/lib"
+			  "${CMAKE_CURRENT_SOURCE_DIR}/third_party/libsodium/bin"
+			  "${CMAKE_CURRENT_SOURCE_DIR}/third_party/libsodium"
+		)
+	if(SODIUM_INCLUDE_DIR AND SODIUM_LIBRARY)
+		target_include_directories(scout_engine PRIVATE ${SODIUM_INCLUDE_DIR})
+		target_link_libraries(scout_engine PRIVATE ${SODIUM_LIBRARY})
+		target_compile_definitions(scout_engine PRIVATE SCOUT_USE_LIBSODIUM=1)
+		message(STATUS "Using libsodium for secure random (include=${SODIUM_INCLUDE_DIR}, lib=${SODIUM_LIBRARY})")
+	else()
+		message(WARNING "SCOUT_USE_LIBSODIUM=ON but libsodium not found; continuing without libsodium")
+	endif()
+endif()
 
 if(SCOUT_ENABLE_ONNXRUNTIME)
 	set(_scout_onnx_enabled OFF)

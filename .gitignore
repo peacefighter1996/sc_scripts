@@ -7,6 +7,7 @@ data/
 config/settings.ini
 imgui.ini
 build/
+builds/
 build_*/
 third_party/
 .vscode/
@@ -17,3 +18,4 @@ labels/
 images/test/bb_unknown/
 images/planets/
 scout_*.zip
+vcpkg/

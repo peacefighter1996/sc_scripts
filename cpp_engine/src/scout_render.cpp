@@ -318,6 +318,16 @@ bool ScoutRenderer::init() {
 	return true;
 }
 
+struct rgba { float r, g, b, a; };
+
+const rgba wreck = { 183.0f / 255.0f,	65.0f / 255.0f,	14.0f / 255.0f,	0.9f };
+const rgba cave = { 0.59f,	0.29f,	0.0f,	0.9f };
+
+//rgb(203, 58, 51)
+const rgba onyx_facility = { 212.0f / 255.0f,	58.0f / 255.0f,	51.0f / 255.0f,	1.0f };
+const rgba qtless_location = { 0.5f, 0.5, 0.5f, 0.9f };
+
+
 std::optional<std::string> ScoutRenderer::render_map(GLuint texture,
 	const std::vector<DataPoint>& points,
 	std::optional<std::pair<float, float>> mouse_pos,
@@ -339,9 +349,11 @@ std::optional<std::string> ScoutRenderer::render_map(GLuint texture,
 		render_grid_for_zone(selected_zone, grid_spacing_km);
 	}
 
-	// Prepare points buffer (pos + rgba)
+	// Prepare points buffer (pos + rgba) and border buffer
 	std::vector<float> buf;
+	std::vector<float> border_buf;
 	buf.reserve(points.size() * 6);
+	border_buf.reserve(points.size() * 6);
 	for (const auto& point : points) {
 		float x = 0.0f, y = 0.0f;
 		auto ndc = (selected_zone && selected_zone->zone_type == ZoneType::AsteroidField)
@@ -359,8 +371,7 @@ std::optional<std::string> ScoutRenderer::render_map(GLuint texture,
 				r = 0.0f;
 				g = t;
 				b = 1.0f - t;
-			}
-			else {
+			} else {
 				const auto t = static_cast<float>((quality_norm - 0.5) * 2.0);
 				r = t;
 				g = 1.0f - t;
@@ -370,33 +381,36 @@ std::optional<std::string> ScoutRenderer::render_map(GLuint texture,
 		}
 		if (point.poi_type == PoiType::Cave) {
 			// give brown color to caves
-			r = 0.59f;
-			g = 0.29f;
-			b = 0.0f;
-			a = 0.9f;
+			r = cave.r;
+			g = cave.g;
+			b = cave.b;
+			a = cave.a;
+		}
+		if (point.poi_type == PoiType::Wreck) {
+			// give rust color to wrecks
+			// 	(183, 65, 14)
+			r = wreck.r;
+			g = wreck.g;
+			b = wreck.b;
+			a = wreck.a;
 		}
 		if (point.poi_type == PoiType::Location) {
-			if (point.note.find("Wreck") != std::string::npos || point.note.find("Derelict") != std::string::npos) {
-				// give gray color to wrecks
-				r = 0.2f;
-				g = 0.2f;
-				b = 0.2f;
-				a = 0.9f;
-			}
-			if (point.note._Starts_with("Frontier")) {
-				// give green color to Frontier locations
-				r = 0.5f;
-				g = 0.5f;
-				b = 0.5f;
-				a = 0.9f;
-			}
 
-			if (point.note.find("Onyx") != std::string::npos) {
+
+			if (point.subtype == PoiSubType::Onyx_Facility) {
 				// give gray color to Onyx facilities
-				r = 0.2f;
-				g = 0.0f;
-				b = 0.0f;
-				a = 0.9f;
+
+				r = onyx_facility.r;
+				g = onyx_facility.g;
+				b = onyx_facility.b;
+				a = onyx_facility.a;
+			}
+			else if (!point.qt_persistent) {
+				// gray color for locations that can't be quantum targeted.
+				r = qtless_location.r;
+				g = qtless_location.g;
+				b = qtless_location.b;
+				a = qtless_location.a;
 			}
 		}
 
@@ -406,17 +420,41 @@ std::optional<std::string> ScoutRenderer::render_map(GLuint texture,
 		buf.push_back(g);
 		buf.push_back(b);
 		buf.push_back(a);
+
+		// choose border color: black if color is light, white if dark
+		const float lum = 0.2126f * r + 0.7152f * g + 0.0722f * b;
+		float br = 0.0f, bg = 0.0f, bb = 0.0f, ba = 1.0f;
+		if (lum > 0.5f) {
+			// light color -> use black border
+			br = bg = bb = 0.0f;
+		} else {
+			// dark color -> use white border
+			br = bg = bb = 0.6f;
+		}
+		border_buf.push_back(x);
+		border_buf.push_back(y);
+		border_buf.push_back(br);
+		border_buf.push_back(bg);
+		border_buf.push_back(bb);
+		border_buf.push_back(ba);
 	}
 
-	// Upload and draw points
-	glUseProgram(points_shader_);
-	glBindVertexArray(points_vao_);
-	glBindBuffer(GL_ARRAY_BUFFER, points_vbo_);
-	glBufferData(GL_ARRAY_BUFFER, buf.size() * sizeof(float), buf.empty() ? nullptr : buf.data(), GL_DYNAMIC_DRAW);
-	const GLint size_loc = glGetUniformLocation(points_shader_, "u_point_size");
-	glUniform1f(size_loc, 4.0f);
-	glDrawArrays(GL_POINTS, 0, static_cast<GLsizei>(points.size()));
-	glBindVertexArray(0);
+	// Upload and draw border (one size larger)
+	if (!border_buf.empty()) {
+		glUseProgram(points_shader_);
+		glBindVertexArray(points_vao_);
+		glBindBuffer(GL_ARRAY_BUFFER, points_vbo_);
+		glBufferData(GL_ARRAY_BUFFER, border_buf.size() * sizeof(float), border_buf.data(), GL_DYNAMIC_DRAW);
+		const GLint size_loc = glGetUniformLocation(points_shader_, "u_point_size");
+		const float base_size = 3.0f;
+		glUniform1f(size_loc, base_size + 2.0f);
+		glDrawArrays(GL_POINTS, 0, static_cast<GLsizei>(points.size()));
+		// Draw inner points on top
+		glBufferData(GL_ARRAY_BUFFER, buf.size() * sizeof(float), buf.empty() ? nullptr : buf.data(), GL_DYNAMIC_DRAW);
+		glUniform1f(size_loc, base_size);
+		glDrawArrays(GL_POINTS, 0, static_cast<GLsizei>(points.size()));
+		glBindVertexArray(0);
+	}
 
 	// Hover detection (CPU, same logic as before)
 	if (!mouse_pos) return std::nullopt;

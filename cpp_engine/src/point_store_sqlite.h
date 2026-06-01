@@ -14,7 +14,8 @@ public:
     bool init();
 
     std::vector<DataPoint> load_points() override;
-    bool append_point(const DataPoint& p, std::string* out_change_id = nullptr) override;
+    bool append_point(const DataPoint& p, uuid* out_change_id = nullptr) override;
+    bool uuid_insert_or_update(const DataPoint& p, uuid* out_change_id = nullptr) override;
     bool overwrite_points(const std::vector<DataPoint>& points) override;
     bool push_change_event(const ChangeEvent& ev) override;
     // Reference table accessors
@@ -25,8 +26,6 @@ public:
     // Ensure the named zone contains the given point; expand bounding box if necessary.
     bool ensure_zone_contains_point(const std::string& zone_name, double x, double y, double grid_spacing_km);
 
-    static std::string generate_uuid_v4();
-
 private:
     std::string db_path_;
     std::string node_id_;
@@ -35,5 +34,6 @@ private:
     bool populate_reference_tables_if_empty();
     bool migrate_to_v1();
     bool migrate_to_v2();
+    bool migrate_to_v3();
     std::string data_point_to_json(const DataPoint& p);
 };

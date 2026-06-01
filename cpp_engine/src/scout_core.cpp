@@ -59,7 +59,14 @@ std::string to_lower(std::string value) {
     });
     return value;
 }
-
+std::vector<std::string> vector_to_lower(const std::vector<std::string>& values) {
+    std::vector<std::string> lower;
+    lower.reserve(values.size());
+    for (const auto& v : values) {
+        lower.push_back(to_lower(v));
+    }
+    return lower;
+}
 std::vector<std::string> split_csv_row(const std::string& line) {
     std::vector<std::string> values;
     std::string current;
@@ -175,6 +182,72 @@ bool try_parse_xyz_from_ocr_text(const std::string& ocr_text, double& x, double&
     }
     return true;
 }
+
+bool poi_subtype_from_string(const std::string& s, PoiSubType& out){
+    for (size_t i = 0; i < poi_impl::poi_subtype_count; ++i) {
+        if (s == poi_impl::poi_subtype_names_arr[i]) {
+            out = static_cast<PoiSubType>(static_cast<int>(i));
+            return true;
+        }
+    }
+
+    auto normalized = to_lower(s);
+    if (normalized == "none") {
+        out = PoiSubType::None;
+        return true;
+    }
+
+    if (string_in_vector_case_insensitive({ "Sand Cave", "Sand_Cave", "Cave (Sand)", "Cave_Sand" }, normalized)) {  out = PoiSubType::Sand_Cave; return true; }
+    if (string_in_vector_case_insensitive({ "Rock Cave", "Rock_Cave", "Cave (Rock)", "Cave_Rock" }, normalized)) {  out = PoiSubType::Rock_Cave; return true; }
+    if (string_in_vector_case_insensitive({ "Sink Hole", "Sink_Hole", "Cave (Sink)", "Cave_Sink" }, normalized)) {  out = PoiSubType::Sink_Hole; return true; }
+    if (string_in_vector_case_insensitive({ "Underground Facility", "Underground_Facility" }, normalized)) { out = PoiSubType::Underground_Facility; return true; }
+    if (string_in_vector_case_insensitive({ "Security Bunker", "Security_Bunker" }, normalized)) { out = PoiSubType::Security_Bunker; return true; }
+    if (string_in_vector_case_insensitive({ "Hurston Dynamics Operations Facility", "Hurston_Dynamics_Operations_Facility" }, normalized)) { out = PoiSubType::Hurston_Dynamics_Operations_Facility; return true; }
+    if (string_in_vector_case_insensitive({ "Security Outpost", "Security_Outpost" }, normalized)) { out = PoiSubType::Security_Outpost; return true; }
+    if (string_in_vector_case_insensitive({ "Derelict Outpost", "Derelict_Outpost" }, normalized)) { out = PoiSubType::Derelict_Outpost; return true; }
+    if (string_in_vector_case_insensitive({ "Outpost" }, normalized)) { out = PoiSubType::Outpost; return true; }
+    if (string_in_vector_case_insensitive({ "Mining Outpost", "Mining_Outpost" }, normalized)) { out = PoiSubType::Mining_Outpost; return true; }
+    if (string_in_vector_case_insensitive({ "Ship Wreck", "Ship_Wreck" }, normalized)) { out = PoiSubType::Ship_Wreck; return true; }
+    if (string_in_vector_case_insensitive({ "Caterpillar Puzzle Wreck", "Caterpillar_Puzzle_Wreck" }, normalized)) { out = PoiSubType::Caterpillar_Puzzle_Wreck; return true; }
+    if (normalized == "druglab") { out = PoiSubType::Druglab; return true; }
+    if (normalized == "easteregg") { out = PoiSubType::Easteregg; return true; }
+    if (string_in_vector_case_insensitive({ "Animal Area", "Animal_Area" }, normalized)) { out = PoiSubType::Animal_Area; return true; }
+    if (normalized == "event") { out = PoiSubType::Event; return true; }
+    if (string_in_vector_case_insensitive({ "Object Container", "Object_Container" }, normalized)) { out = PoiSubType::Object_Container; return true; }
+    if (string_in_vector_case_insensitive({ "Orbital Station", "Orbital_Station" }, normalized)) { out = PoiSubType::Orbital_Station; return true; }
+    if (string_in_vector_case_insensitive({ "Landing Zone", "Landing_Zone" }, normalized)) { out = PoiSubType::Landing_Zone; return true; }
+    if (string_in_vector_case_insensitive({ "Racetrack(Community)", "Racetrack_Community" }, normalized)) { out = PoiSubType::Racetrack_Community; return true; }
+    if (normalized == "racetrack") { out = PoiSubType::Racetrack; return true; }
+    if (normalized == "river") { out = PoiSubType::River; return true; }
+    if (string_in_vector_case_insensitive({ "Onyx Facility", "Onyx_Facility" }, normalized)) { out = PoiSubType::Onyx_Facility; return true; }
+    if (string_in_vector_case_insensitive({ "Comm Array", "Comm_Array" }, normalized)) { out = PoiSubType::Comm_Array; return true; }
+    if (string_in_vector_case_insensitive({ "Abandoned Outpost", "Abandoned_Outpost" }, normalized)) { out = PoiSubType::Abandoned_Outpost; return true; }
+    if (normalized == "spaceport") { out = PoiSubType::Spaceport; return true; }
+    if (string_in_vector_case_insensitive({ "Forward Operating Base", "Forward_Operating_Base" }, normalized)) { out = PoiSubType::Forward_Operating_Base; return true; }
+    if (string_in_vector_case_insensitive({ "Scrapyard" }, normalized)) { out = PoiSubType::Scrapyard; return true; }
+    if (string_in_vector_case_insensitive({ "Jump Point", "Jump_Point" }, normalized)) { out = PoiSubType::Jump_Point; return true; }
+    if (string_in_vector_case_insensitive({ "Derelict Settlement", "Derelict_Settlement" }, normalized)) { out = PoiSubType::Derelict_Settlement; return true; }
+    if (string_in_vector_case_insensitive({ "Planetary Alignment Facility", "Planetary_Alignment_Facility" }, normalized)) { out = PoiSubType::Planetary_Alignment_Facility; return true; }
+    if (string_in_vector_case_insensitive({ "Prison" }, normalized)) { out = PoiSubType::Prison; return true; }
+    if (string_in_vector_case_insensitive({ "RestStop", "Rest_Stop" }, normalized)) { out = PoiSubType::RestStop; return true; }
+    if (string_in_vector_case_insensitive({ "Colonial Outpost", "Colonial_Outpost" }, normalized)) { out = PoiSubType::Colonial_Outpost; return true; }
+    if (string_in_vector_case_insensitive({ "Missing Derelict Outpost", "Missing_Derelict_Outpost" }, normalized)) { out = PoiSubType::Missing_Derelict_Outpost; return true; }
+    if (string_in_vector_case_insensitive({ "Distribution Center", "Distribution_Center" }, normalized)) { out = PoiSubType::Distribution_Center; return true; }
+    if (string_in_vector_case_insensitive({ "Mission Area", "Mission_Area" }, normalized)) { out = PoiSubType::Mission_Area; return true; }
+    if (string_in_vector_case_insensitive({ "Colonial Bunker", "Colonial_Bunker" }, normalized)) { out = PoiSubType::Colonial_Bunker; return true; }
+    if (string_in_vector_case_insensitive({ "Asteroid Base", "Asteroid_Base" }, normalized)) { out = PoiSubType::Asteroid_Base; return true; }
+    if (string_in_vector_case_insensitive({ "Orbital Laser Platform", "Orbital_Laser_Platform" }, normalized)) { out = PoiSubType::Orbital_Laser_Platform; return true; }
+    if (string_in_vector_case_insensitive({ "Ground Activation Platform", "Ground_Activation_Platform" }, normalized)) { out = PoiSubType::Ground_Activation_Platform; return true; }
+    if (string_in_vector_case_insensitive({ "Asteroid Belt", "Asteroid_Belt" }, normalized)) { out = PoiSubType::Asteroid_Belt; return true; }
+    if (s == to_lower("Spaceport")) { out = PoiSubType::Station; return true; }
+    if (string_in_vector_case_insensitive({ "LandingZone", "Landing_Zone" }, normalized)) { out = PoiSubType::LandingZone; return true; }
+    if (string_in_vector_case_insensitive({ "Lazarus Transport Hub", "Lazarus_Transport_Hub" }, normalized)) { out = PoiSubType::Lazarus_Transport_Hub; return true; }
+    if (string_in_vector_case_insensitive({ "Satellite Wreck", "Satellite_Wreck" }, normalized)) { out = PoiSubType::Satellite_Wreck; return true; }
+    if (string_in_vector_case_insensitive({ "Mining Tower", "Mining_Tower" }, normalized)) { out = PoiSubType::Mining_Tower; return true; }
+
+    return false;
+}
+
 
 bool predict_labels_onnx(const std::string& model_path, const std::vector<float>& input_values, int64_t sample_count, std::vector<int64_t>& labels, std::string& error_message) {
 #ifndef SCOUT_HAS_ONNXRUNTIME

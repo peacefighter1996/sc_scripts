@@ -348,6 +348,8 @@ std::vector<DataPoint> load_points(const std::filesystem::path& csv_path) {
 
     std::string line;
     bool first_row = true;
+    std::vector<std::string> headers {"recordid", "uuid", "server", "x", "y", "z", "planet", "material", "quality_min", "quality_max", "note", "poi_type", "poi_subtype", "poi_time", "qt_persistent"};
+    auto header_indices = std::vector<int>(headers.size(), -1);
     while (std::getline(in, line)) {
         if (line.empty()) {
             continue;
@@ -357,8 +359,13 @@ std::vector<DataPoint> load_points(const std::filesystem::path& csv_path) {
             first_row = false;
             const auto lower = to_lower(line);
             if (lower.find("recordid") != std::string::npos || lower.find("id") != std::string::npos) {
+                for (size_t i = 0; i < headers.size(); ++i) {
+                    header_indices[i] = find_column_index(split_csv_row(line), { headers[i] });
+                }
                 continue;
             }
+            // No header row detected; will parse based on expected column order with best-effort handling of missing fields for backward compatibility.
+            header_indices = { 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14 };
         }
 
         const auto row = split_csv_row(line);
@@ -368,21 +375,22 @@ std::vector<DataPoint> load_points(const std::filesystem::path& csv_path) {
 
         try {
             DataPoint point;
-            point.id = std::stoi(trim(row[0]));
-            point.server = trim(row[1]);
-            point.x = std::stod(trim(row[2]));
-            point.y = std::stod(trim(row[3]));
-            point.z = std::stod(trim(row[4]));
-            point.planet = trim(row[5]);
-            point.material = trim(row[6]);
-            // backward-compatible: quality fields expected at indices 7 and 8
-            point.quality_min = row.size() > 7 ? std::stod(trim(row[7])) : 0.0;
-            point.quality_max = row.size() > 8 ? std::stod(trim(row[8])) : 0.0;
-            point.note = row.size() >= 10 ? row[9] : std::string{};
+            point.id = std::stoi(trim(row[header_indices[0]]));
+            point.uuid = uuid::from_string(trim(row[header_indices[1]]));
+            point.server = trim(row[header_indices[2]]);
+            point.x = std::stod(trim(row[header_indices[3]]));
+            point.y = std::stod(trim(row[header_indices[4]]));
+            point.z = std::stod(trim(row[header_indices[5]]));
+            point.planet = trim(row[header_indices[6]]);
+            point.material = trim(row[header_indices[7]]);
+            // backward-compatible: quality fields expected at indices 8 and 9
+            point.quality_min = row.size() > 8 && header_indices[8] >= 0 ? std::stod(trim(row[header_indices[8]])) : 0.0;
+            point.quality_max = row.size() > 9 && header_indices[9] >= 0 ? std::stod(trim(row[header_indices[9]])) : 0.0;
+            point.note = row.size() >= 10 && header_indices[10] >= 0 ? row[header_indices[10]] : std::string{};
             // POI type may be stored as an integer index or a name. Handle both for compatibility.
             point.poi_type = PoiType::Unknown;
-            if (row.size() >= 11) {
-                const std::string v = trim(row[10]);
+            if (row.size() >= 11 && header_indices[11] >= 0) {
+                const std::string v = trim(row[header_indices[11]]);
                 if (!v.empty()) {
                     try {
                         int iv = std::stoi(v);
@@ -402,7 +410,8 @@ std::vector<DataPoint> load_points(const std::filesystem::path& csv_path) {
                     }
                 }
             }
-            point.time_info = row.size() >= 12 ? trim(row[11]) : std::string{};
+            point.time_info = row.size() >= 13 && header_indices[12] >= 0 ? trim(row[header_indices[12]]) : std::string{};
+            point.qt_persistent = row.size() >= 14 && header_indices[13] >= 0 ? (to_lower(trim(row[header_indices[13]])) == "1" || to_lower(trim(row[header_indices[13]])) == "true") : false;
             const auto material = to_lower(point.material);
             point.location = material == "location" || material == "cave";
             points.push_back(point);
@@ -427,10 +436,11 @@ bool append_point_csv(const std::filesystem::path& csv_path, const DataPoint& po
     }
 
     if (!file_exists) {
-        out << "recordid,server,x,y,z,planet,material,quality_min,quality_max,note,poi_type,poi_time\n";
+        out << "recordid,uuid,server,x,y,z,planet,material,quality_min,quality_max,note,poi_type,poi_subtype,poi_time,qt_persistent\n";
     }
 
     out << point.id << ','
+        << csv_escape(point.uuid.to_string()) << ','
         << csv_escape(point.server) << ','
         << std::setprecision(15) << point.x << ','
         << std::setprecision(15) << point.y << ','
@@ -441,7 +451,9 @@ bool append_point_csv(const std::filesystem::path& csv_path, const DataPoint& po
         << std::setprecision(15) << point.quality_max << ','
         << csv_escape(point.note) << ','
         << csv_escape(poi_type_name(point.poi_type)) << ','
-        << csv_escape(point.time_info)
+        << csv_escape(poi_subtype_name(point.subtype)) << ',' 
+        << csv_escape(point.time_info) << ','
+        << (point.qt_persistent ? 1 : 0)
         << '\n';
 
     return true;
@@ -461,9 +473,10 @@ bool write_points_csv(const std::filesystem::path& csv_path, const std::vector<D
         return false;
     }
 
-    out << "recordid,server,x,y,z,planet,material,quality_min,quality_max,note,poi_type,poi_time\n";
+    out << "recordid,uuid,server,x,y,z,planet,material,quality_min,quality_max,note,poi_type,poi_subtype,poi_time,qt_persistent\n";
     for (const auto& point : points) {
         out << point.id << ','
+            << csv_escape(point.uuid.to_string()) << ','
             << csv_escape(point.server) << ','
             << std::setprecision(15) << point.x << ','
             << std::setprecision(15) << point.y << ','
@@ -474,7 +487,9 @@ bool write_points_csv(const std::filesystem::path& csv_path, const std::vector<D
             << std::setprecision(15) << point.quality_max << ','
             << csv_escape(point.note) << ','
             << csv_escape(poi_type_name(point.poi_type)) << ','
-            << csv_escape(point.time_info)
+            << csv_escape(poi_subtype_name(point.subtype)) << ','
+            << csv_escape(point.time_info) << ','
+            << (point.qt_persistent ? 1 : 0)
             << '\n';
     }
 

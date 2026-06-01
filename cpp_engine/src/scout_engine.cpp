@@ -216,18 +216,30 @@ int main(int argc, char** argv) {
 		}
 
 		std::vector<StarmapPoi> pois;
+		std::vector<DataPoint> points;
 		bool retFlag;
         int retVal = ParsePoiObjects(j, pois, retFlag);
         if (retFlag)
             return retVal;
+		for (const auto& p : pois) {
+			if (!std::isnan(p.Latitude) && !std::isnan(p.Longitude) && !std::isnan(p.XCoord) && !std::isnan(p.YCoord) && !std::isnan(p.ZCoord)) {
+				DataPoint dp;
+				if (starmap_poi_to_datapoint(p, dp)) {
+					points.push_back(dp);
+				}
+			}
+		}
 
         // Print parsed POIs: Latitude, Longitude, Type/Subtype
-		for (const auto& p : pois) {
-			if (!std::isnan(p.Latitude) && !std::isnan(p.Longitude)) {
-				const std::string subtype = !p.POI_Subtype.empty() ? p.POI_Subtype : "(unknown)";
-				const std::string type = !p.Type.empty() ? p.Type : "(unknown)";
-				std::cout << p.item_id << '\t' << p.PoiName << '\t' << p.Planet << '\t' << p.XCoord << '\t' << p.YCoord << '\t' << p.ZCoord << '\t' << type << '\t' << subtype << '\n';
+		double lat = 0.0;
+		double lon = 0.0;
+		double alt = 0.0;
+		for (const auto& p : points) {
+			if (p.subtype != PoiSubType::None) {
+				continue;
 			}
+			std::cout << "[x,y,z]: [" << p.x << ", " << p.y << ", " << p.z << "]" <<", Name: " << p.note
+				<< ", Type: " << poi_type_name(p.poi_type) << ", Subtype: " << poi_subtype_name(p.subtype) << '\n';
 		}
 
 		std::vector<std::string> unique_types;
@@ -258,7 +270,7 @@ int main(int argc, char** argv) {
 
 		return 0;
 	}
-	// print-starmap-json starmap_poi.json
+	// convert starmap POIs from JSON to CSV format for import into point store; expects same JSON structure as print-starmap-json command, but outputs CSV lines with x,y,z,planet,note,type,subtype fields for each POI with valid coordinates
 	if (command == "import-starmap-json") {
 		if (argc != 3) {
 			std::cerr << "usage: scout_engine import-starmap-json <json_path>\n";
@@ -279,13 +291,63 @@ int main(int argc, char** argv) {
 		//convert POI to DataPoint and append to CSV
 		for (const auto& p : pois) {
 			if (!std::isnan(p.Latitude) && !std::isnan(p.Longitude) && !std::isnan(p.XCoord) && !std::isnan(p.YCoord) && !std::isnan(p.ZCoord)) {
-				append_point_csv("starmap_pois.csv", starmap_poi_to_datapoint(p));
+				DataPoint dp;
+				if (starmap_poi_to_datapoint(p, dp)) {
+					append_point_csv("starmap_pois.csv", dp);
+				}
 			}
 		}
 
 		return 0;
 	}
 
+
+	if (command == "dbimport-starmap-json") {
+		if (argc != 4) {
+			std::cerr << "usage: scout_engine dbimport-starmap-json <json_path> <db>\n";
+			return 2;
+		}
+
+		SqlitePointStore store(argv[3], "");
+
+		if (!store.init()) {
+			std::cerr << "failed to initialize connection";
+			return 3;
+		}
+
+
+		nlohmann::json j;
+		if (!extract_json_from_file(argv[2], j)) {
+			std::cerr << "failed to extract JSON from file\n";
+			return 1;
+		}
+
+		
+
+		std::vector<StarmapPoi> pois;
+		bool retFlag;
+		int retVal = ParsePoiObjects(j, pois, retFlag);
+		if (retFlag)
+			return retVal;
+
+		//convert POI to DataPoint and append to CSV
+		for (const auto& p : pois) {
+			if (!std::isnan(p.XCoord) && !std::isnan(p.YCoord) && !std::isnan(p.ZCoord)) {
+				DataPoint dp;
+				if (!starmap_poi_to_datapoint(p, dp)) {
+					std::cerr << "failed to convert POI to datapoint: " << p.PoiName << '\n';
+					continue;
+				}
+				if (store.uuid_insert_or_update(dp)) {
+					std::cout << "imported POI: " << p.PoiName << " at [" << p.XCoord << ", " << p.YCoord << ", " << p.ZCoord << "]\n";
+				} else {
+					std::cerr << "failed to import POI: " << p.PoiName << '\n';
+				}
+			}
+		}
+
+		return 0;
+	}
 
 
 

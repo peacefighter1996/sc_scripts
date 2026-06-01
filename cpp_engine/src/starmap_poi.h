@@ -191,22 +191,46 @@ inline PoiType get_PoiType(const StarmapPoi& poi) {
 	if (type_str == "Cave" || type_str == "Rock Cave" || type_str == "Sand Cave" || type_str == "Sink Hole") {
 		return PoiType::Cave;
 	}
-	auto locationtypes = { "Druglab",
-		"Easteregg", 
-		"Animal Area", 
-		"Event", 
-		"Object Container", 
-		"River", 
-		"Mission Area", 
-		"RestStop", 
-		"Distribution Center",
-		"Derelict Outpost", 
-		"Outpost",
-		"Abandoned Outpost",
+	auto locationtypes = { 
 		"Underground Facility",
-		"Colonial Bunker"
+		"Security Outpost",
+		"Derelict Outpost",
+		"Outpost",
+		"Wreck",
+		"Druglab",
+		"Easteregg",
+		"Animal Area",
+		"Event",
+		"Object Container",
+		"Orbital Station",
+		"Landing Zone",
+		"Racetrack(Community)",
+		"Racetrack",
+		"River",
+		"Onyx Facility",
+		"Comm Array",
+		"Abandoned Outpost",
+		"Spaceport",
+		"Forward Operating Base",
+		"Scrapyard",
+		"Jump Point",
+		"Derelict Settlement",
+		"Planetary Alignment Facility",
+		"Prison",
+		"RestStop",
+		"Colonial Outpost",
+		"Missing Derelict Outpost",
+		"Distribution Center",
+		"Mission Area",
+		"Colonial Bunker",
+		"Asteroid Base",
+		"Orbital Laser Platform",
+		"Ground Activation Platform",
+		"Asteroid Belt",
+		"Station",
+		"LandingZone"
 	};
-	// 
+	
 	auto it = std::find(locationtypes.begin(), locationtypes.end(), type_str);
 	if (it != locationtypes.end()) {
 		return PoiType::Location;
@@ -216,7 +240,7 @@ inline PoiType get_PoiType(const StarmapPoi& poi) {
 
 inline DataPoint starmap_poi_to_datapoint(const StarmapPoi& poi) {
 	DataPoint p;
-	p.id = 0; // to be set by store
+	p.id = poi.item_id; // to be set by store
 	p.server = "All"; // not applicable
 	p.planet = poi.Planet;
 	p.x = poi.XCoord;

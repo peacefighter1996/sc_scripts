@@ -98,7 +98,7 @@ $foundLabel = $false
 foreach ($c in $labelCandidates) {
     $src = Join-Path $repoRoot $c
     if (Test-Path $src) {
-        Copy-IfExists $src (Join-Path $dataDir 'labelmap.json') | Out-Null
+        Copy-IfExists $src (Join-Path $dataDir 'label_map.json') | Out-Null
         $foundLabel = $true
         break
     }

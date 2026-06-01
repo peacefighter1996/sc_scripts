@@ -423,8 +423,12 @@ bool SqlitePointStore::init() {
                 // look for geoscout.csv in same directory
                 std::filesystem::path dbp(db_path_);
                 auto csv_path = dbp.parent_path() / "geoscout.csv";
+
+				std::cout << "Points table empty, looking for CSV at " << csv_path << "\n";
+
                 if (std::filesystem::exists(csv_path)) {
                     auto csv_points = ::load_points(csv_path);
+					std::cout << "Loaded " << csv_points.size() << " points from CSV, migrating to sqlite...\n";
                     if (!csv_points.empty()) {
                         if (exec_sql(db_handle_, "BEGIN TRANSACTION;")) {
                             const char* insert_point_sql = "INSERT OR REPLACE INTO points(recordid,server,x,y,z,planet,material,location,quality_min,quality_max,note,poi_type,poi_time,last_modified_ts,last_modified_node) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?);";

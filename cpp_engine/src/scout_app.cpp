@@ -17,6 +17,7 @@
 #include <filesystem>
 #include <memory>
 #include <cstring>
+#include <cctype>
 
 #ifdef _WIN32
 #ifndef NOMINMAX
@@ -223,6 +224,20 @@ struct AppState {
 	std::string selected_planet;
 	std::string last_detected_region;
 	std::string selected_material;
+	std::string popup_selected_item;
+	// Text used to filter resources in the UI (typed by the user)
+	std::string resource_filter_text;
+	// Text used to filter resources when selecting for a new record
+	std::string resource_record_filter_text;
+
+	// Text used to filter servers in the Server selector popup
+	std::string server_filter_text;
+
+	// Text used to filter planets in the Zone selector popup
+	std::string planet_filter_text;
+
+	// Most-recently-used resources for quick selection when adding a new point
+	std::vector<std::string> recent_resources;
 	std::string selected_server;
 	std::optional<std::string> last_detected_rock;
 	int quality_min{ kMinQuality };
@@ -686,6 +701,28 @@ struct AppState {
 	}
 };
 
+static std::string to_lower(std::string s) {
+	std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+	return s;
+}
+
+static bool contains_case_insensitive(const std::string& text, const std::string& query) {
+	if (query.empty()) return true;
+	const auto lt = to_lower(text);
+	const auto lq = to_lower(query);
+	return lt.find(lq) != std::string::npos;
+}
+
+static void push_recent_resource(AppState& state, const std::string& resource) {
+	if (resource.empty()) return;
+	auto it = std::find(state.recent_resources.begin(), state.recent_resources.end(), resource);
+	if (it != state.recent_resources.end()) {
+		state.recent_resources.erase(it);
+	}
+	state.recent_resources.insert(state.recent_resources.begin(), resource);
+	if (state.recent_resources.size() > 8) state.recent_resources.resize(8);
+}
+
 bool combo_string(const char* label, const std::vector<std::string>& items, std::string& current_value) {
 	auto current_it = std::find(items.begin(), items.end(), current_value);
 	int current_index = current_it != items.end() ? static_cast<int>(std::distance(items.begin(), current_it)) : 0;
@@ -923,17 +960,27 @@ int run_scout_app() {
 					}
 				}
 
-				ImGui::Separator();
+				
 
 				if (start_disabled_due_to_server) {
 					ImGui::EndDisabled();
 					ImGui::SameLine();
 					ImGui::TextColored(ImVec4(0.8f, 0.8f, 0.8f, 1.0f), "Disabled for 'All' server");
 				}
+				ImGui::Separator();
 
-				if (combo_string("Server", state.server_ids, state.selected_server)) {
-					state.new_data.server = state.selected_server;
-					state.filter_points();
+				{
+					std::string server_btn = std::string("Server: ") + state.selected_server;
+					if (ImGui::Button(server_btn.c_str())) {
+						ImGui::OpenPopup("ServerSelectPopup");
+					}
+					if (ImGui::BeginPopupModal("ServerSelectPopup", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+						popup_filter(state.server_filter_text, state.popup_selected_item, state.server_ids, state.selected_server, [&](const std::string& selected) {
+							state.selected_server = selected;
+							state.new_data.server = selected;
+							state.filter_points();
+						});
+					}
 				}
 
 				if (!state.settings.ocr_feed_planet_update_enabled) {
@@ -970,20 +1017,35 @@ int run_scout_app() {
 					state.filter_points();
 				}
 
-				if (state.selected_system != "All") {
-					if (combo_string("Zone", state.system_planets, state.selected_planet)) {
-						state.new_data.planet = state.selected_planet;
-						state.filter_points();
-						state.update_grid_spacing();
+				{
+					std::string zone_btn = std::string("Zone: ") + state.selected_planet;
+					if (ImGui::Button(zone_btn.c_str())) {
+						ImGui::OpenPopup("ZoneSelectPopup");
 					}
-				} else if (combo_string("Zone", state.planets, state.selected_planet)) {
-					state.new_data.planet = state.selected_planet;
-					state.filter_points();
-					state.update_grid_spacing();
+					if (ImGui::BeginPopupModal("ZoneSelectPopup", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+						const std::vector<std::string>* planet_items = (state.selected_system != "All") ? &state.system_planets : &state.planets;
+						popup_filter(state.planet_filter_text, state.popup_selected_item, *planet_items, state.selected_planet, [&](const std::string& selected) {
+							state.selected_planet = selected;
+							state.new_data.planet = selected;
+							state.filter_points();
+							state.update_grid_spacing();
+						});
+					}
 				}
 
-				if (combo_string("Resource", state.resource_filter_materials, state.selected_material)) {
-					state.filter_points();
+				{
+					// Button opens a modal popup for selecting resource with a filter
+					std::string resource_button = std::string("Resource: ") + state.selected_material;
+					if (ImGui::Button(resource_button.c_str())) {
+						ImGui::OpenPopup("ResourceSelectPopup");
+					}
+
+					if (ImGui::BeginPopupModal("ResourceSelectPopup", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+                        popup_filter(state.resource_filter_text, state.popup_selected_item, state.resource_filter_materials, state.selected_material, [&](const std::string& selected) {
+                            state.selected_material = selected;
+                            state.filter_points();
+                        });
+                    }
 				}
 
 				ImGui::Separator();
@@ -1012,8 +1074,33 @@ int run_scout_app() {
 					};
 				}
 
-				if (combo_string("Resource Record", state.resource_filter_materials, state.new_data.material)) {
-					//state.new_data.material = state.selected_material;
+				{
+					// Button opens a modal popup for selecting resource for the new record
+					std::string rec_button = std::string("Resource Record: ") + state.new_data.material;
+					if (ImGui::Button(rec_button.c_str())) {
+						ImGui::OpenPopup("ResourceRecordSelectPopup");
+					}
+
+					if (ImGui::BeginPopupModal("ResourceRecordSelectPopup", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+						popup_filter(state.resource_record_filter_text, state.popup_selected_item, state.resource_filter_materials, state.new_data.material, [&](const std::string& selected) {
+							state.new_data.material = selected;
+							push_recent_resource(state, selected);
+						});
+					}
+				}
+
+				// Recent resources for quick selection when adding a new point
+				if (!state.recent_resources.empty()) {
+					ImGui::Text("Recent:");
+					ImGui::SameLine();
+					for (size_t ri = 0; ri < state.recent_resources.size(); ++ri) {
+						std::string btn = state.recent_resources[ri] + std::string("##recent") + std::to_string(ri);
+						if (ImGui::SmallButton(btn.c_str())) {
+							state.new_data.material = state.recent_resources[ri];
+							push_recent_resource(state, state.new_data.material);
+						}
+						if (ri + 1 < state.recent_resources.size()&& ri != 4) ImGui::SameLine();
+					}
 				}
 
 				ImGui::InputFloat("X", &input_x);
@@ -1044,6 +1131,7 @@ int run_scout_app() {
 						if (state.store->append_point(new_point, &change_id)) {
 							state.points.push_back(new_point);
 							state.new_data.id += 1;
+							push_recent_resource(state, new_point.material);
 							// Persist an outbox event and notify sync service if present
 							if (state.sync_service) {
 								ChangeEvent ev;
@@ -1075,6 +1163,57 @@ int run_scout_app() {
 						if (append_point_csv(detect_repo_root() / "data" / "geoscout.csv", new_point)) {
 							state.points.push_back(new_point);
 							state.new_data.id += 1;
+							push_recent_resource(state, new_point.material);
+						}
+					}
+					state.filter_points();
+				}
+				ImGui::SameLine();
+				if (ImGui::Button("Add Qualityless")) {
+					DataPoint new_point;
+					new_point.id = state.new_data.id;
+					new_point.server = state.selected_server;
+					new_point.x = state.new_data.x;
+					new_point.y = state.new_data.y;
+					new_point.z = state.new_data.z;
+					new_point.planet = state.selected_planet;
+					new_point.material = state.new_data.material;
+					new_point.location = false;
+					new_point.quality_min = 1;
+					new_point.quality_max = 1;
+					new_point.poi_type = PoiType::Mineral;
+					new_point.time_info = format_iso_datetime(now_ymdhm());
+					if (state.store) {
+						std::string change_id;
+						if (state.store->append_point(new_point, &change_id)) {
+							state.points.push_back(new_point);
+							state.new_data.id += 1;
+							push_recent_resource(state, new_point.material);
+							if (state.sync_service) {
+								ChangeEvent ev;
+								if (change_id.empty()) {
+									ev.change_id = (state.settings.sync_node_id.empty() ? "local-node" : state.settings.sync_node_id) + std::string("-") + std::to_string(static_cast<int64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count()));
+								} else {
+									ev.change_id = change_id;
+								}
+								ev.node_id = state.settings.sync_node_id.empty() ? "local-node" : state.settings.sync_node_id;
+								ev.created_ts = static_cast<int64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count());
+								ev.op = "upsert";
+								ev.recordid = new_point.id;
+								ev.payload_json = "";
+								state.sync_service->notify_new_local_event(ev);
+							}
+							if (auto sqlite_backend = dynamic_cast<SqlitePointStore*>(state.store.get())) {
+								if (sqlite_backend->ensure_zone_contains_point(new_point.planet, new_point.x, new_point.y, state.settings.grid_spacing_km)) {
+									state.reload_planet_catalog();
+								}
+							}
+						}
+					} else {
+						if (append_point_csv(detect_repo_root() / "data" / "geoscout.csv", new_point)) {
+							state.points.push_back(new_point);
+							state.new_data.id += 1;
+							push_recent_resource(state, new_point.material);
 						}
 					}
 					state.filter_points();
@@ -1756,4 +1895,98 @@ int run_scout_app() {
 	ocr_timer.join();
 
 	return 0;
+}
+
+void popup_filter(std::string& filtertext, std::string& local_selected, const std::vector<std::string>& items, const std::string& app_selected_item, std::function<void(const std::string&)> on_select)
+{
+    char buf[128] = {0};
+    strncpy(buf, filtertext.c_str(), sizeof(buf) - 1);
+    if (ImGui::IsWindowAppearing()){
+        filtertext = "";
+		local_selected = app_selected_item;
+		ImGui::SetKeyboardFocusHere();
+	}
+    if (ImGui::InputText("Filter", buf, IM_ARRAYSIZE(buf), ImGuiInputTextFlags_AutoSelectAll))
+    {
+        filtertext = buf;
+    }
+
+    std::vector<std::string> filtered_items;
+    filtered_items.reserve(items.size());
+    for (const auto &m : items)
+    {
+        if (contains_case_insensitive(m, filtertext))
+            filtered_items.push_back(m);
+    }
+
+	// Local selection state (do not mutate the app's selected item until commit)
+	int sel_index = -1;
+	for (size_t i = 0; i < filtered_items.size(); ++i) {
+		if (filtered_items[i] == local_selected) {
+			sel_index = static_cast<int>(i);
+			break;
+		}
+	}
+	if (sel_index == -1 && !filtered_items.empty()) {
+		sel_index = 0;
+		local_selected = filtered_items[0];
+	}
+
+	// Keyboard navigation: Up/Down to move selection, Enter to accept
+	const bool nav_up = ImGui::IsKeyPressed(ImGuiKey_UpArrow, true);
+	const bool nav_down = ImGui::IsKeyPressed(ImGuiKey_DownArrow, true);
+	const bool nav_enter = ImGui::IsKeyPressed(ImGuiKey_Enter) || ImGui::IsKeyPressed(ImGuiKey_KeypadEnter);
+	if (!filtered_items.empty()) {
+		if (nav_up) {
+			if (sel_index > 0) {
+				--sel_index;
+				local_selected = filtered_items[sel_index];
+			}
+		} else if (nav_down) {
+			if (sel_index < static_cast<int>(filtered_items.size()) - 1) {
+				++sel_index;
+				local_selected = filtered_items[sel_index];
+			}
+		}
+		if (nav_enter && sel_index >= 0) {
+			on_select(filtered_items[sel_index]);
+			ImGui::CloseCurrentPopup();
+			return;
+		}
+	}
+
+    ImGui::Separator();
+    if (filtered_items.empty())
+    {
+        ImGui::TextDisabled("No matches");
+    }
+    else
+    {
+        const int child_h = 8 * static_cast<int>(ImGui::GetTextLineHeightWithSpacing());
+        ImGui::BeginChild("ResourceListChild", ImVec2(300, (float)child_h), true);
+		bool any_selected = false;
+		for (size_t i = 0; i < filtered_items.size(); ++i)
+		{
+			const bool sel = (filtered_items[i] == local_selected);
+			if (ImGui::Selectable(filtered_items[i].c_str(), sel))
+			{
+				on_select(filtered_items[i]);
+				ImGui::CloseCurrentPopup();
+				return;
+			}
+			if (sel) {
+				any_selected = true;
+			}
+		}
+		// If nothing is selected in the filtered list, default to first item so Enter has a target
+		if (!any_selected && !filtered_items.empty()) {
+			local_selected = filtered_items[0];
+		}
+        ImGui::EndChild();
+    }
+
+    ImGui::Separator();
+    if (ImGui::Button("Close"))
+        ImGui::CloseCurrentPopup();
+    ImGui::EndPopup();
 }

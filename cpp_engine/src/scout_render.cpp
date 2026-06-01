@@ -368,6 +368,37 @@ std::optional<std::string> ScoutRenderer::render_map(GLuint texture,
 			}
 			a = 1.0f;
 		}
+		if (point.poi_type == PoiType::Cave) {
+			// give brown color to caves
+			r = 0.59f;
+			g = 0.29f;
+			b = 0.0f;
+			a = 0.9f;
+		}
+		if (point.poi_type == PoiType::Location) {
+			if (point.note.find("Wreck") != std::string::npos || point.note.find("Derelict") != std::string::npos) {
+				// give gray color to wrecks
+				r = 0.2f;
+				g = 0.2f;
+				b = 0.2f;
+				a = 0.9f;
+			}
+			if (point.note._Starts_with("Frontier")) {
+				// give green color to Frontier locations
+				r = 0.5f;
+				g = 0.5f;
+				b = 0.5f;
+				a = 0.9f;
+			}
+
+			if (point.note.find("Onyx") != std::string::npos) {
+				// give gray color to Onyx facilities
+				r = 0.2f;
+				g = 0.0f;
+				b = 0.0f;
+				a = 0.9f;
+			}
+		}
 
 		buf.push_back(x);
 		buf.push_back(y);

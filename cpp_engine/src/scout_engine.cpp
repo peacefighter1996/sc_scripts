@@ -14,6 +14,7 @@
 #include <regex>
 #include <string>
 #include <vector>
+#include "scout_engine.h"
 
 static std::string sanitize_json_content(const std::string& input) {
 	std::string out;
@@ -205,71 +206,22 @@ int main(int argc, char** argv) {
 			return 2;
 		}
 
-		std::ifstream file(argv[2], std::ios::in | std::ios::binary);
-		if (!file) {
-			auto full_path = std::filesystem::absolute(argv[2]);
-			std::cerr << "failed to open file: " << full_path << '\n';
-			return 1;
-		}
-
-		std::string content((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
-		if (content.empty()) {
-			return 0;
-		}
-
-		// Attempt to parse with nlohmann::json; if that fails, fall back to regex extraction
-
-		// Sanitize content: escape CR/LF that appear inside JSON string literals
-		content = sanitize_json_content(content);
+		
 
 		nlohmann::json j;
-		try {
-			j = nlohmann::json::parse(content, nullptr, /*allow_exceptions=*/true, /*ignore_comments=*/true);
-		}
-		catch (const std::exception&) {
-			j = nlohmann::json::parse(content);
+
+		if (!extract_json_from_file(argv[2], j)) {
+			std::cerr << "failed to extract JSON from file\n";
+			return 1;
 		}
 
 		std::vector<StarmapPoi> pois;
-		if (j.is_array()) {
-			for (const auto& elem : j) {
+		bool retFlag;
+        int retVal = ParsePoiObjects(j, pois, retFlag);
+        if (retFlag)
+            return retVal;
 
-				if (!elem.is_object()) continue;
-				try {
-					StarmapPoi p = elem.get<StarmapPoi>();
-					pois.push_back(std::move(p));
-				}
-				catch (const std::exception& e) {
-					std::cout << elem.dump() << '\n' << e.what() << '\n';
-					// ignore malformed entries
-				}
-			}
-		} else if (j.is_object()) {
-			if (j.contains("Latitude") || j.contains("Longitude") || j.contains("item_id")) {
-				try {
-					StarmapPoi p = j.get<StarmapPoi>();
-					pois.push_back(std::move(p));
-				}
-				catch (const std::exception&) {}
-			} else {
-				for (auto it = j.begin(); it != j.end(); ++it) {
-					if (!it.value().is_array()) continue;
-					for (const auto& elem : it.value()) {
-						if (!elem.is_object()) continue;
-						try {
-							StarmapPoi p = elem.get<StarmapPoi>();
-							pois.push_back(std::move(p));
-						}
-						catch (const std::exception&) {}
-					}
-				}
-			}
-		} else {
-			std::cerr << "JSON is not an object or array\n";
-			return 1;
-		}
-
-		// Print parsed POIs: Latitude, Longitude, Type/Subtype
+        // Print parsed POIs: Latitude, Longitude, Type/Subtype
 		for (const auto& p : pois) {
 			if (!std::isnan(p.Latitude) && !std::isnan(p.Longitude)) {
 				const std::string subtype = !p.POI_Subtype.empty() ? p.POI_Subtype : "(unknown)";
@@ -309,75 +261,27 @@ int main(int argc, char** argv) {
 	// print-starmap-json starmap_poi.json
 	if (command == "import-starmap-json") {
 		if (argc != 3) {
-			std::cerr << "usage: scout_engine print-starmap-json <json_path>\n";
+			std::cerr << "usage: scout_engine import-starmap-json <json_path>\n";
 			return 2;
 		}
-
-		std::ifstream file(argv[2], std::ios::in | std::ios::binary);
-		if (!file) {
-			auto full_path = std::filesystem::absolute(argv[2]);
-			std::cerr << "failed to open file: " << full_path << '\n';
-			return 1;
-		}
-
-		std::string content((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
-		if (content.empty()) {
-			return 0;
-		}
-
-		// Attempt to parse with nlohmann::json; if that fails, fall back to regex extraction
-
-		// Sanitize content: escape CR/LF that appear inside JSON string literals
-		content = sanitize_json_content(content);
-
 		nlohmann::json j;
-		try {
-			j = nlohmann::json::parse(content, nullptr, /*allow_exceptions=*/true, /*ignore_comments=*/true);
-		}
-		catch (const std::exception&) {
-			j = nlohmann::json::parse(content);
+		if (!extract_json_from_file(argv[2], j)) {
+			std::cerr << "failed to extract JSON from file\n";
+			return 1;
 		}
 
 		std::vector<StarmapPoi> pois;
-		if (j.is_array()) {
-			for (const auto& elem : j) {
-
-				if (!elem.is_object()) continue;
-				try {
-					StarmapPoi p = elem.get<StarmapPoi>();
-					pois.push_back(std::move(p));
-				}
-				catch (const std::exception& e) {
-					std::cout << elem.dump() << '\n' << e.what() << '\n';
-					// ignore malformed entries
-				}
-			}
-		} else if (j.is_object()) {
-			if (j.contains("Latitude") || j.contains("Longitude") || j.contains("item_id")) {
-				try {
-					StarmapPoi p = j.get<StarmapPoi>();
-					pois.push_back(std::move(p));
-				}
-				catch (const std::exception&) {}
-			} else {
-				for (auto it = j.begin(); it != j.end(); ++it) {
-					if (!it.value().is_array()) continue;
-					for (const auto& elem : it.value()) {
-						if (!elem.is_object()) continue;
-						try {
-							StarmapPoi p = elem.get<StarmapPoi>();
-							pois.push_back(std::move(p));
-						}
-						catch (const std::exception&) {}
-					}
-				}
-			}
-		} else {
-			std::cerr << "JSON is not an object or array\n";
-			return 1;
-		}
+		bool retFlag;
+        int retVal = ParsePoiObjects(j, pois, retFlag);
+        if (retFlag)
+            return retVal;
 
 		//convert POI to DataPoint and append to CSV
+		for (const auto& p : pois) {
+			if (!std::isnan(p.Latitude) && !std::isnan(p.Longitude) && !std::isnan(p.XCoord) && !std::isnan(p.YCoord) && !std::isnan(p.ZCoord)) {
+				append_point_csv("starmap_pois.csv", starmap_poi_to_datapoint(p));
+			}
+		}
 
 		return 0;
 	}
@@ -387,4 +291,83 @@ int main(int argc, char** argv) {
 
 	std::cerr << "unknown command: " << command << '\n';
 	return 2;
+}
+
+int ParsePoiObjects(nlohmann::json_abi_v3_11_2::json &j, std::vector<StarmapPoi> &pois, bool &retFlag)
+{
+	retFlag = true;
+	if (j.is_array()) {
+		for (const auto& elem : j) {
+
+			if (!elem.is_object()) continue;
+			try {
+				StarmapPoi p = elem.get<StarmapPoi>();
+				pois.push_back(std::move(p));
+			}
+			catch (const std::exception& e) {
+				std::cout << elem.dump() << '\n' << e.what() << '\n';
+				// ignore malformed entries
+			}
+		}
+	} else if (j.is_object()) {
+		if (j.contains("Latitude") || j.contains("Longitude") || j.contains("item_id")) {
+			try {
+				StarmapPoi p = j.get<StarmapPoi>();
+				pois.push_back(std::move(p));
+			}
+			catch (const std::exception&) {}
+		} else {
+			for (auto it = j.begin(); it != j.end(); ++it) {
+				if (!it.value().is_array()) continue;
+				for (const auto& elem : it.value()) {
+					if (!elem.is_object()) continue;
+					try {
+						StarmapPoi p = elem.get<StarmapPoi>();
+						pois.push_back(std::move(p));
+					}
+					catch (const std::exception&) {}
+				}
+			}
+		}
+	} else {
+		std::cerr << "JSON is not an object or array\n";
+		return 1;
+	}
+	retFlag = false;
+	return 0;
+}
+
+
+bool extract_json_from_file(const std::string& file_path, nlohmann::json& j) {
+	std::ifstream file(file_path, std::ios::in | std::ios::binary);
+	if (!file) {
+		auto full_path = std::filesystem::absolute(file_path);
+		std::cerr << "failed to open file: " << full_path << '\n';
+		return false;
+	}
+
+	std::string content((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+	if (content.empty()) {
+		return false;
+	}
+
+	// Attempt to parse with nlohmann::json; if that fails, fall back to regex extraction
+
+	// Sanitize content: escape CR/LF that appear inside JSON string literals
+	content = sanitize_json_content(content);
+
+	try {
+		j = nlohmann::json::parse(content, nullptr, /*allow_exceptions=*/true, /*ignore_comments=*/true);
+		return true;
+	}
+	catch (const std::exception&) {
+		try {
+			j = nlohmann::json::parse(content);
+			return true;
+		}
+		catch (const std::exception& e) {
+			std::cerr << "failed to parse JSON: " << e.what() << '\n';
+			return false;
+		}
+	}
 }

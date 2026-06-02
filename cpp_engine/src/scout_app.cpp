@@ -2162,7 +2162,6 @@ void popup_filter(std::string& filtertext, std::string& local_selected, const st
 		if (nav_enter && sel_index >= 0) {
 			on_select(filtered_items[sel_index]);
 			ImGui::CloseCurrentPopup();
-			return;
 		}
 	}
 
@@ -2178,7 +2177,7 @@ void popup_filter(std::string& filtertext, std::string& local_selected, const st
 			if (ImGui::Selectable(filtered_items[i].c_str(), sel)) {
 				on_select(filtered_items[i]);
 				ImGui::CloseCurrentPopup();
-				return;
+				break;
 			}
 			if (sel) {
 				any_selected = true;

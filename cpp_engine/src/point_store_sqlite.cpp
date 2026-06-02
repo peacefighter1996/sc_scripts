@@ -44,17 +44,17 @@ static bool set_user_version(sqlite3* db, int v) {
 	return exec_sql(db, ss.str());
 }
 
-SqlitePointStore::SqlitePointStore(const std::string& db_path, const std::string& node_id)
+SqliteStore::SqliteStore(const std::string& db_path, const std::string& node_id)
 	: db_path_(db_path), node_id_(node_id), db_handle_(nullptr) {}
 
-SqlitePointStore::~SqlitePointStore() {
+SqliteStore::~SqliteStore() {
 	if (db_handle_) {
 		sqlite3_close(db_handle_);
 		db_handle_ = nullptr;
 	}
 }
 
-std::string SqlitePointStore::data_point_to_json(const DataPoint& p) {
+std::string SqliteStore::data_point_to_json(const DataPoint& p) {
 	auto esc = [](const std::string& s) {
 		std::string out;
 		out.reserve(s.size());
@@ -92,7 +92,7 @@ std::string SqlitePointStore::data_point_to_json(const DataPoint& p) {
 	return ss.str();
 }
 
-bool SqlitePointStore::ensure_migrations() {
+bool SqliteStore::ensure_migrations() {
 	if (!db_handle_) return false;
 		// Use PRAGMA user_version to manage schema version.
 	const int current = get_user_version(db_handle_);
@@ -121,7 +121,7 @@ bool SqlitePointStore::ensure_migrations() {
 	return true;
 }
 
-bool SqlitePointStore::migrate_to_v1() {
+bool SqliteStore::migrate_to_v1() {
 	if (!db_handle_) return false;
 	std::string sql = R"SQL(
 PRAGMA foreign_keys = ON;
@@ -183,7 +183,7 @@ CREATE TABLE IF NOT EXISTS resources (
 	return true;
 }
 
-bool SqlitePointStore::migrate_to_v2() {
+bool SqliteStore::migrate_to_v2() {
 	if (!db_handle_) return false;
 	// create zones table and populate/migrate reference data
 	std::string sql = R"SQL(
@@ -213,7 +213,7 @@ bool SqlitePointStore::migrate_to_v2() {
 	return true;
 }
 
-bool SqlitePointStore::migrate_to_v3() {
+bool SqliteStore::migrate_to_v3() {
 	if (!db_handle_) return false;
 	// Add guid (blob), subtype (int), and qt_persistent (int) columns to points table.
 	std::string sql = R"SQL(
@@ -225,7 +225,7 @@ bool SqlitePointStore::migrate_to_v3() {
 	return true;
 }
 
-bool SqlitePointStore::populate_reference_tables_if_empty() {
+bool SqliteStore::populate_reference_tables_if_empty() {
 	if (!db_handle_) return false;
 	std::filesystem::path dbp(db_path_);
 	auto base_dir = dbp.parent_path();
@@ -392,7 +392,7 @@ bool SqlitePointStore::populate_reference_tables_if_empty() {
 	return true;
 }
 
-bool SqlitePointStore::init() {
+bool SqliteStore::init() {
 	// open DB
 	int rc = sqlite3_open_v2(db_path_.c_str(), &db_handle_, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX, nullptr);
 	if (rc != SQLITE_OK) {
@@ -409,99 +409,10 @@ bool SqlitePointStore::init() {
 		db_handle_ = nullptr;
 		return false;
 	}
-
-	// If points table empty and a CSV exists alongside the DB, migrate
-	sqlite3_stmt* stmt = nullptr;
-	if (sqlite3_prepare_v2(db_handle_, "SELECT COUNT(*) FROM points;", -1, &stmt, nullptr) == SQLITE_OK) {
-		if (sqlite3_step(stmt) == SQLITE_ROW) {
-			const int64_t cnt = sqlite3_column_int64(stmt, 0);
-			sqlite3_finalize(stmt);
-			if (cnt == 0) {
-				// look for geoscout.csv in same directory
-				std::filesystem::path dbp(db_path_);
-				auto csv_path = dbp.parent_path() / "geoscout.csv";
-
-				std::cout << "Points table empty, looking for CSV at " << csv_path << "\n";
-
-				if (std::filesystem::exists(csv_path)) {
-					auto csv_points = ::load_points(csv_path);
-					std::cout << "Loaded " << csv_points.size() << " points from CSV, migrating to sqlite...\n";
-					if (!csv_points.empty()) {
-						if (exec_sql(db_handle_, "BEGIN TRANSACTION;")) {
-							const char* insert_point_sql = "INSERT OR REPLACE INTO points(recordid,server,x,y,z,planet,material,location,quality_min,quality_max,note,poi_type,poi_time,last_modified_ts,last_modified_node,guid,subtype,qt_persistent) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?);";
-							sqlite3_stmt* ins_pt = nullptr;
-							sqlite3_prepare_v2(db_handle_, insert_point_sql, -1, &ins_pt, nullptr);
-
-							const char* insert_ev_sql = "INSERT OR REPLACE INTO change_events(change_id,node_id,seq,created_ts,op,recordid,payload,applied_ts) VALUES(?,?,?,?,?,?,?,?);";
-							sqlite3_stmt* ins_ev = nullptr;
-							sqlite3_prepare_v2(db_handle_, insert_ev_sql, -1, &ins_ev, nullptr);
-
-							const int64_t now_ms_local = static_cast<int64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count());
-
-							for (const auto& p : csv_points) {
-								sqlite3_bind_int(ins_pt, 1, p.id);
-								sqlite3_bind_text(ins_pt, 2, p.server.c_str(), -1, SQLITE_TRANSIENT);
-								sqlite3_bind_double(ins_pt, 3, p.x);
-								sqlite3_bind_double(ins_pt, 4, p.y);
-								sqlite3_bind_double(ins_pt, 5, p.z);
-								sqlite3_bind_text(ins_pt, 6, p.planet.c_str(), -1, SQLITE_TRANSIENT);
-								sqlite3_bind_text(ins_pt, 7, p.material.c_str(), -1, SQLITE_TRANSIENT);
-								sqlite3_bind_int(ins_pt, 8, p.location ? 1 : 0);
-								sqlite3_bind_int(ins_pt, 9, p.quality_min);
-								sqlite3_bind_int(ins_pt, 10, p.quality_max);
-								sqlite3_bind_text(ins_pt, 11, p.note.c_str(), -1, SQLITE_TRANSIENT);
-								sqlite3_bind_int(ins_pt, 12, static_cast<int>(p.poi_type));
-								sqlite3_bind_text(ins_pt, 13, p.time_info.c_str(), -1, SQLITE_TRANSIENT);
-								sqlite3_bind_int64(ins_pt, 14, static_cast<sqlite3_int64>(now_ms_local));
-								sqlite3_bind_text(ins_pt, 15, node_id_.empty() ? "migration" : node_id_.c_str(), -1, SQLITE_TRANSIENT);
-								auto guid_blob = p.uuid;
-								if (guid_blob == nil_uuid)
-									guid_blob = uuid::generate_uuid_v4(); // assign new UUID if not set in CSV
-								auto guid_bytes = guid_blob.to_bytes();
-								sqlite3_bind_blob(ins_pt, 16, guid_bytes.data(), static_cast<int>(guid_bytes.size()), SQLITE_TRANSIENT);
-								sqlite3_bind_int(ins_pt, 17, static_cast<int>(p.subtype));
-								sqlite3_bind_int(ins_pt, 18, p.qt_persistent ? 1 : 0);
-								sqlite3_step(ins_pt);
-								sqlite3_reset(ins_pt);
-
-								ChangeEvent ev;
-								ev.change_id = uuid::generate_uuid_v4();
-								ev.node_id = node_id_.empty() ? "migration" : node_id_;
-								ev.created_ts = now_ms_local;
-								ev.seq.reset();
-								ev.op = "upsert";
-								ev.recordid = p.id;
-								ev.payload_json = data_point_to_json(p);
-								ev.applied_ts = now_ms_local;
-
-								sqlite3_bind_text(ins_ev, 1, ev.change_id.c_str(), -1, SQLITE_TRANSIENT);
-								sqlite3_bind_text(ins_ev, 2, ev.node_id.c_str(), -1, SQLITE_TRANSIENT);
-								sqlite3_bind_null(ins_ev, 3);
-								sqlite3_bind_int64(ins_ev, 4, static_cast<sqlite3_int64>(ev.created_ts));
-								sqlite3_bind_text(ins_ev, 5, ev.op.c_str(), -1, SQLITE_TRANSIENT);
-								if (ev.recordid.has_value()) sqlite3_bind_int(ins_ev, 6, ev.recordid.value()); else sqlite3_bind_null(ins_ev, 6);
-								sqlite3_bind_text(ins_ev, 7, ev.payload_json.c_str(), -1, SQLITE_TRANSIENT);
-								sqlite3_bind_int64(ins_ev, 8, static_cast<sqlite3_int64>(ev.applied_ts.value()));
-								sqlite3_step(ins_ev);
-								sqlite3_reset(ins_ev);
-							}
-
-							if (ins_pt) sqlite3_finalize(ins_pt);
-							if (ins_ev) sqlite3_finalize(ins_ev);
-							exec_sql(db_handle_, "COMMIT;");
-						}
-					}
-				}
-			}
-		} else {
-			sqlite3_finalize(stmt);
-		}
-	}
-
 	return true;
 }
 
-std::vector<DataPoint> SqlitePointStore::load_points() {
+std::vector<DataPoint> SqliteStore::load_points() {
 	std::vector<DataPoint> result;
 	if (!db_handle_) return result;
 
@@ -551,7 +462,7 @@ std::vector<DataPoint> SqlitePointStore::load_points() {
 	return result;
 }
 
-bool SqlitePointStore::push_change_event(const ChangeEvent& ev) {
+bool SqliteStore::push_change_event(const ChangeEvent& ev) {
 	if (!db_handle_) return false;
 	const char* insert_sql = "INSERT OR REPLACE INTO change_events(change_id,node_id,seq,created_ts,op,recordid,payload,applied_ts) VALUES(?,?,?,?,?,?,?,?);";
 	sqlite3_stmt* ins = nullptr;
@@ -576,7 +487,7 @@ bool SqlitePointStore::push_change_event(const ChangeEvent& ev) {
 	return true;
 }
 
-bool SqlitePointStore::append_point(const DataPoint& p, uuid* out_change_id) {
+bool SqliteStore::append_point(const DataPoint& p, uuid* out_change_id) {
 	if (!db_handle_) return false;
 	const char* insert_sql = "INSERT OR REPLACE INTO points(recordid,server,x,y,z,planet,material,location,quality_min,quality_max,note,poi_type,poi_time,last_modified_ts,last_modified_node,guid,subtype,qt_persistent) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?);";
 	sqlite3_stmt* ins = nullptr;
@@ -630,7 +541,7 @@ bool SqlitePointStore::append_point(const DataPoint& p, uuid* out_change_id) {
 	return true;
 }
 
-std::vector<std::string> SqlitePointStore::load_server_ids() {
+std::vector<std::string> SqliteStore::load_server_ids() {
 	std::vector<std::string> result;
 	if (!db_handle_) return result;
 	const char* q = "SELECT value FROM server_ids ORDER BY value ASC;";
@@ -644,7 +555,7 @@ std::vector<std::string> SqlitePointStore::load_server_ids() {
 	return result;
 }
 
-std::vector<Planet> SqlitePointStore::load_planets() {
+std::vector<Planet> SqliteStore::load_planets() {
 	std::vector<Planet> result;
 	if (!db_handle_) return result;
 	const char* q = "SELECT id, system, name, image_dir, zone_id, zone_type, quantumable, center_x, center_y, center_z, min_x_km, max_x_km, min_y_km, max_y_km FROM zones ORDER BY name ASC;";
@@ -680,7 +591,7 @@ std::vector<Planet> SqlitePointStore::load_planets() {
 	return result;
 }
 
-std::vector<Resource> SqlitePointStore::load_resources() {
+std::vector<Resource> SqliteStore::load_resources() {
 	std::vector<Resource> result;
 	if (!db_handle_) return result;
 	const char* q = "SELECT id, shortname, name, resource_type, harvest_type FROM resources;";
@@ -716,7 +627,7 @@ std::vector<Resource> SqlitePointStore::load_resources() {
 	return result;
 }
 
-bool SqlitePointStore::overwrite_planets(const std::vector<Planet>& planets) {
+bool SqliteStore::overwrite_planets(const std::vector<Planet>& planets) {
 	if (!db_handle_) return false;
 	if (!exec_sql(db_handle_, "BEGIN TRANSACTION;")) return false;
 	if (!exec_sql(db_handle_, "DELETE FROM zones;")) {
@@ -764,11 +675,95 @@ bool SqlitePointStore::overwrite_planets(const std::vector<Planet>& planets) {
 	return true;
 }
 
+std::vector<DataPoint> SqliteStore::load_points(const std::string& zone_name, const std::string& server_filter, const std::vector<PoiType>& poi_types){
+	std::vector<DataPoint> result;
+	if (!db_handle_) return result;
+	std::vector < std::string> whereComponents;
+	std::string query = "SELECT recordid,server,x,y,z,planet,material,location,quality_min,quality_max,note,poi_type,poi_time,last_modified_ts,last_modified_node,guid,subtype,qt_persistent FROM points";
+	if (!server_filter.empty() && to_lower(server_filter) != "all") {
+		whereComponents.push_back(" server = '"+ server_filter + "' ");
+	}
+
+	if (!zone_name.empty() && to_lower(zone_name) != "all") {
+		whereComponents.push_back(" planet = '"+zone_name+ "'");
+	}
+	if (!poi_types.empty()) {
+	    
+		std::string poi_str = " poi_type IN (";
+		for (size_t i = 0; i < poi_types.size(); ++i) {
+			poi_str += std::to_string(static_cast<int>(poi_types[i]));
+			if (i < poi_types.size() - 1) poi_str += ",";
+		}
+		poi_str += ") ";
+		whereComponents.push_back(poi_str);
+
+	}
+
+	if (whereComponents.size() > 0) {
+		query += " WHERE ";
+		for (size_t i = 0; i < whereComponents.size(); ++i) {
+			query += whereComponents[i];
+			if (i < whereComponents.size() - 1) query += " AND ";
+		}
+	}
+
+	query += "ORDER BY recordid ASC;";
+
+	sqlite3_stmt* stmt = nullptr;
+	if (sqlite3_prepare_v2(db_handle_, query.c_str(), -1, &stmt, nullptr) != SQLITE_OK) {
+		return result;
+	}
+
+	sqlite3_bind_text(stmt, 1, zone_name.c_str(), -1, SQLITE_TRANSIENT);
+	if (!server_filter.empty()) {
+		sqlite3_bind_text(stmt, 2, server_filter.c_str(), -1, SQLITE_TRANSIENT);
+	}
+
+	while (sqlite3_step(stmt) == SQLITE_ROW) {
+		DataPoint p;
+		p.id = sqlite3_column_int(stmt, 0);
+		const unsigned char* t0 = sqlite3_column_text(stmt, 1);
+		p.server = t0 ? reinterpret_cast<const char*>(t0) : std::string();
+		p.x = sqlite3_column_double(stmt, 2);
+		p.y = sqlite3_column_double(stmt, 3);
+		p.z = sqlite3_column_double(stmt, 4);
+		const unsigned char* t5 = sqlite3_column_text(stmt, 5);
+		p.planet = t5 ? reinterpret_cast<const char*>(t5) : std::string();
+		const unsigned char* t6 = sqlite3_column_text(stmt, 6);
+		p.material = t6 ? reinterpret_cast<const char*>(t6) : std::string();
+		p.location = sqlite3_column_int(stmt, 7) != 0;
+		p.quality_min = sqlite3_column_int(stmt, 8);
+		p.quality_max = sqlite3_column_int(stmt, 9);
+		const unsigned char* t9 = sqlite3_column_text(stmt, 10);
+		p.note = t9 ? reinterpret_cast<const char*>(t9) : std::string();
+		p.poi_type = static_cast<PoiType>(sqlite3_column_int(stmt, 11));
+		const unsigned char* t11 = sqlite3_column_text(stmt, 12);
+		p.time_info = t11 ? reinterpret_cast<const char*>(t11) : std::string();
+		// columns 13/14 are last_modified_ts/last_modified_node (ignored here)
+		// guid (blob/text) at column 15
+		const void* bg = sqlite3_column_blob(stmt, 15);
+		int bg_len = sqlite3_column_bytes(stmt, 15);
+		if (bg && bg_len > 0) {
+			p.uuid = uuid::from_bytes(static_cast<const unsigned char*>(bg), bg_len);
+		} else {
+			p.uuid = nil_uuid;
+		}
+		// subtype
+		p.subtype = static_cast<PoiSubType>(sqlite3_column_int(stmt, 16));
+		// QT persistent
+		p.qt_persistent = sqlite3_column_int(stmt, 17) != 0;
+
+		result.push_back(p);
+	}
+
+	sqlite3_finalize(stmt);
+	return result;
+}
 
 
 
 
-bool SqlitePointStore::overwrite_points(const std::vector<DataPoint>& points) {
+bool SqliteStore::overwrite_points(const std::vector<DataPoint>& points) {
 	if (!db_handle_) return false;
 	// transaction
 	if (!exec_sql(db_handle_, "BEGIN TRANSACTION;")) return false;
@@ -841,7 +836,7 @@ bool SqlitePointStore::overwrite_points(const std::vector<DataPoint>& points) {
 	}
 }
 
-bool SqlitePointStore::ensure_zone_contains_point(const std::string& zone_name, double x, double y, double grid_spacing_km) {
+bool SqliteStore::ensure_zone_contains_point(const std::string& zone_name, double x, double y, double grid_spacing_km) {
 	if (!db_handle_) return false;
 	sqlite3_stmt* stmt = nullptr;
 	const char* q = "SELECT id, zone_type, min_x_km, max_x_km, min_y_km, max_y_km FROM zones WHERE name = ? LIMIT 1;";
@@ -896,7 +891,53 @@ bool SqlitePointStore::ensure_zone_contains_point(const std::string& zone_name, 
 	return changed;
 }
 
-bool SqlitePointStore::uuid_insert_or_update(const DataPoint& p, uuid* out_change_id) {
+DataPoint SqliteStore::get_datapoint(int recordid) {
+	DataPoint p;
+	if (!db_handle_) return p;
+	const char* query = "SELECT recordid,server,x,y,z,planet,material,location,quality_min,quality_max,note,poi_type,poi_time,last_modified_ts,last_modified_node,guid,subtype,qt_persistent FROM points WHERE recordid = ? LIMIT 1;";
+	sqlite3_stmt* stmt = nullptr;
+	if (sqlite3_prepare_v2(db_handle_, query, -1, &stmt, nullptr) != SQLITE_OK) {
+		return p;
+	}
+	sqlite3_bind_int(stmt, 1, recordid);
+	if (sqlite3_step(stmt) == SQLITE_ROW) {
+		p.id = sqlite3_column_int(stmt, 0);
+		const unsigned char* t0 = sqlite3_column_text(stmt, 1);
+		p.server = t0 ? reinterpret_cast<const char*>(t0) : std::string();
+		p.x = sqlite3_column_double(stmt, 2);
+		p.y = sqlite3_column_double(stmt, 3);
+		p.z = sqlite3_column_double(stmt, 4);
+		const unsigned char* t5 = sqlite3_column_text(stmt, 5);
+		p.planet = t5 ? reinterpret_cast<const char*>(t5) : std::string();
+		const unsigned char* t6 = sqlite3_column_text(stmt, 6);
+		p.material = t6 ? reinterpret_cast<const char*>(t6) : std::string();
+		p.location = sqlite3_column_int(stmt, 7) != 0;
+		p.quality_min = sqlite3_column_int(stmt, 8);
+		p.quality_max = sqlite3_column_int(stmt, 9);
+		const unsigned char* t9 = sqlite3_column_text(stmt, 10);
+		p.note = t9 ? reinterpret_cast<const char*>(t9) : std::string();
+		p.poi_type = static_cast<PoiType>(sqlite3_column_int(stmt, 11));
+		const unsigned char* t11 = sqlite3_column_text(stmt, 12);
+		p.time_info = t11 ? reinterpret_cast<const char*>(t11) : std::string();
+		// columns 13/14 are last_modified_ts/last_modified_node (ignored here)
+		// guid (blob/text) at column 15
+		const void* bg = sqlite3_column_blob(stmt, 15);
+		int bg_len = sqlite3_column_bytes(stmt, 15);
+		if (bg && bg_len > 0) {
+			p.uuid = uuid::from_bytes(static_cast<const unsigned char*>(bg), bg_len);
+		} else {
+			p.uuid = nil_uuid;
+		}
+		// subtype
+		p.subtype = static_cast<PoiSubType>(sqlite3_column_int(stmt, 16));
+		// QT persistent
+		p.qt_persistent = sqlite3_column_int(stmt, 17) != 0;
+	}
+	sqlite3_finalize(stmt);
+	return p;
+}
+
+int SqliteStore::uuid_insert_or_update(const DataPoint& p, uuid* out_change_id) {
 	// check if value exists
 	auto id_existing_id = -1;
 
@@ -918,15 +959,22 @@ bool SqlitePointStore::uuid_insert_or_update(const DataPoint& p, uuid* out_chang
 	if (id_existing_id == -1) {
 		if (!append_point(p, out_change_id)) {
 			exec_sql(db_handle_, "ROLLBACK;");
-			return false;
+			return 0;
 		}
 	} else {
 		// otherwise, update existing record with new values from p
 		DataPoint updated = p;
 		updated.id = id_existing_id; // ensure ID matches existing record
+		// read existing record and check if any fields other than ID differ; if not, skip update and event generation
+		DataPoint existing = get_datapoint(id_existing_id);
+		if (existing == updated) {
+			// no changes, skip update and event
+			return 2;
+		}
+
 		if (!overwrite_points({updated})) {
 			exec_sql(db_handle_, "ROLLBACK;");
-			return false;
+			return 0;
 		}
 		if (out_change_id) {
 			// create change event for update
@@ -944,6 +992,6 @@ bool SqlitePointStore::uuid_insert_or_update(const DataPoint& p, uuid* out_chang
 			if (out_change_id) *out_change_id = ev.change_id;
 		}
 	}
-    return true;
+    return 1;
 
 }

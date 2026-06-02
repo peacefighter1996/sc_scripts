@@ -249,6 +249,28 @@ bool poi_subtype_from_string(const std::string& s, PoiSubType& out){
 }
 
 
+bool operator==(const DataPoint& a, const DataPoint& b) {
+    return a.id == b.id &&
+           a.server == b.server &&
+           a.x == b.x &&
+           a.y == b.y &&
+           a.z == b.z &&
+           a.planet == b.planet &&
+           a.material == b.material &&
+           a.poi_type == b.poi_type &&
+           a.time_info == b.time_info &&
+           a.quality_min == b.quality_min &&
+           a.quality_max == b.quality_max &&
+           a.note == b.note &&
+           a.subtype == b.subtype &&
+           a.qt_persistent == b.qt_persistent;
+}
+
+bool operator!=(const DataPoint& a, const DataPoint& b) {
+    return !(a == b);
+}
+
+
 bool predict_labels_onnx(const std::string& model_path, const std::vector<float>& input_values, int64_t sample_count, std::vector<int64_t>& labels, std::string& error_message) {
 #ifndef SCOUT_HAS_ONNXRUNTIME
     (void)model_path;

@@ -4,20 +4,22 @@
 #include <string>
 #include <sqlite3.h>
 
-class SqlitePointStore : public IPointStore {
+class SqliteStore : public IStore {
 public:
     // db_path: path to sqlite file. node_id: optional node identifier used when creating change_events.
-    explicit SqlitePointStore(const std::string& db_path, const std::string& node_id = std::string());
-    ~SqlitePointStore() override;
+    explicit SqliteStore(const std::string& db_path, const std::string& node_id = std::string());
+    ~SqliteStore() override;
 
     // Initialize DB file and create schema if necessary. Returns true on success.
     bool init();
 
     std::vector<DataPoint> load_points() override;
+    std::vector<DataPoint> load_points(const std::string& zone_name, const std::string& server_filter = std::string(), const std::vector<PoiType>& poi_types = std::vector<PoiType>()) override;
     bool append_point(const DataPoint& p, uuid* out_change_id = nullptr) override;
-    bool uuid_insert_or_update(const DataPoint& p, uuid* out_change_id = nullptr) override;
+    int uuid_insert_or_update(const DataPoint& p, uuid* out_change_id = nullptr) override;
     bool overwrite_points(const std::vector<DataPoint>& points) override;
     bool push_change_event(const ChangeEvent& ev) override;
+    DataPoint get_datapoint(int id);
     // Reference table accessors
     std::vector<std::string> load_server_ids();
     std::vector<Planet> load_planets();

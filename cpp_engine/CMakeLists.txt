@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(scout_engine LANGUAGES CXX)
+project(scout_engine LANGUAGES C CXX)
 
 include(FetchContent)
 
@@ -13,23 +13,33 @@ set(ONNXRUNTIME_ROOT "" CACHE PATH "Path to ONNX Runtime SDK root (contains incl
 option(SCOUT_USE_LIBSODIUM "Enable libsodium for secure random UUID generation" ON)
 
 set(SCOUT_ENGINE_SOURCES
-	src/scout_engine.cpp
 	src/scout_core.cpp
 	src/scout_ocr.cpp
 	src/timer_metric.cpp
 	src/timer_display.cpp
-	src/timer_footer_renderer.cpp
     src/point_store_csv.cpp
     src/point_store_sqlite.cpp
     src/sync_service.cpp
     src/travel_log.cpp
 	src/uuid.cpp
+	src/json_exchange_datapoint.cpp
 )
 
-add_executable(scout_engine ${SCOUT_ENGINE_SOURCES}
+# Build core library so tests can link against project code
+add_library(scout_core_lib STATIC ${SCOUT_ENGINE_SOURCES})
+target_include_directories(scout_core_lib PUBLIC src)
+
+# If vendored sqlite headers are present, make them available to the core library
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/sqlite/sqlite3.h")
+	target_include_directories(scout_core_lib PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/third_party/sqlite")
+endif()
+
+# Application executable now links the core library and contains UI-specific sources
+add_executable(scout_engine
 	src/scout_render.h
 	src/scout_render.cpp)
 target_include_directories(scout_engine PRIVATE src)
+target_link_libraries(scout_engine PRIVATE scout_core_lib)
 
 if(SCOUT_BUILD_APP)
 	if(NOT WIN32)
@@ -61,6 +71,9 @@ if(SCOUT_BUILD_APP)
 	)
 	FetchContent_MakeAvailable(nlohmann_json)
 
+	# Make nlohmann_json headers available to the core library as well
+	target_link_libraries(scout_core_lib PUBLIC nlohmann_json::nlohmann_json)
+
 	add_library(imgui STATIC
 		${imgui_SOURCE_DIR}/imgui.cpp
 		${imgui_SOURCE_DIR}/imgui_draw.cpp
@@ -77,25 +90,27 @@ if(SCOUT_BUILD_APP)
 	find_package(cpr CONFIG REQUIRED)
 	find_package(ixwebsocket CONFIG REQUIRED)
 
-	target_sources(scout_engine PRIVATE src/scout_app.cpp)
+		target_sources(scout_engine PRIVATE src/scout_app.cpp src/scout_engine.cpp src/timer_footer_renderer.cpp)
 
-	# SQLite3 for local storage: prefer third_party/sqlite, otherwise use system
+	# SQLite3 for local storage: prefer vendored SQLite under project; ensure core lib can compile and app links runtime deps
 	set(_base_libs imgui glfw opengl32 gdiplus cpr::cpr ixwebsocket::ixwebsocket)
 	if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/sqlite")
 		message(STATUS "Using vendored SQLite at ${CMAKE_CURRENT_SOURCE_DIR}/third_party/sqlite")
-		target_include_directories(scout_engine PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/third_party/sqlite")
+		target_include_directories(scout_core_lib PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/third_party/sqlite")
 		if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/sqlite/sqlite3.c")
-			target_sources(scout_engine PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/third_party/sqlite/sqlite3.c")
+			target_sources(scout_core_lib PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/third_party/sqlite/sqlite3.c")
 		endif()
 		target_link_libraries(scout_engine PRIVATE ${_base_libs})
 	else()
 		find_package(SQLite3 QUIET)
 		if(SQLite3_FOUND)
 			if(TARGET SQLite::SQLite3)
+				# ensure core library gets usage requirements (include directories) from SQLite target
+				target_link_libraries(scout_core_lib PRIVATE SQLite::SQLite3)
 				target_link_libraries(scout_engine PRIVATE ${_base_libs} SQLite::SQLite3)
 			else()
 				if(DEFINED SQLite3_INCLUDE_DIRS)
-					target_include_directories(scout_engine PRIVATE ${SQLite3_INCLUDE_DIRS})
+					target_include_directories(scout_core_lib PRIVATE ${SQLite3_INCLUDE_DIRS})
 				endif()
 				if(DEFINED SQLite3_LIBRARIES)
 					target_link_libraries(scout_engine PRIVATE ${_base_libs} ${SQLite3_LIBRARIES})
@@ -113,6 +128,28 @@ if(SCOUT_BUILD_APP)
 	target_link_libraries(scout_engine PRIVATE nlohmann_json::nlohmann_json)
 
 	endif()
+
+# Ensure core library can find SQLite headers/sources when SCOUT_BUILD_APP is disabled (so tests compile)
+if(NOT SCOUT_BUILD_APP)
+	if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/sqlite")
+		message(STATUS "Using vendored SQLite at ${CMAKE_CURRENT_SOURCE_DIR}/third_party/sqlite (tests)")
+		target_include_directories(scout_core_lib PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/third_party/sqlite")
+		if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/sqlite/sqlite3.c")
+			target_sources(scout_core_lib PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/third_party/sqlite/sqlite3.c")
+		endif()
+	else()
+		find_package(SQLite3 QUIET)
+		if(SQLite3_FOUND)
+			if(TARGET SQLite::SQLite3)
+				target_link_libraries(scout_core_lib PRIVATE SQLite::SQLite3)
+			elseif(DEFINED SQLite3_INCLUDE_DIRS)
+				target_include_directories(scout_core_lib PRIVATE ${SQLite3_INCLUDE_DIRS})
+			endif()
+		else()
+			message(WARNING "SQLite3 not found; building without SQLite support.")
+		endif()
+	endif()
+endif()
 
 # Optional: use libsodium for secure random bytes (UUIDv4)
 if(SCOUT_USE_LIBSODIUM)
@@ -135,6 +172,13 @@ if(SCOUT_USE_LIBSODIUM)
 	else()
 		message(WARNING "SCOUT_USE_LIBSODIUM=ON but libsodium not found; continuing without libsodium")
 	endif()
+endif()
+
+# Optional: unit tests
+option(SCOUT_BUILD_TESTS "Build unit tests" OFF)
+if(SCOUT_BUILD_TESTS)
+	enable_testing()
+	add_subdirectory(tests)
 endif()
 
 if(SCOUT_ENABLE_ONNXRUNTIME)

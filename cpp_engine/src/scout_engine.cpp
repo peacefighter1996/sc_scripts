@@ -327,7 +327,7 @@ int main(int argc, char** argv) {
 int dbimport_starmap(std::string &db_path, std::string &jsonpath, bool &retFlag)
 {
     retFlag = true;
-    SqlitePointStore store(db_path, "");
+    SqliteStore store(db_path, "");
 
     if (!store.init())
     {

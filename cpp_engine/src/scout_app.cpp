@@ -27,6 +27,7 @@
 #endif
 #include <windows.h>
 #include <gdiplus.h>
+#include <commdlg.h>
 #endif
 
 #include <glad/glad.h>
@@ -80,6 +81,25 @@ std::filesystem::path detect_repo_root() {
 std::wstring to_wstring(const std::filesystem::path& path) {
 	return path.wstring();
 }
+
+#ifdef _WIN32
+static bool win32_save_file_dialog(std::wstring& out_path) {
+	wchar_t szFile[MAX_PATH] = L"";
+	OPENFILENAMEW ofn{};
+	ofn.lStructSize = sizeof(ofn);
+	ofn.hwndOwner = nullptr;
+	ofn.lpstrFile = szFile;
+	ofn.nMaxFile = MAX_PATH;
+	ofn.lpstrFilter = L"JSON Files\0*.json\0All Files\0*.*\0";
+	ofn.nFilterIndex = 1;
+	ofn.Flags = OFN_PATHMUSTEXIST | OFN_OVERWRITEPROMPT;
+	if (GetSaveFileNameW(&ofn) == TRUE) {
+		out_path = szFile;
+		return true;
+	}
+	return false;
+}
+#endif
 
 #include "point_store.h"
 #include "point_store_sqlite.h"
@@ -173,6 +193,9 @@ struct AppSettings {
 	bool auto_update_ocr_newpoint_enabled{ true };
 	bool ocr_feed_planet_update_enabled{ true };
 
+	// Last used export file path (persisted to settings.ini)
+	std::string last_export_path;
+
 	// Sync/storage settings
 	bool sync_enabled{ false };
 	std::string sync_server_url;
@@ -213,7 +236,7 @@ struct AppState {
 	std::vector<std::string> resource_filter_materials;
 	std::vector<Planet> planet_catalog;
 	std::vector<Resource> material_catalog;
-	std::unique_ptr<IPointStore> store;
+	std::unique_ptr<IStore> store;
 	std::unique_ptr<ISyncService> sync_service;
 	ScoutOcr::SubscriptionId ocr_subscription_id;
 
@@ -295,7 +318,7 @@ struct AppState {
 			}
 		}
 
-		auto sqlite_store = std::make_unique<SqlitePointStore>(db_path_str, settings.sync_node_id);
+		auto sqlite_store = std::make_unique<SqliteStore>(db_path_str, settings.sync_node_id);
 		if (sqlite_store->init()) {
 			store = std::move(sqlite_store);
 		} else {
@@ -442,7 +465,7 @@ struct AppState {
 
 	void reload_planet_catalog() {
 		if (store) {
-			auto sqlite_backend = dynamic_cast<SqlitePointStore*>(store.get());
+			auto sqlite_backend = dynamic_cast<SqliteStore*>(store.get());
 			if (sqlite_backend) {
 				planet_catalog = sqlite_backend->load_planets();
 			} else {
@@ -554,6 +577,7 @@ struct AppState {
 		out << "qt_threshold=" << settings.qt_threshold << '\n';
 		out << "qt_disable_duration_s=" << settings.qt_disable_duration_s << '\n';
 		out << "tracking_min_core_distance_km=" << settings.tracking_min_core_distance_km << '\n';
+		out << "last_export_path=" << settings.last_export_path << '\n';
 	}
 
 	AppSettings load_settings(const std::filesystem::path& path) {
@@ -625,6 +649,8 @@ struct AppState {
 			} else if (key == "tracking_min_core_distance_km") {
 				try { settings.tracking_min_core_distance_km = std::stod(value); }
 				catch (...) {}
+			} else if (key == "last_export_path") {
+				settings.last_export_path = value;
 			}
 		}
 
@@ -966,7 +992,6 @@ int run_scout_app() {
 
 				if (start_disabled_due_to_server) {
 					ImGui::EndDisabled();
-					ImGui::SameLine();
 					ImGui::TextColored(ImVec4(0.8f, 0.8f, 0.8f, 1.0f), "Disabled for 'All' server");
 				}
 				ImGui::Separator();
@@ -1155,7 +1180,7 @@ int run_scout_app() {
 							}
 							// Ensure asteroid zone bounding boxes expand to include the new point when needed
 							if (state.store) {
-								if (auto sqlite_backend = dynamic_cast<SqlitePointStore*>(state.store.get())) {
+								if (auto sqlite_backend = dynamic_cast<SqliteStore*>(state.store.get())) {
 									if (sqlite_backend->ensure_zone_contains_point(new_point.planet, new_point.x, new_point.y, state.settings.grid_spacing_km)) {
 										state.reload_planet_catalog();
 
@@ -1209,7 +1234,7 @@ int run_scout_app() {
 								ev.payload_json = "";
 								state.sync_service->notify_new_local_event(ev);
 							}
-							if (auto sqlite_backend = dynamic_cast<SqlitePointStore*>(state.store.get())) {
+							if (auto sqlite_backend = dynamic_cast<SqliteStore*>(state.store.get())) {
 								if (sqlite_backend->ensure_zone_contains_point(new_point.planet, new_point.x, new_point.y, state.settings.grid_spacing_km)) {
 									state.reload_planet_catalog();
 								}
@@ -1227,6 +1252,127 @@ int run_scout_app() {
 				ImGui::EndTabItem();
 			}
 			// ImGui::EndTabItem();
+
+			if (ImGui::BeginTabItem("Transfer")) {
+				static bool export_init = false;
+				static char export_buf[1024] = {0};
+				static std::string export_status;
+
+if (ImGui::Button("Browse")) {
+#ifdef _WIN32
+					std::wstring outp;
+					if (win32_save_file_dialog(outp)) {
+						std::string sp = std::filesystem::path(outp).string();
+						strncpy(export_buf, sp.c_str(), sizeof(export_buf) - 1);
+						export_buf[sizeof(export_buf) - 1] = '\0';
+					}
+#else
+					// No native dialog on this platform
+#endif
+				}
+
+				if (!export_init) {
+					std::string def;
+					if (!state.settings.last_export_path.empty()) def = state.settings.last_export_path;
+					else def = (state.repo_root / "data" / "point.json").string();
+					strncpy(export_buf, def.c_str(), sizeof(export_buf) - 1);
+					export_init = true;
+				}
+
+				ImGui::InputText("Export File", export_buf, sizeof(export_buf));
+				
+				if (ImGui::Button("Export All Points")) {
+					if (!state.store) {
+						export_status = "No store backend available.";
+					} else {
+						std::filesystem::path p(export_buf);
+						JsonExchangeDatapoint je(state.store.get());
+						auto pts = state.store->load_points();
+						int rc = je.export_json_datapoints(p, pts);
+						if (rc == 0) {
+							state.settings.last_export_path = p.string();
+							export_status = std::string("Exported ") + std::to_string(pts.size()) + " points to: " + p.string();
+						} else {
+							export_status = std::string("Failed to export to: ") + p.string();
+						}
+					}
+				}
+
+				ImGui::SameLine();
+				if (ImGui::Button("Export Filtered")) {
+					if (!state.store) {
+						export_status = "No store backend available.";
+					} else {
+						std::filesystem::path p(export_buf);
+						JsonExchangeDatapoint je(state.store.get());
+						auto pts = state.filtered_points;
+						int rc = je.export_json_datapoints(p, pts);
+						if (rc == 0) {
+							state.settings.last_export_path = p.string();
+							export_status = std::string("Exported ") + std::to_string(pts.size()) + " filtered points to: " + p.string();
+						} else {
+							export_status = std::string("Failed to export to: ") + p.string();
+						}
+					}
+				}
+				
+				if (ImGui::Button("Export All Mineral Points")) {
+					if (!state.store) {
+						export_status = "No store backend available.";
+					} else {
+						std::filesystem::path p(export_buf);
+						JsonExchangeDatapoint je(state.store.get());
+						auto pts = state.store->load_points("ALL","ALL",std::vector<PoiType>{PoiType::Mineral});
+						int rc = je.export_json_datapoints(p, pts);
+						if (rc == 0) {
+							state.settings.last_export_path = p.string();
+							export_status = std::string("Exported ") + std::to_string(pts.size()) + " mineral points to: " + p.string();
+						} else {
+							export_status = std::string("Failed to export to: ") + p.string();
+						}
+					}
+				}
+
+				if (ImGui::Button("Export Local Mineral Points")) {
+					if (!state.store) {
+						export_status = "No store backend available.";
+					} else {
+						std::filesystem::path p(export_buf);
+						JsonExchangeDatapoint je(state.store.get());
+						auto pts = state.store->load_points(state.selected_planet,state.selected_server,std::vector<PoiType>{PoiType::Mineral});
+						int rc = je.export_json_datapoints(p, pts);
+						if (rc == 0) {
+							state.settings.last_export_path = p.string();
+							export_status = std::string("Exported ") + std::to_string(pts.size()) + " mineral points to: " + p.string();
+						} else {
+							export_status = std::string("Failed to export to: ") + p.string();
+						}
+					}
+				}
+
+				if (ImGui::Button("Import from file")) {
+					std::filesystem::path p(export_buf);
+					JsonExchangeDatapoint je(state.store.get());
+					auto result = je.import_json_datapoints(p);
+					if (result.imported_count > 0) {
+						state.reload_planet_data();
+						state.filter_points();
+						export_status = std::string("Import successful from: ") + 
+						p.string() + '|' + std::to_string(result.imported_count) + " points imported. " + std::to_string(result.skipped_count) + " duplicates skipped.";
+						state.settings.last_export_path = p.string();
+					} else {
+						export_status = std::string("Failed to import from: ") +
+							p.string() + '|' + std::to_string(result.imported_count) + " points imported. " + std::to_string(result.skipped_count) + " duplicates skipped.";
+						state.settings.last_export_path = p.string();
+					}
+				}
+
+				if (!export_status.empty()) {
+					ImGui::TextWrapped("%s", export_status.c_str());
+				}
+
+				ImGui::EndTabItem();
+			}
 
 			if (ImGui::BeginTabItem("Settings")) {
 				ImGui::Checkbox("Show Timings (F3)", &state.settings.show_timings);
@@ -1737,7 +1883,7 @@ int run_scout_app() {
 			if (ImGui::Button("Save Changes")) {
 				bool ok = false;
 				if (state.store) {
-					auto sqlite_backend = dynamic_cast<SqlitePointStore*>(state.store.get());
+					auto sqlite_backend = dynamic_cast<SqliteStore*>(state.store.get());
 					if (sqlite_backend) {
 						ok = sqlite_backend->overwrite_planets(state.planet_catalog);
 					} else {

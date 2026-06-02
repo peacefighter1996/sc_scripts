@@ -73,7 +73,7 @@ private:
     double last_speed_mps_ = 0.0;
     std::chrono::steady_clock::time_point qt_exceed_start_;
     std::filesystem::path repo_root_;
-    IPointStore* store_ = nullptr;
+    IStore* store_ = nullptr;
     std::string server_;
     std::string zone_name_;
     ZoneType zone_type_ = ZoneType::CelestialBody;

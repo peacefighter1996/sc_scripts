@@ -6,6 +6,7 @@
 #include <array>
 #include <algorithm>
 #include <cctype>
+#include <nlohmann/json.hpp>
 
 
 
@@ -47,49 +48,6 @@ enum class PoiType : int {
     POI_TYPE_LIST(POI_ENUM)
 #undef POI_ENUM
 };
-
-//if (type_str == "Cave" || type_str == "Rock Cave" || type_str == "Sand Cave" || type_str == "Sink Hole") {
-	// 	return PoiType::Cave;
-	// }
-	// auto locationtypes = { 
-	// 	"Underground Facility",
-	// 	"Security Outpost",
-	// 	"Derelict Outpost",
-	// 	"Outpost",
-	// 	"Wreck",
-	// 	"Druglab",
-	// 	"Easteregg",
-	// 	"Animal Area",
-	// 	"Event",
-	// 	"Object Container",
-	// 	"Orbital Station",
-	// 	"Landing Zone",
-	// 	"Racetrack(Community)",
-	// 	"Racetrack",
-	// 	"River",
-	// 	"Onyx Facility",
-	// 	"Comm Array",
-	// 	"Abandoned Outpost",
-	// 	"Spaceport",
-	// 	"Forward Operating Base",
-	// 	"Scrapyard",
-	// 	"Jump Point",
-	// 	"Derelict Settlement",
-	// 	"Planetary Alignment Facility",
-	// 	"Prison",
-	// 	"RestStop",
-	// 	"Colonial Outpost",
-	// 	"Missing Derelict Outpost",
-	// 	"Distribution Center",
-	// 	"Mission Area",
-	// 	"Colonial Bunker",
-	// 	"Asteroid Base",
-	// 	"Orbital Laser Platform",
-	// 	"Ground Activation Platform",
-	// 	"Asteroid Belt",
-	// 	"Station",
-	// 	"LandingZone"
-	// };
 
 #define POI_SUBTYPE_LIST(X) \
     X(None, 0)           \
@@ -238,7 +196,50 @@ struct DataPoint {
     mutable std::vector<double> lat_lon_alt_cache_;
 };
 
+bool operator==(const DataPoint& a, const DataPoint& b);
+bool operator!=(const DataPoint& a, const DataPoint& b);
+
 void print_dump(const std::vector<DataPoint>& points);
+
+inline void from_json(const nlohmann::json& j, DataPoint& p) {
+    p.uuid = uuid::from_string(j.value("uuid", ""));
+    p.id = j.value("id", 0);
+    p.server = j.value("server", "All");
+    p.x = j.value("x", 0.0);
+    p.y = j.value("y", 0.0);
+    p.z = j.value("z", 0.0);
+    p.planet = j.value("planet", "");
+    p.material = j.value("material", "");
+    p.location = j.value("location", false);
+    p.quality_min = j.value("quality_min", 0);
+    p.quality_max = j.value("quality_max", 0);
+    p.note = j.value("note", "");
+    poi_subtype_from_string(j.value("subtype", ""), p.subtype);
+    poi_type_from_string(j.value("poi_type", ""), p.poi_type);
+    p.qt_persistent = j.value("qt_persistent", false);
+    p.time_info = j.value("time_info", "");
+}
+
+inline void to_json(nlohmann::json& j, const DataPoint& p) {
+    j = nlohmann::json{
+        {"id", p.id},
+        {"uuid", p.uuid.to_string()},
+        {"server", p.server},
+        {"x", p.x},
+        {"y", p.y},
+        {"z", p.z},
+        {"planet", p.planet},
+        {"material", p.material},
+        {"location", p.location},
+        {"quality_min", p.quality_min},
+        {"quality_max", p.quality_max},
+        {"note", p.note},
+        {"subtype", poi_subtype_name(p.subtype)},
+        {"poi_type", poi_type_name(p.poi_type)},
+        {"qt_persistent", p.qt_persistent},
+        {"time_info", p.time_info}
+    };
+}
 
 enum class ResourceType {
     None = 0,

@@ -14,7 +14,7 @@ bool write_planets_csv(const std::filesystem::path& csv_path, const std::vector<
 std::vector<DataPoint> load_points(const std::filesystem::path& csv_path);
 bool append_point_csv(const std::filesystem::path& csv_path, const DataPoint& point);
 
-// class CsvPointStore : public IPointStore {
+// class CsvPointStore : public IStore {
 // public:
 //     explicit CsvPointStore(const std::string& csv_path);
 //     ~CsvPointStore() override = default;

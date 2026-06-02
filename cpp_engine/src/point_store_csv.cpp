@@ -5,6 +5,7 @@
 #include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <cmath>
 
 // Local helper: find column index from header row
 static int find_column_index(const std::vector<std::string>& headers, const std::vector<std::string>& candidates) {

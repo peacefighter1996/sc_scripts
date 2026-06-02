@@ -3,6 +3,7 @@
 #include "scout_ocr.h"
 #include "scout_core.h"
 #include "scout_render.h"
+#include "scout_engine.h"
 
 #include <iostream>
 #include <fstream>
@@ -18,6 +19,7 @@
 #include <memory>
 #include <cstring>
 #include <cctype>
+#include <cpr/cpr.h>
 
 #ifdef _WIN32
 #ifndef NOMINMAX
@@ -433,7 +435,7 @@ struct AppState {
 		}
 		int max_id = 0;
 		for (const auto& point : points) {
-			max_id = std::max(max_id, point.id);
+			max_id = max(max_id, point.id);
 		}
 		new_data.id = max_id + 1;
 	}
@@ -597,7 +599,7 @@ struct AppState {
 				try { settings.grid_spacing_km = std::stod(value); }
 				catch (...) {}
 			} else if (key == "planet_grid_spacing_degrees") {
-				try {settings.planet_grid_spacing_degrees = std::stod(value);}
+				try { settings.planet_grid_spacing_degrees = std::stod(value); }
 				catch (...) {
 				}
 			} else if (key == "tracking_enabled_on_start") {
@@ -832,7 +834,7 @@ int run_scout_app() {
 		}
 
 
-		const auto sleep_pct = kFrameTime > 0.0 ? std::min(100.0, (actual_sleep / kFrameTime) * 100.0) : 0.0;
+		const auto sleep_pct = kFrameTime > 0.0 ? min(100.0, (actual_sleep / kFrameTime) * 100.0) : 0.0;
 		timer_display.sleep_percent().add_sample(sleep_pct);
 		timer_display.work_time_ms().stamp();
 
@@ -960,7 +962,7 @@ int run_scout_app() {
 					}
 				}
 
-				
+
 
 				if (start_disabled_due_to_server) {
 					ImGui::EndDisabled();
@@ -1041,11 +1043,11 @@ int run_scout_app() {
 					}
 
 					if (ImGui::BeginPopupModal("ResourceSelectPopup", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
-                        popup_filter(state.resource_filter_text, state.popup_selected_item, state.resource_filter_materials, state.selected_material, [&](const std::string& selected) {
-                            state.selected_material = selected;
-                            state.filter_points();
-                        });
-                    }
+						popup_filter(state.resource_filter_text, state.popup_selected_item, state.resource_filter_materials, state.selected_material, [&](const std::string& selected) {
+							state.selected_material = selected;
+							state.filter_points();
+						});
+					}
 				}
 
 				ImGui::Separator();
@@ -1099,7 +1101,7 @@ int run_scout_app() {
 							state.new_data.material = state.recent_resources[ri];
 							push_recent_resource(state, state.new_data.material);
 						}
-						if (ri + 1 < state.recent_resources.size()&& ri != 4) ImGui::SameLine();
+						if (ri + 1 < state.recent_resources.size() && ri != 4) ImGui::SameLine();
 					}
 				}
 
@@ -1156,7 +1158,7 @@ int run_scout_app() {
 								if (auto sqlite_backend = dynamic_cast<SqlitePointStore*>(state.store.get())) {
 									if (sqlite_backend->ensure_zone_contains_point(new_point.planet, new_point.x, new_point.y, state.settings.grid_spacing_km)) {
 										state.reload_planet_catalog();
-										
+
 									}
 								}
 							}
@@ -1232,6 +1234,22 @@ int run_scout_app() {
 				ImGui::Text("OCR Settings:");
 				ImGui::Checkbox("Auto updates new point coordinates", &state.settings.auto_update_ocr_newpoint_enabled);
 				ImGui::Checkbox("Auto updates active planet", &state.settings.ocr_feed_planet_update_enabled);
+				ImGui::Separator();
+				if (ImGui::Button("Import starmap data")) {
+				  // executing proceduer 
+				  // curl -o ./data/starmap_locations.json https://starmap.space/api/v3/pois/index.php
+				  // dbimport-starmap-json ./data/starmap_locations.json ./data/geoscout.db
+					std::string starmap_json_path = (state.repo_root / "data" / "starmap_locations.json").string();
+					std::string starmap_db_path = (state.repo_root / "data" / "geoscout.db").string();
+					bool retFlag = false;
+
+					if(write_starmap_json(starmap_json_path)) {
+						dbimport_starmap(starmap_db_path, starmap_json_path, retFlag);
+					}
+
+					state.reload_planet_data();
+					state.filter_points();
+				}
 				ImGui::EndTabItem();
 			}
 			// ImGui::EndTabItem();
@@ -1676,7 +1694,7 @@ int run_scout_app() {
 			static char new_zone[64] = "";
 			if (new_planet_id == 0) {
 				int maxid = -1;
-				for (const auto& p : state.planet_catalog) maxid = std::max(maxid, p.id);
+				for (const auto& p : state.planet_catalog) maxid = max(maxid, p.id);
 				new_planet_id = maxid + 1;
 			}
 			ImGui::InputInt("ID##newplanet", &new_planet_id);
@@ -1847,11 +1865,11 @@ int run_scout_app() {
 					half_h = (maxy - miny) * 0.5;
 				}
 				if (half_w <= 0.0) {
-					half_w = std::max(1.0, static_cast<double>(state.settings.grid_spacing_km) * 3.0);
+					half_w = max(1.0, static_cast<double>(state.settings.grid_spacing_km) * 3.0);
 					cx = 0.0;
 				}
 				if (half_h <= 0.0) {
-					half_h = std::max(1.0, static_cast<double>(state.settings.grid_spacing_km) * 3.0);
+					half_h = max(1.0, static_cast<double>(state.settings.grid_spacing_km) * 3.0);
 					cy = 0.0;
 				}
 				double world_x = mx * half_w + cx;
@@ -1930,27 +1948,41 @@ int run_scout_app() {
 	return 0;
 }
 
+bool write_starmap_json(std::string& starmap_json_path)
+{
+	bool result = true;
+	auto r = cpr::Get(cpr::Url{ "https://starmap.space/api/v3/pois/index.php" });
+	if (r.status_code == 200) {
+		// write to starmap_json
+		std::ofstream ofs(starmap_json_path);
+		ofs << r.text;
+		ofs.close();
+	} else {
+		std::cerr << "Failed to fetch starmap data: HTTP " << r.status_code << "\n";
+		result = false;
+	}
+	return result;
+}
+
 void popup_filter(std::string& filtertext, std::string& local_selected, const std::vector<std::string>& items, const std::string& app_selected_item, std::function<void(const std::string&)> on_select)
 {
-    char buf[128] = {0};
-    strncpy(buf, filtertext.c_str(), sizeof(buf) - 1);
-    if (ImGui::IsWindowAppearing()){
-        filtertext = "";
+	char buf[128] = { 0 };
+	strncpy(buf, filtertext.c_str(), sizeof(buf) - 1);
+	if (ImGui::IsWindowAppearing()) {
+		filtertext = "";
 		local_selected = app_selected_item;
 		ImGui::SetKeyboardFocusHere();
 	}
-    if (ImGui::InputText("Filter", buf, IM_ARRAYSIZE(buf), ImGuiInputTextFlags_AutoSelectAll))
-    {
-        filtertext = buf;
-    }
+	if (ImGui::InputText("Filter", buf, IM_ARRAYSIZE(buf), ImGuiInputTextFlags_AutoSelectAll)) {
+		filtertext = buf;
+	}
 
-    std::vector<std::string> filtered_items;
-    filtered_items.reserve(items.size());
-    for (const auto &m : items)
-    {
-        if (contains_case_insensitive(m, filtertext))
-            filtered_items.push_back(m);
-    }
+	std::vector<std::string> filtered_items;
+	filtered_items.reserve(items.size());
+	for (const auto& m : items) {
+		if (contains_case_insensitive(m, filtertext))
+			filtered_items.push_back(m);
+	}
 
 	// Local selection state (do not mutate the app's selected item until commit)
 	int sel_index = -1;
@@ -1988,21 +2020,16 @@ void popup_filter(std::string& filtertext, std::string& local_selected, const st
 		}
 	}
 
-    ImGui::Separator();
-    if (filtered_items.empty())
-    {
-        ImGui::TextDisabled("No matches");
-    }
-    else
-    {
-        const int child_h = 8 * static_cast<int>(ImGui::GetTextLineHeightWithSpacing());
-        ImGui::BeginChild("ResourceListChild", ImVec2(300, (float)child_h), true);
+	ImGui::Separator();
+	if (filtered_items.empty()) {
+		ImGui::TextDisabled("No matches");
+	} else {
+		const int child_h = 8 * static_cast<int>(ImGui::GetTextLineHeightWithSpacing());
+		ImGui::BeginChild("ResourceListChild", ImVec2(300, (float)child_h), true);
 		bool any_selected = false;
-		for (size_t i = 0; i < filtered_items.size(); ++i)
-		{
+		for (size_t i = 0; i < filtered_items.size(); ++i) {
 			const bool sel = (filtered_items[i] == local_selected);
-			if (ImGui::Selectable(filtered_items[i].c_str(), sel))
-			{
+			if (ImGui::Selectable(filtered_items[i].c_str(), sel)) {
 				on_select(filtered_items[i]);
 				ImGui::CloseCurrentPopup();
 				return;
@@ -2015,11 +2042,11 @@ void popup_filter(std::string& filtertext, std::string& local_selected, const st
 		if (!any_selected && !filtered_items.empty()) {
 			local_selected = filtered_items[0];
 		}
-        ImGui::EndChild();
-    }
+		ImGui::EndChild();
+	}
 
-    ImGui::Separator();
-    if (ImGui::Button("Close"))
-        ImGui::CloseCurrentPopup();
-    ImGui::EndPopup();
+	ImGui::Separator();
+	if (ImGui::Button("Close"))
+		ImGui::CloseCurrentPopup();
+	ImGui::EndPopup();
 }

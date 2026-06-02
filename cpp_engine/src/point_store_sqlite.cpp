@@ -944,5 +944,6 @@ bool SqlitePointStore::uuid_insert_or_update(const DataPoint& p, uuid* out_chang
 			if (out_change_id) *out_change_id = ev.change_id;
 		}
 	}
+    return true;
 
 }

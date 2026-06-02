@@ -74,11 +74,13 @@ if(SCOUT_BUILD_APP)
 	# Use GLAD as the OpenGL loader for ImGui backend and link glad
 	target_compile_definitions(imgui PUBLIC IMGUI_IMPL_OPENGL_LOADER_GLAD)
 	target_link_libraries(imgui PUBLIC glfw glad)
+	find_package(cpr CONFIG REQUIRED)
+	find_package(ixwebsocket CONFIG REQUIRED)
 
 	target_sources(scout_engine PRIVATE src/scout_app.cpp)
 
 	# SQLite3 for local storage: prefer third_party/sqlite, otherwise use system
-	set(_base_libs imgui glfw opengl32 gdiplus)
+	set(_base_libs imgui glfw opengl32 gdiplus cpr::cpr ixwebsocket::ixwebsocket)
 	if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/sqlite")
 		message(STATUS "Using vendored SQLite at ${CMAKE_CURRENT_SOURCE_DIR}/third_party/sqlite")
 		target_include_directories(scout_engine PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/third_party/sqlite")

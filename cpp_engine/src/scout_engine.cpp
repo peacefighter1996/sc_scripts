@@ -307,52 +307,69 @@ int main(int argc, char** argv) {
 			std::cerr << "usage: scout_engine dbimport-starmap-json <json_path> <db>\n";
 			return 2;
 		}
+		auto db_path = std::string(argv[3]);
+		auto jsonpath = std::string(argv[2]);
 
-		SqlitePointStore store(argv[3], "");
+        bool retFlag;
+        int retVal = dbimport_starmap(db_path, jsonpath, retFlag);
+        if (retFlag)
+            return retVal;
 
-		if (!store.init()) {
-			std::cerr << "failed to initialize connection";
-			return 3;
-		}
-
-
-		nlohmann::json j;
-		if (!extract_json_from_file(argv[2], j)) {
-			std::cerr << "failed to extract JSON from file\n";
-			return 1;
-		}
-
-		
-
-		std::vector<StarmapPoi> pois;
-		bool retFlag;
-		int retVal = ParsePoiObjects(j, pois, retFlag);
-		if (retFlag)
-			return retVal;
-
-		//convert POI to DataPoint and append to CSV
-		for (const auto& p : pois) {
-			if (!std::isnan(p.XCoord) && !std::isnan(p.YCoord) && !std::isnan(p.ZCoord)) {
-				DataPoint dp;
-				if (!starmap_poi_to_datapoint(p, dp)) {
-					std::cerr << "failed to convert POI to datapoint: " << p.PoiName << '\n';
-					continue;
-				}
-				if (store.uuid_insert_or_update(dp)) {
-					std::cout << "imported POI: " << p.PoiName << " at [" << p.XCoord << ", " << p.YCoord << ", " << p.ZCoord << "]\n";
-				} else {
-					std::cerr << "failed to import POI: " << p.PoiName << '\n';
-				}
-			}
-		}
-
-		return 0;
+        return 0;
 	}
 
 
 
 	std::cerr << "unknown command: " << command << '\n';
 	return 2;
+}
+
+int dbimport_starmap(std::string &db_path, std::string &jsonpath, bool &retFlag)
+{
+    retFlag = true;
+    SqlitePointStore store(db_path, "");
+
+    if (!store.init())
+    {
+        std::cerr << "failed to initialize connection";
+        return 3;
+    }
+
+    nlohmann::json j;
+    if (!extract_json_from_file(jsonpath, j))
+    {
+        std::cerr << "failed to extract JSON from file\n";
+        return 1;
+    }
+
+    std::vector<StarmapPoi> pois;
+    int retVal = ParsePoiObjects(j, pois, retFlag);
+    if (retFlag)
+        return retVal;
+
+    // convert POI to DataPoint and append to CSV
+    for (const auto &p : pois)
+    {
+        if (!std::isnan(p.XCoord) && !std::isnan(p.YCoord) && !std::isnan(p.ZCoord))
+        {
+            DataPoint dp;
+            if (!starmap_poi_to_datapoint(p, dp))
+            {
+                std::cerr << "failed to convert POI to datapoint: " << p.PoiName << '\n';
+                continue;
+            }
+            if (store.uuid_insert_or_update(dp))
+            {
+                std::cout << "imported POI: " << p.PoiName << " at [" << p.XCoord << ", " << p.YCoord << ", " << p.ZCoord << "]\n";
+            }
+            else
+            {
+                std::cerr << "failed to import POI: " << p.PoiName << '\n';
+            }
+        }
+    }
+    retFlag = false;
+    return {};
 }
 
 int ParsePoiObjects(nlohmann::json_abi_v3_11_2::json &j, std::vector<StarmapPoi> &pois, bool &retFlag)

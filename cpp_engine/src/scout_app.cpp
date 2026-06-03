@@ -227,12 +227,19 @@ struct AppState {
 	std::filesystem::path planets_dir;
 
 	std::vector<DataPoint> points;
+	// Points used specifically for the datatable view (after column filters and sorting)
+	std::vector<DataPoint> datatablepoints;
 	std::vector<DataPoint> filtered_points;
 	std::vector<std::string> server_ids;
 	std::vector<std::string> planets;
 	std::vector<std::string> systems;
 	std::vector<std::string> system_planets;
 	std::vector<std::string> materials;
+	// Per-column filter strings for datatable header row (index corresponds to table column index)
+	std::vector<std::string> datatable_filters;
+	// Sort state for datatable: column key and order (0=none,1=asc,2=desc)
+	std::string datatable_sort_column;
+	int datatable_sort_order{0};
 	std::vector<std::string> resource_filter_materials;
 	std::vector<Planet> planet_catalog;
 	std::vector<Resource> material_catalog;
@@ -385,6 +392,11 @@ struct AppState {
 
 		selected_planet = planets.empty() ? kDefaultPlanets.front() : planets.front();
 		update_grid_spacing();
+
+		// Initialize datatable helper structures
+		datatable_filters.resize(15);
+		datatable_sort_column = "id";
+		datatable_sort_order = 1; // default sort by id ascending
 
 		// Provide TravelLog with repository path and optional store for metadata recording
 		if (travel_log) {
@@ -1413,6 +1425,156 @@ if (ImGui::Button("Browse")) {
 			ImGui::Text("Edit existing points (changes are in-memory until you Save)");
 			ImGui::Separator();
 
+			// Paging controls for large point sets
+			static int page_size = 100;
+			static int page_index = 0;
+			// Track per-record changes: pair<op, recordid> where op is "modify" or "delete"
+			static std::vector<std::pair<std::string, int>> change_list;
+			// Prepare datatablepoints by applying header filters and sorting
+			if (state.datatable_filters.size() < 15) state.datatable_filters.resize(15);
+			// Cache and only rebuild datatable index map when filters, sort, or data change
+			static std::vector<size_t> datatable_index_map;
+			static std::vector<std::string> prev_filters;
+			static std::string prev_sort_col;
+			static int prev_sort_order = -1;
+			static size_t prev_points_size = 0;
+			static bool prev_data_dirty = true;
+			auto matches = [&](const DataPoint &p) {
+				// Column 0: id
+				if (!state.datatable_filters[0].empty()) {
+					if (std::to_string(p.id).find(state.datatable_filters[0]) == std::string::npos) return false;
+				}
+				// 1: time_info
+				if (!state.datatable_filters[1].empty()) {
+					if (p.time_info.find(state.datatable_filters[1]) == std::string::npos) return false;
+				}
+				// 2: server
+				if (!state.datatable_filters[2].empty()) {
+					if (p.server.find(state.datatable_filters[2]) == std::string::npos) return false;
+				}
+				// 3,4,5: x,y,z
+				if (!state.datatable_filters[3].empty()) { if (std::to_string(p.x).find(state.datatable_filters[3]) == std::string::npos) return false; }
+				if (!state.datatable_filters[4].empty()) { if (std::to_string(p.y).find(state.datatable_filters[4]) == std::string::npos) return false; }
+				if (!state.datatable_filters[5].empty()) { if (std::to_string(p.z).find(state.datatable_filters[5]) == std::string::npos) return false; }
+				// 6: planet
+				if (!state.datatable_filters[6].empty()) { if (p.planet.find(state.datatable_filters[6]) == std::string::npos) return false; }
+				// 7: poi_type
+				if (!state.datatable_filters[7].empty()) { if (std::string(poi_type_name(p.poi_type)).find(state.datatable_filters[7]) == std::string::npos) return false; }
+				// 8: subtype
+				if (!state.datatable_filters[8].empty()) { if (std::string(poi_subtype_name(p.subtype)).find(state.datatable_filters[8]) == std::string::npos) return false; }
+				// 9: material
+				if (!state.datatable_filters[9].empty()) { if (p.material.find(state.datatable_filters[9]) == std::string::npos) return false; }
+				// 10,11: qmin/qmax
+				if (!state.datatable_filters[10].empty()) { if (std::to_string(p.quality_min).find(state.datatable_filters[10]) == std::string::npos) return false; }
+				if (!state.datatable_filters[11].empty()) { if (std::to_string(p.quality_max).find(state.datatable_filters[11]) == std::string::npos) return false; }
+				// 12: note
+				if (!state.datatable_filters[12].empty()) { if (p.note.find(state.datatable_filters[12]) == std::string::npos) return false; }
+				// 13: qt_persistent
+				if (!state.datatable_filters[13].empty()) { if (std::string(p.qt_persistent ? "1" : "0").find(state.datatable_filters[13]) == std::string::npos) return false; }
+				return true;
+			};
+			// detect changes
+			if (prev_filters.size() != state.datatable_filters.size()) prev_filters.resize(state.datatable_filters.size());
+			bool filters_changed = false;
+			for (size_t i = 0; i < state.datatable_filters.size(); ++i) {
+				if (prev_filters[i] != state.datatable_filters[i]) { filters_changed = true; break; }
+			}
+			bool sort_changed = (prev_sort_col != state.datatable_sort_column) || (prev_sort_order != state.datatable_sort_order);
+			bool points_changed = (prev_points_size != state.points.size()) || (data_dirty != prev_data_dirty);
+
+			if (filters_changed || sort_changed || points_changed) {
+				datatable_index_map.clear();
+				datatable_index_map.reserve(state.points.size());
+				for (size_t i = 0; i < state.points.size(); ++i) {
+					if (matches(state.points[i])) datatable_index_map.push_back(i);
+				}
+
+				// Sorting index map based on selected column
+				if (!state.datatable_sort_column.empty() && state.datatable_sort_order != 0) {
+					bool asc = (state.datatable_sort_order == 1);
+					const std::string &c = state.datatable_sort_column;
+					std::stable_sort(datatable_index_map.begin(), datatable_index_map.end(), [&](size_t ai, size_t bi) {
+						const DataPoint &a = state.points[ai];
+						const DataPoint &b = state.points[bi];
+						if (c == "id") return asc ? a.id < b.id : a.id > b.id;
+						if (c == "time") return asc ? a.time_info < b.time_info : a.time_info > b.time_info;
+						if (c == "server") return asc ? a.server < b.server : a.server > b.server;
+						if (c == "x") return asc ? a.x < b.x : a.x > b.x;
+						if (c == "y") return asc ? a.y < b.y : a.y > b.y;
+						if (c == "z") return asc ? a.z < b.z : a.z > b.z;
+						if (c == "planet") return asc ? a.planet < b.planet : a.planet > b.planet;
+						if (c == "material") return asc ? a.material < b.material : a.material > b.material;
+						if (c == "qmin") return asc ? a.quality_min < b.quality_min : a.quality_min > b.quality_min;
+						if (c == "qmax") return asc ? a.quality_max < b.quality_max : a.quality_max > b.quality_max;
+						return asc ? a.id < b.id : a.id > b.id;
+					});
+				} else {
+					// default sort by id ascending
+					std::stable_sort(datatable_index_map.begin(), datatable_index_map.end(), [&](size_t ai, size_t bi){ return state.points[ai].id < state.points[bi].id; });
+				}
+
+				// update cached state
+				prev_filters = state.datatable_filters;
+				prev_sort_col = state.datatable_sort_column;
+				prev_sort_order = state.datatable_sort_order;
+				prev_points_size = state.points.size();
+				prev_data_dirty = data_dirty;
+			}
+
+			size_t total_items = datatable_index_map.size();
+			size_t total_pages = page_size > 0 ? (total_items + static_cast<size_t>(page_size) - 1) / static_cast<size_t>(page_size) : 1;
+			if (page_size <= 0) page_size = 1;
+
+			ImGui::PushID("datatable_paging");
+			ImGui::Text("Page size:"); ImGui::SameLine();
+			if (ImGui::InputInt("##page_size", &page_size)) {
+				if (page_size <= 0) page_size = 1;
+				total_pages = (total_items + static_cast<size_t>(page_size) - 1) / static_cast<size_t>(page_size);
+				if (page_index >= static_cast<int>(total_pages) && total_pages > 0) page_index = static_cast<int>(total_pages) - 1;
+			}
+			ImGui::SameLine();
+			if (ImGui::Button("Prev")) {
+				if (page_index > 0) --page_index;
+			}
+			ImGui::SameLine();
+			if (ImGui::Button("Next")) {
+				if (page_index < static_cast<int>(std::max<size_t>(1, total_pages)) - 1) ++page_index;
+			}
+			ImGui::SameLine();
+			// Page jump input (1-based)
+			int page_input = page_index + 1;
+			ImGui::PushItemWidth(80);
+			if (ImGui::InputInt("##page_input", &page_input)) {
+				if (page_input < 1) page_input = 1;
+				if (total_pages > 0 && static_cast<size_t>(page_input) > total_pages) page_input = static_cast<int>(total_pages);
+				page_index = page_input - 1;
+			}
+			ImGui::PopItemWidth();
+			ImGui::SameLine();
+			ImGui::Text("/ %zu", total_pages == 0 ? 1 : total_pages);
+			ImGui::PopID();
+
+			// helper lambdas for marking changes
+			auto mark_modified = [&](int id) {
+				if (id <= 0) return;
+				for (const auto &c : change_list) {
+					if (c.second == id && c.first == "delete") return; // deleted takes precedence
+				}
+				for (const auto &c : change_list) {
+					if (c.second == id && c.first == "modify") return; // already marked
+				}
+				change_list.emplace_back("modify", id);
+			};
+			auto mark_deleted = [&](int id) {
+				if (id <= 0) return;
+				// remove any pending modify entries for this id
+				change_list.erase(std::remove_if(change_list.begin(), change_list.end(), [&](const std::pair<std::string,int>& p) { return p.second == id && p.first == "modify"; }), change_list.end());
+				for (const auto &c : change_list) {
+					if (c.second == id && c.first == "delete") return; // already marked
+				}
+				change_list.emplace_back("delete", id);
+			};
+
 			ImGuiTableFlags table_flags = ImGuiTableFlags_Resizable | ImGuiTableFlags_Reorderable | ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerH | ImGuiTableFlags_ScrollY;
 			// Use a distinct table ID to avoid legacy table-layout mismatches across builds
 			if (ImGui::BeginTable("DataPointsTable_v3", 15, table_flags, ImVec2(0, ImGui::GetContentRegionAvail().y - 30))) {
@@ -1422,7 +1584,7 @@ if (ImGui::Button("Browse")) {
 				ImGui::TableSetupColumn("X"); // 3
 				ImGui::TableSetupColumn("Y"); // 4
 				ImGui::TableSetupColumn("Z"); // 5
-				ImGui::TableSetupColumn("Planet"); // 6
+				ImGui::TableSetupColumn("Zone"); // 6
 				ImGui::TableSetupColumn("POI Type", ImGuiTableColumnFlags_WidthFixed, 100.0f); // 7
 				ImGui::TableSetupColumn("Subtype", ImGuiTableColumnFlags_WidthFixed, 160.0f); // 8
 				ImGui::TableSetupColumn("Resource"); // 9
@@ -1431,12 +1593,162 @@ if (ImGui::Button("Browse")) {
 				ImGui::TableSetupColumn("Note"); // 12
 				ImGui::TableSetupColumn("QT Persist", ImGuiTableColumnFlags_WidthFixed, 80.0f); // 13
 				ImGui::TableSetupColumn("Control", ImGuiTableColumnFlags_WidthFixed, 80.0f); //14
-				ImGui::TableSetupScrollFreeze(0, 1);
+				ImGui::TableSetupScrollFreeze(0, 2);
 				ImGui::TableHeadersRow();
 
+				// Second header row: filter inputs and clickable sort buttons
+				// Style the filter row to visually separate it from data rows and make inputs compact
+				ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.12f, 0.12f, 0.12f, 1.0f));
+				ImGui::PushStyleColor(ImGuiCol_FrameBg, ImVec4(0.10f, 0.10f, 0.10f, 1.0f));
+				ImGui::TableNextRow();
+				for (int col = 0; col < 15; ++col) {
+					ImGui::TableSetColumnIndex(col);
+					// Determine display name and key
+					if (col == 14) continue;
+					const char* disp = "";
+					std::string key;
+					switch (col) {
+						case 0: disp = "ID"; key = "id"; break;
+						case 1: disp = "Record Time"; key = "time"; break;
+						case 2: disp = "Server"; key = "server"; break;
+						case 3: disp = "X"; key = "x"; break;
+						case 4: disp = "Y"; key = "y"; break;
+						case 5: disp = "Z"; key = "z"; break;
+						case 6: disp = "Zone"; key = "zone"; break;
+						case 7: disp = "POI Type"; key = "poi_type"; break;
+						case 8: disp = "Subtype"; key = "subtype"; break;
+						case 9: disp = "Resource"; key = "material"; break;
+						case 10: disp = "QMin"; key = "qmin"; break;
+						case 11: disp = "QMax"; key = "qmax"; break;
+						case 12: disp = "Note"; key = "note"; break;
+						case 13: disp = "QT"; key = "qt"; break;
+						case 14: disp = "Control"; key = "control"; break;
+					}
+					// show sort symbol if active (use ASCII arrows for compatibility)
+					std::string btn_label = disp;
+					if (state.datatable_sort_column == key) {
+						if (state.datatable_sort_order == 1) btn_label += " ^";
+						else if (state.datatable_sort_order == 2) btn_label += " v";
+					}
+					std::string btn_id = btn_label + std::string("##hdr") + std::to_string(col);
+					// color active sort button green
+					if (state.datatable_sort_column == key) ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.0f, 0.6f, 0.0f, 1.0f));
+					if (ImGui::Button(btn_id.c_str())) {
+						if (state.datatable_sort_column == key) {
+							// cycle none -> asc -> desc -> none
+							state.datatable_sort_order = (state.datatable_sort_order + 1) % 3;
+							if (state.datatable_sort_order == 0) state.datatable_sort_column.clear();
+						} else {
+							state.datatable_sort_column = key;
+							state.datatable_sort_order = 1;
+						}
+					}
+					if (state.datatable_sort_column == key) ImGui::PopStyleColor();
+					// filter input below button
+					// Compact per-column widths for filter inputs
+					int iw = 100;
+					switch (col) {
+						case 0: iw = 60; break; // ID
+						case 1: iw = 160; break; // Record Time
+						case 2: iw = 100; break; // Server
+						case 3: case 4: case 5: iw = 80; break; // X,Y,Z
+						case 6: iw = 120; break; // Planet
+						case 7: case 8: iw = 100; break; // POI Type, Subtype
+						case 9: iw = 120; break; // Resource
+						case 10: case 11: iw = 80; break; // QMin/QMax
+						case 12: iw = 160; break; // Note
+						case 13: iw = 80; break; // QT
+						case 14: iw = 80; break; // Control
+						default: iw = 100; break;
+					}
+					ImGui::PushItemWidth(static_cast<float>(iw));
+					std::string f_lbl = std::string("##filter") + std::to_string(col);
+					// For POI Type, Subtype and Resource use dropdowns
+					if (col == 1) {
+					}
+					else if (col == 7) {
+						auto names = poi_type_names();
+						std::vector<const char*> cstrs;
+						cstrs.reserve(names.size() + 1);
+						cstrs.push_back("Any");
+						for (const auto &s : names) cstrs.push_back(s.c_str());
+						int sel = 0; // 0 == Any
+						if (state.datatable_filters.size() > 7 && !state.datatable_filters[7].empty()) {
+							for (size_t si = 0; si < names.size(); ++si) if (names[si] == state.datatable_filters[7]) { sel = static_cast<int>(si + 1); break; }
+						}
+						if (ImGui::Combo(f_lbl.c_str(), &sel, cstrs.data(), static_cast<int>(cstrs.size()))) {
+							if (sel == 0) state.datatable_filters[7].clear(); else state.datatable_filters[7] = names[sel - 1];
+						}
+					} else if (col == 8) {
+						std::vector<const char*> cstrs;
+						cstrs.reserve(poi_impl::poi_subtype_count + 1);
+						cstrs.push_back("Any");
+						for (size_t si = 0; si < poi_impl::poi_subtype_count; ++si) cstrs.push_back(poi_impl::poi_subtype_names_arr[si]);
+						int sel = 0;
+						if (state.datatable_filters.size() > 8 && !state.datatable_filters[8].empty()) {
+							for (size_t si = 0; si < poi_impl::poi_subtype_count; ++si) if (state.datatable_filters[8] == poi_impl::poi_subtype_names_arr[si]) { sel = static_cast<int>(si + 1); break; }
+						}
+						if (ImGui::Combo(f_lbl.c_str(), &sel, cstrs.data(), static_cast<int>(cstrs.size()))) {
+							if (sel == 0) state.datatable_filters[8].clear(); else state.datatable_filters[8] = poi_impl::poi_subtype_names_arr[sel - 1];
+						}
+					} else if (col == 9) {
+						std::vector<const char*> cstrs;
+						cstrs.reserve(state.materials.size() + 1);
+						cstrs.push_back("Any");
+						for (const auto &s : state.materials) cstrs.push_back(s.c_str());
+						int sel = 0;
+						if (state.datatable_filters.size() > 9 && !state.datatable_filters[9].empty()) {
+							for (size_t si = 0; si < state.materials.size(); ++si) if (state.datatable_filters[9] == state.materials[si]) { sel = static_cast<int>(si + 1); break; }
+						}
+						if (ImGui::Combo(f_lbl.c_str(), &sel, cstrs.data(), static_cast<int>(cstrs.size()))) {
+							if (sel == 0) state.datatable_filters[9].clear(); else state.datatable_filters[9] = state.materials[sel - 1];
+						}
+					} else {
+						char fbuf[128] = {0};
+						if (state.datatable_filters.size() > static_cast<size_t>(col)) strncpy(fbuf, state.datatable_filters[col].c_str(), sizeof(fbuf)-1);
+						if (ImGui::InputText(f_lbl.c_str(), fbuf, sizeof(fbuf))) {
+							state.datatable_filters[col] = fbuf;
+						}
+					}
+					ImGui::PopItemWidth();
+				}
+				ImGui::PopStyleColor(2);
+
 				std::vector<size_t> to_erase;
+
+				// Rebuild index map after potential filter changes in header inputs
+				datatable_index_map.clear();
 				for (size_t i = 0; i < state.points.size(); ++i) {
-					DataPoint& dp = state.points[i];
+					if (matches(state.points[i])) datatable_index_map.push_back(i);
+				}
+				if (!state.datatable_sort_column.empty() && state.datatable_sort_order != 0) {
+					bool asc = (state.datatable_sort_order == 1);
+					const std::string &c = state.datatable_sort_column;
+					std::stable_sort(datatable_index_map.begin(), datatable_index_map.end(), [&](size_t ai, size_t bi) {
+						const DataPoint &a = state.points[ai];
+						const DataPoint &b = state.points[bi];
+						if (c == "id") return asc ? a.id < b.id : a.id > b.id;
+						if (c == "time") return asc ? a.time_info < b.time_info : a.time_info > b.time_info;
+						if (c == "server") return asc ? a.server < b.server : a.server > b.server;
+						if (c == "x") return asc ? a.x < b.x : a.x > b.x;
+						if (c == "y") return asc ? a.y < b.y : a.y > b.y;
+						if (c == "z") return asc ? a.z < b.z : a.z > b.z;
+						if (c == "planet") return asc ? a.planet < b.planet : a.planet > b.planet;
+						if (c == "material") return asc ? a.material < b.material : a.material > b.material;
+						if (c == "qmin") return asc ? a.quality_min < b.quality_min : a.quality_min > b.quality_min;
+						if (c == "qmax") return asc ? a.quality_max < b.quality_max : a.quality_max > b.quality_max;
+						return asc ? a.id < b.id : a.id > b.id;
+					});
+				} else {
+					std::stable_sort(datatable_index_map.begin(), datatable_index_map.end(), [&](size_t ai, size_t bi){ return state.points[ai].id < state.points[bi].id; });
+				}
+				// Compute visible range based on current page (use datatable index map)
+				size_t start = static_cast<size_t>(page_index) * static_cast<size_t>(page_size);
+				if (start >= datatable_index_map.size()) start = 0;
+				size_t end_idx = ((start + static_cast<size_t>(page_size)) < datatable_index_map.size()) ? (start + static_cast<size_t>(page_size)) : datatable_index_map.size();
+				for (size_t local = start; local < end_idx; ++local) {
+					size_t idx = datatable_index_map[local];
+					DataPoint& dp = state.points[idx];
 					ImGui::TableNextRow();
 
 					// ID (read-only)
@@ -1456,11 +1768,12 @@ if (ImGui::Button("Browse")) {
 					{
 						char buf[16] = { 0 };
 						strncpy(buf, dp.server.c_str(), sizeof(buf) - 1);
-						std::string lbl = std::string("##server") + std::to_string(i);
+						std::string lbl = std::string("##server") + std::to_string(idx);
 						ImGui::PushItemWidth(-FLT_MIN);
 						if (ImGui::InputText(lbl.c_str(), buf, IM_ARRAYSIZE(buf))) {
 							dp.server = buf;
 							data_dirty = true;
+							mark_modified(dp.id);
 						}
 						ImGui::PopItemWidth();
 					}
@@ -1468,11 +1781,12 @@ if (ImGui::Button("Browse")) {
 					ImGui::TableSetColumnIndex(3);
 					{
 						double val = dp.x;
-						std::string lbl = std::string("##x") + std::to_string(i);
+						std::string lbl = std::string("##x") + std::to_string(idx);
 						ImGui::PushItemWidth(-FLT_MIN);
 						if (ImGui::InputDouble(lbl.c_str(), &val, 0.0, 0.0, "%.6f")) {
 							dp.x = val;
 							data_dirty = true;
+							mark_modified(dp.id);
 						}
 						ImGui::PopItemWidth();
 					}
@@ -1481,11 +1795,12 @@ if (ImGui::Button("Browse")) {
 					ImGui::TableSetColumnIndex(4);
 					{
 						double val = dp.y;
-						std::string lbl = std::string("##y") + std::to_string(i);
+						std::string lbl = std::string("##y") + std::to_string(idx);
 						ImGui::PushItemWidth(-FLT_MIN);
 						if (ImGui::InputDouble(lbl.c_str(), &val, 0.0, 0.0, "%.6f")) {
 							dp.y = val;
 							data_dirty = true;
+							mark_modified(dp.id);
 						}
 						ImGui::PopItemWidth();
 					}
@@ -1494,11 +1809,12 @@ if (ImGui::Button("Browse")) {
 					ImGui::TableSetColumnIndex(5);
 					{
 						double val = dp.z;
-						std::string lbl = std::string("##z") + std::to_string(i);
+						std::string lbl = std::string("##z") + std::to_string(idx);
 						ImGui::PushItemWidth(-FLT_MIN);
 						if (ImGui::InputDouble(lbl.c_str(), &val, 0.0, 0.0, "%.6f")) {
 							dp.z = val;
 							data_dirty = true;
+							mark_modified(dp.id);
 						}
 						ImGui::PopItemWidth();
 					}
@@ -1506,7 +1822,7 @@ if (ImGui::Button("Browse")) {
 					// Planet (combo)
 					ImGui::TableSetColumnIndex(6);
 					{
-						std::string lbl = std::string("##planet") + std::to_string(i);
+						std::string lbl = std::string("##planet") + std::to_string(idx);
 						auto it = std::find(state.planets.begin(), state.planets.end(), dp.planet);
 						int cur = it != state.planets.end() ? static_cast<int>(std::distance(state.planets.begin(), it)) : 0;
 						std::vector<const char*> cstrs;
@@ -1516,13 +1832,14 @@ if (ImGui::Button("Browse")) {
 						if (ImGui::Combo(lbl.c_str(), &cur, cstrs.data(), static_cast<int>(cstrs.size()))) {
 							dp.planet = state.planets[static_cast<size_t>(cur)];
 							data_dirty = true;
+							mark_modified(dp.id);
 						}
 						ImGui::PopItemWidth();
 					}
 					// POI Type (enum-backed combo)
 					ImGui::TableSetColumnIndex(7);
 					{
-						std::string lbl = std::string("##poi_type") + std::to_string(i);
+						std::string lbl = std::string("##poi_type") + std::to_string(idx);
 						int cur = static_cast<int>(dp.poi_type);
 						auto names = poi_type_names();
 						std::vector<const char*> cstrs;
@@ -1532,6 +1849,7 @@ if (ImGui::Button("Browse")) {
 						if (ImGui::Combo(lbl.c_str(), &cur, cstrs.data(), static_cast<int>(cstrs.size()))) {
 							dp.poi_type = static_cast<PoiType>(cur);
 							data_dirty = true;
+							mark_modified(dp.id);
 						}
 						ImGui::PopItemWidth();
 					}
@@ -1539,7 +1857,7 @@ if (ImGui::Button("Browse")) {
 					// Subtype (enum-backed combo)
 					ImGui::TableSetColumnIndex(8);
 					{
-						std::string lbl = std::string("##subtype") + std::to_string(i);
+						std::string lbl = std::string("##subtype") + std::to_string(idx);
 						int cur = static_cast<int>(dp.subtype);
 						std::vector<const char*> cstrs;
 						cstrs.reserve(poi_impl::poi_subtype_count);
@@ -1548,6 +1866,7 @@ if (ImGui::Button("Browse")) {
 						if (ImGui::Combo(lbl.c_str(), &cur, cstrs.data(), static_cast<int>(cstrs.size()))) {
 							dp.subtype = static_cast<PoiSubType>(cur);
 							data_dirty = true;
+							mark_modified(dp.id);
 						}
 						ImGui::PopItemWidth();
 					}
@@ -1555,7 +1874,7 @@ if (ImGui::Button("Browse")) {
 					// Resource (combo)
 					ImGui::TableSetColumnIndex(9);
 					{
-						std::string lbl = std::string("##material") + std::to_string(i);
+						std::string lbl = std::string("##material") + std::to_string(idx);
 						auto it = std::find(state.materials.begin(), state.materials.end(), dp.material);
 						int cur = it != state.materials.end() ? static_cast<int>(std::distance(state.materials.begin(), it)) : 0;
 						std::vector<const char*> cstrs;
@@ -1565,6 +1884,7 @@ if (ImGui::Button("Browse")) {
 						if (ImGui::Combo(lbl.c_str(), &cur, cstrs.data(), static_cast<int>(cstrs.size()))) {
 							dp.material = state.materials[static_cast<size_t>(cur)];
 							data_dirty = true;
+							mark_modified(dp.id);
 						}
 						ImGui::PopItemWidth();
 					}
@@ -1574,11 +1894,12 @@ if (ImGui::Button("Browse")) {
 					ImGui::TableSetColumnIndex(10);
 					{
 						int val = int(dp.quality_min);
-						std::string lbl = std::string("##qmin") + std::to_string(i);
+						std::string lbl = std::string("##qmin") + std::to_string(idx);
 						ImGui::PushItemWidth(-FLT_MIN);
 						if (ImGui::InputInt(lbl.c_str(), &val, 0, 0)) {
 							dp.quality_min = val;
 							data_dirty = true;
+							mark_modified(dp.id);
 						}
 						ImGui::PopItemWidth();
 					}
@@ -1587,11 +1908,12 @@ if (ImGui::Button("Browse")) {
 					ImGui::TableSetColumnIndex(11);
 					{
 						int val = int(dp.quality_max);
-						std::string lbl = std::string("##qmax") + std::to_string(i);
+						std::string lbl = std::string("##qmax") + std::to_string(idx);
 						ImGui::PushItemWidth(-FLT_MIN);
 						if (ImGui::InputInt(lbl.c_str(), &val, 0, 0)) {
 							dp.quality_max = val;
 							data_dirty = true;
+							mark_modified(dp.id);
 						}
 						ImGui::PopItemWidth();
 					}
@@ -1601,11 +1923,12 @@ if (ImGui::Button("Browse")) {
 					{
 						char buf[256] = { 0 };
 						strncpy(buf, dp.note.c_str(), sizeof(buf) - 1);
-						std::string lbl = std::string("##note") + std::to_string(i);
+						std::string lbl = std::string("##note") + std::to_string(idx);
 						ImGui::PushItemWidth(-FLT_MIN);
 						if (ImGui::InputText(lbl.c_str(), buf, IM_ARRAYSIZE(buf))) {
 							dp.note = buf;
 							data_dirty = true;
+							mark_modified(dp.id);
 						}
 						ImGui::PopItemWidth();
 					}
@@ -1613,20 +1936,22 @@ if (ImGui::Button("Browse")) {
 					// QT persistent checkbox
 					ImGui::TableSetColumnIndex(13);
 					{
-						std::string lbl = std::string("##qt_persistent") + std::to_string(i);
+						std::string lbl = std::string("##qt_persistent") + std::to_string(idx);
 						bool val = dp.qt_persistent;
 						if (ImGui::Checkbox(lbl.c_str(), &val)) {
 							dp.qt_persistent = val;
 							data_dirty = true;
+							mark_modified(dp.id);
 						}
 					}
 
 					// Controls (Delete)
 					ImGui::TableSetColumnIndex(14);
 					{
-						std::string del_lbl = std::string("Delete##del") + std::to_string(i);
+						std::string del_lbl = std::string("Delete##del") + std::to_string(idx);
 						if (ImGui::SmallButton(del_lbl.c_str())) {
-							to_erase.push_back(i);
+							mark_deleted(dp.id);
+							to_erase.push_back(idx);
 						}
 					}
 				}
@@ -1640,22 +1965,66 @@ if (ImGui::Button("Browse")) {
 							data_dirty = true;
 						}
 					}
+
+					// Rebuild datatable index map after removals
+					datatable_index_map.clear();
+					for (size_t i = 0; i < state.points.size(); ++i) {
+						if (matches(state.points[i])) datatable_index_map.push_back(i);
+					}
+				}
+
+				// After potential removals, ensure the current page index is valid
+				total_items = datatable_index_map.size();
+				total_pages = page_size > 0 ? (total_items + static_cast<size_t>(page_size) - 1) / static_cast<size_t>(page_size) : 1;
+				if (total_pages == 0) {
+					page_index = 0;
+				} else if (page_index >= static_cast<int>(total_pages)) {
+					page_index = static_cast<int>(total_pages) - 1;
 				}
 
 				ImGui::EndTable();
 			}
 
 			ImGui::Separator();
-			if (ImGui::Button("Save Changes")) {
-				bool ok = false;
+			bool save_enabled = !change_list.empty();
+			if (!save_enabled) ImGui::BeginDisabled();
+			if (ImGui::Button("Save Changes")) {			
+				bool ok = true;
 				if (state.store) {
-					ok = state.store->overwrite_points(state.points);
+					// If we have a store and a change list, apply incremental changes where possible
+					if (!change_list.empty()) {
+						// Try to apply per-change operations against SqliteStore when available
+						for (const auto &c : change_list) {
+							const std::string &op = c.first;
+							int rid = c.second;
+							if (op == "delete") {
+								if (!state.store->delete_point_by_id(rid)) {
+									ok = false;
+								}
+							} else if (op == "modify") {
+								// locate datapoint in memory
+								auto it = std::find_if(state.points.begin(), state.points.end(), [&](const DataPoint &p) { return p.id == rid; });
+								if (it != state.points.end()) {
+									int res = state.store->uuid_insert_or_update(*it, nullptr);
+									if (res == 0) ok = false;
+								} else {
+									// record not present locally anymore; nothing to update
+								}
+							}
+						} 
+					}
+					// } else {
+					// 	// no per-record changes tracked -> fallback to full overwrite
+					// 	ok = state.store->overwrite_points(state.points);
+					// }
 				} else {
 					ok = write_points_csv((state.repo_root / "data" / "geoscout.csv"), state.points);
 				}
 
 				if (ok) {
 					save_message = "Saved successfully";
+					// Clear tracked changes and reload
+					change_list.clear();
 					state.reload_planet_data();
 					state.filter_points();
 					data_dirty = false;
@@ -1663,8 +2032,9 @@ if (ImGui::Button("Browse")) {
 					save_message = "Save failed";
 				}
 			}
+			if (!save_enabled) ImGui::EndDisabled();
 			ImGui::SameLine();
-			if (ImGui::Button("Reload From CSV")) {
+			if (ImGui::Button("Reload Data")) {
 				state.reload_planet_data();
 				state.filter_points();
 				save_message = "Reloaded";

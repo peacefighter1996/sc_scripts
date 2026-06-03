@@ -19,7 +19,8 @@ public:
     int uuid_insert_or_update(DataPoint& p, uuid* out_change_id = nullptr) override;
     bool overwrite_points(const std::vector<DataPoint>& points) override;
     bool push_change_event(const ChangeEvent& ev) override;
-    DataPoint get_datapoint(int id);
+    DataPoint get_datapoint(int id) override;
+    bool delete_point_by_id(int id) override;
     // Reference table accessors
     std::vector<std::string> load_server_ids();
     std::vector<Planet> load_planets();

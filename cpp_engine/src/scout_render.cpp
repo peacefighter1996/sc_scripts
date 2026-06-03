@@ -7,6 +7,8 @@
 #include <algorithm>
 #include <cmath>
 #include <utility>
+#include <imgui.h>
+#include <cstdint>
 
 static std::pair<float, float> latlon_to_uv(double lat, double lon) {
 	const auto u = static_cast<float>((lon + 180.0) / 360.0);
@@ -43,6 +45,98 @@ std::pair<float, float> ScoutRenderer::zone_point_to_ndc(const Planet* selected_
 	}
 	// Treat a,b as lat,lon
 	return latlon_to_ndc(a, b);
+}
+
+std::string ScoutRenderer::excel_column_label(int index) {
+	if (index < 0) return "";
+	// Local non-cached fallback (header cache lives in object; helper also useful standalone)
+	std::string s;
+	int n = index;
+	while (true) {
+		int rem = n % 26;
+		s.push_back(static_cast<char>('A' + rem));
+		n = (n / 26) - 1;
+		if (n < 0) break;
+	}
+	std::reverse(s.begin(), s.end());
+	return s;
+}
+
+std::string ScoutRenderer::sector_label_for_point(const Planet* selected_zone, double a, double b, double grid_spacing_km) {
+	if (!selected_zone) return std::string();
+	if (selected_zone->zone_type == ZoneType::AsteroidField) {
+		double minx = static_cast<double>(selected_zone->min_x_km);
+		double maxx = static_cast<double>(selected_zone->max_x_km);
+		double miny = static_cast<double>(selected_zone->min_y_km);
+		double maxy = static_cast<double>(selected_zone->max_y_km);
+		if (grid_spacing_km <= 0.0) grid_spacing_km = 100.0;
+		const double start_x = std::floor(minx / grid_spacing_km) * grid_spacing_km;
+		const double start_y = std::floor(miny / grid_spacing_km) * grid_spacing_km;
+		const int col = static_cast<int>(std::floor((a - start_x) / grid_spacing_km));
+		const int row = static_cast<int>(std::floor((b - start_y) / grid_spacing_km));
+		if (col < 0 || row < 0) return std::string();
+		// Try cache for column label
+		std::string col_label;
+		auto itc = col_label_cache_.find(col);
+		if (itc != col_label_cache_.end()) col_label = itc->second;
+		else {
+			col_label = excel_column_label(col);
+			col_label_cache_.emplace(col, col_label);
+		}
+		return col_label + std::to_string(row + 1);
+	}
+	// Celestial body: treat grid_spacing_km as degrees for lat/lon
+	const double deg_step = grid_spacing_km;
+	if (deg_step <= 0.0) return std::string();
+	// longitude a is lon, latitude b is lat
+	int col = static_cast<int>(std::floor((a + 180.0) / deg_step));
+	int row = static_cast<int>(std::floor((b + 90.0) / deg_step));
+	if (col < 0 || row < 0) return std::string();
+	std::string col_label;
+	auto itc = col_label_cache_.find(col);
+	if (itc != col_label_cache_.end()) col_label = itc->second;
+	else {
+		col_label = excel_column_label(col);
+		col_label_cache_.emplace(col, col_label);
+	}
+	return col_label + std::to_string(row + 1);
+}
+
+void ScoutRenderer::render_sector_labels_grid(const Planet* selected_zone, double start_x, double start_y, int cols, int rows, double grid_spacing_x_km, double grid_spacing_y_km, bool coords_are_latlon) {
+	ImDrawList* dl = ImGui::GetBackgroundDrawList();
+	ImVec2 disp = ImGui::GetIO().DisplaySize;
+	ImFont* font = ImGui::GetFont();
+	const float font_size = 13.0f;
+	for (int cx = 0; cx < cols; ++cx) {
+		for (int ry = 0; ry < rows; ++ry) {
+			double a = start_x + (cx * grid_spacing_x_km) - (abs(grid_spacing_x_km) * 0.00);
+			double b = start_y + (ry * grid_spacing_y_km) + (abs(grid_spacing_y_km) * 0.00);
+			// For celestial, a=lon,b=lat; for asteroid field a/b are X/Y so zone_point_to_ndc handles both
+			auto ndc = zone_point_to_ndc(selected_zone, a, b, abs(grid_spacing_x_km));
+			float px = (ndc.first + 1.0f) *0.5 * disp.x;
+			float py = (1.0f - ((ndc.second + 1.0f) * 0.5f)) * disp.y;
+			std::string key = selected_zone->name + ":" + std::to_string(cx) + "," + std::to_string(ry) + "@" + std::to_string((int)abs(grid_spacing_x_km)) + (coords_are_latlon ? ":LONLAT" : "");
+			std::string label;
+			auto it = cell_label_cache_.find(key);
+			if (it != cell_label_cache_.end()) {
+				label = it->second;
+			} else {
+				int col_idx = cx;
+				int row_idx = ry + 1;
+				std::string col_label;
+				auto itc = col_label_cache_.find(col_idx);
+				if (itc != col_label_cache_.end()) col_label = itc->second;
+				else {
+					col_label = excel_column_label(col_idx);
+					col_label_cache_.emplace(col_idx, col_label);
+				}
+				label = col_label + std::to_string(row_idx);
+				cell_label_cache_.emplace(key, label);
+			}
+			ImU32 col = ImGui::GetColorU32(ImVec4(1.0f, 1.0f, 1.0f, 0.25f));
+			dl->AddText(font, font_size, ImVec2(px, py), col, label.c_str());
+		}
+	}
 }
 
 void ScoutRenderer::render_grid_for_zone(const Planet* selected_zone, double grid_spacing_km) {
@@ -95,6 +189,15 @@ void ScoutRenderer::render_grid_for_zone(const Planet* selected_zone, double gri
 			glDrawArrays(GL_LINES, 0, static_cast<GLsizei>(lines.size() / 2));
 			glBindVertexArray(0);
 		}
+
+		// Render sector labels for this asteroid bounding-grid
+		{
+			int cols = static_cast<int>(std::round((end_x - start_x) / grid_spacing_km));
+			int rows = static_cast<int>(std::round((end_y - start_y) / grid_spacing_km));
+			if (cols > 0 && rows > 0) {
+				render_sector_labels_grid(selected_zone, start_x, start_y, cols, rows, grid_spacing_km, grid_spacing_km, false);
+			}
+		}
 	}
 	if (selected_zone->zone_type == ZoneType::CelestialBody) {
 		// Draw planetary lat/lon grid lines (treat grid_spacing_km as degrees)
@@ -131,6 +234,13 @@ void ScoutRenderer::render_grid_for_zone(const Planet* selected_zone, double gri
 				//glLineWidth(20.0f);
 				glDrawArrays(GL_LINES, 0, static_cast<GLsizei>(latlon_lines.size() / 2));
 				glBindVertexArray(0);
+			}
+
+			// Render sector labels for planetary grid: start lon/lat at -180/-90
+			int cols = static_cast<int>(std::floor(360.0 / deg_step));
+			int rows = static_cast<int>(std::floor(180.0 / deg_step));
+			if (cols > 0 && rows > 0) {
+				render_sector_labels_grid(selected_zone, 90.0f, -180.0f, rows, cols,  -deg_step, deg_step, true);
 			}
 		}
 	}
@@ -320,12 +430,15 @@ bool ScoutRenderer::init() {
 
 struct rgba { float r, g, b, a; };
 
+//rgb(183, 65, 14)
 const rgba wreck = { 183.0f / 255.0f,	65.0f / 255.0f,	14.0f / 255.0f,	0.9f };
-const rgba cave = { 0.59f,	0.29f,	0.0f,	0.9f };
+//rgb(150, 90, 50)
+const rgba cave = { 150.0f / 255.0f,	90.0f / 255.0f,	50.0f / 255.0f,	0.9f };
 
 //rgb(203, 58, 51)
 const rgba onyx_facility = { 212.0f / 255.0f,	58.0f / 255.0f,	51.0f / 255.0f,	1.0f };
-const rgba qtless_location = { 0.5f, 0.5, 0.5f, 0.9f };
+//rgb(128, 128, 128)
+const rgba qtless_location = { 128.0f / 255.0f, 128.0f / 255.0f, 128.0f / 255.0f, 0.9f };
 
 
 std::optional<std::string> ScoutRenderer::render_map(GLuint texture,

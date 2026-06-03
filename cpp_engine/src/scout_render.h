@@ -40,6 +40,12 @@ private:
     std::pair<float, float> latlon_to_ndc(double lat, double lon) const;
     // Render grid lines for asteroid fields
     void render_grid_for_zone(const Planet* selected_zone, double grid_spacing_km);
+    // Excel-style column label helper (A..Z, AA..ZZ, etc.)
+    std::string excel_column_label(int index);
+    // Compute sector label for a point in the selected zone (e.g. "B12")
+    std::string sector_label_for_point(const Planet* selected_zone, double a, double b, double grid_spacing_km);
+    // Render cached sector labels for a rectangular grid defined by start, cols, rows.
+    void render_sector_labels_grid(const Planet* selected_zone, double start_x, double start_y, int cols, int rows, double grid_spacing_x_km, double grid_spacing_y_km, bool coords_are_latlon = false);
     GLuint compile_shader(GLenum type, const char* src);
     GLuint link_program(GLuint vs, GLuint fs);
 
@@ -54,4 +60,7 @@ private:
     GLuint marker_vao_ = 0;
     GLuint marker_vbo_ = 0;
     GLuint marker_shader_ = 0;
+    // Cache for computed column labels and per-zone cell labels
+    std::unordered_map<int, std::string> col_label_cache_;
+    std::unordered_map<std::string, std::string> cell_label_cache_;
 };

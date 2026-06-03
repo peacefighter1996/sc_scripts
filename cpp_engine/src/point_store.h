@@ -28,6 +28,8 @@ struct IStore {
     virtual std::vector<std::string> load_server_ids() = 0;
     virtual std::vector<Planet> load_planets() = 0;
     virtual std::vector<Resource> load_resources() = 0;
+    virtual DataPoint get_datapoint(int id) = 0;
+    virtual bool delete_point_by_id(int id) = 0;
 };
 
 struct import_json_datapoints_result {

@@ -67,11 +67,11 @@ import_json_datapoints_result JsonExchangeDatapoint::import_json_datapoints(cons
             result.errors.push_back("failed to import datapoint with id: " + p.id);
             ++failures;
         }
-            else if (rc == 2) {
-                std::cerr << "skipped duplicate datapoint with id: " << p.id << '\n';
-                result.errors.push_back("skipped duplicate datapoint with id: " + p.id);
-                ++result.skipped_count;
-            }
+        else if (rc == 2) {
+            std::cerr << "skipped duplicate datapoint with id: " << p.id << '\n';
+            result.errors.push_back("skipped duplicate datapoint with id: " + p.id);
+            ++result.skipped_count;
+        }
     }
 
     result.imported_count = static_cast<int>(points_to_import.size()) - failures - result.skipped_count;

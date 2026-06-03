@@ -1013,3 +1013,28 @@ int SqliteStore::uuid_insert_or_update(DataPoint& p, uuid* out_change_id) {
     return 1;
 
 }
+
+bool SqliteStore::delete_point_by_id(int id) {
+	if (!db_handle_) return false;
+	const char* del_sql = "DELETE FROM points WHERE recordid = ?;";
+	sqlite3_stmt* del = nullptr;
+	if (sqlite3_prepare_v2(db_handle_, del_sql, -1, &del, nullptr) != SQLITE_OK) return false;
+	sqlite3_bind_int(del, 1, id);
+	int rc = sqlite3_step(del);
+	sqlite3_finalize(del);
+
+	// record change event for delete
+	ChangeEvent ev;
+	ev.change_id = uuid::generate_uuid_v4();
+	ev.node_id = node_id_.empty() ? "local" : node_id_;
+	ev.created_ts = static_cast<int64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count());
+	ev.op = "delete";
+	ev.recordid = id;
+	ev.payload_json.clear();
+	ev.applied_ts.reset();
+	if (!push_change_event(ev)) {
+		// not fatal
+	}
+
+	return rc == SQLITE_DONE || rc == SQLITE_ROW;
+}

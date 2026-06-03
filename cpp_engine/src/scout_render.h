@@ -57,6 +57,9 @@ private:
     GLuint quad_vao_ = 0;
     GLuint quad_vbo_ = 0;
     GLuint quad_shader_ = 0;
+    // Cached location of the quad shader's sampler uniform to avoid expensive
+    // glGetUniformLocation calls each frame.
+    GLint quad_texture_loc_ = -1;
 
     GLuint points_vao_ = 0;
     GLuint points_vbo_ = 0;
@@ -65,6 +68,12 @@ private:
     GLuint marker_vao_ = 0;
     GLuint marker_vbo_ = 0;
     GLuint marker_shader_ = 0;
+    // Cached uniform locations
+    GLint marker_color_loc_ = -1;
+    GLint points_point_size_loc_ = -1;
+    // Cache last texture bound to texture unit 0 to avoid redundant glActiveTexture/glBindTexture calls
+    GLuint last_bound_texture_unit0_ = 0;
+    bool last_bound_texture_unit0_valid_ = false;
     // Cache for computed column labels and per-zone cell labels
     std::unordered_map<int, std::string> col_label_cache_;
     std::unordered_map<std::string, std::vector<zone_label>> zone_label_cache_;

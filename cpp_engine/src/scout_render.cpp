@@ -196,9 +196,14 @@ void ScoutRenderer::render_grid_for_zone(const Planet* selected_zone, double gri
 			glBindVertexArray(marker_vao_);
 			glBindBuffer(GL_ARRAY_BUFFER, marker_vbo_);
 			glBufferData(GL_ARRAY_BUFFER, lines.size() * sizeof(float), lines.data(), GL_DYNAMIC_DRAW);
-			const GLint color_loc = glGetUniformLocation(marker_shader_, "u_color");
 			// gray, opaque
-			glUniform4f(color_loc, 0.6f, 0.6f, 0.6f, 0.10f);;
+			if (marker_color_loc_ != -1) {
+				glUniform4f(marker_color_loc_, 0.6f, 0.6f, 0.6f, 0.10f);
+			} else {
+				const GLint color_loc = glGetUniformLocation(marker_shader_, "u_color");
+				if (color_loc != -1) marker_color_loc_ = color_loc;
+				glUniform4f(color_loc, 0.6f, 0.6f, 0.6f, 0.10f);
+			}
 			// draw lines (thin)
 			//glLineWidth(1.0f);
 			glDrawArrays(GL_LINES, 0, static_cast<GLsizei>(lines.size() / 2));
@@ -243,9 +248,14 @@ void ScoutRenderer::render_grid_for_zone(const Planet* selected_zone, double gri
 				glBindVertexArray(marker_vao_);
 				glBindBuffer(GL_ARRAY_BUFFER, marker_vbo_);
 				glBufferData(GL_ARRAY_BUFFER, latlon_lines.size() * sizeof(float), latlon_lines.data(), GL_DYNAMIC_DRAW);
-				const GLint color_loc2 = glGetUniformLocation(marker_shader_, "u_color");
 				// gray and opaque; slightly thicker for planetary grid
-				glUniform4f(color_loc2, 0.6f, 0.6f, 0.6f, 0.25f);
+				if (marker_color_loc_ != -1) {
+					glUniform4f(marker_color_loc_, 0.6f, 0.6f, 0.6f, 0.25f);
+				} else {
+					const GLint color_loc2 = glGetUniformLocation(marker_shader_, "u_color");
+					if (color_loc2 != -1) marker_color_loc_ = color_loc2;
+					glUniform4f(color_loc2, 0.6f, 0.6f, 0.6f, 0.25f);
+				}
 				//glLineWidth(20.0f);
 				glDrawArrays(GL_LINES, 0, static_cast<GLsizei>(latlon_lines.size() / 2));
 				glBindVertexArray(0);
@@ -382,6 +392,14 @@ bool ScoutRenderer::init() {
 	glDeleteShader(fs);
 	if (!quad_shader_) return false;
 
+	// Cache the sampler uniform location for the quad shader and set it to texture unit 0.
+	glUseProgram(quad_shader_);
+	quad_texture_loc_ = glGetUniformLocation(quad_shader_, "u_texture");
+	if (quad_texture_loc_ != -1) {
+		glUniform1i(quad_texture_loc_, 0);
+	}
+	glUseProgram(0);
+
 	float quad_verts[] = {
 		// pos(x,y)    uv
 		-1.0f, -1.0f,  0.0f, 1.0f,
@@ -409,6 +427,11 @@ bool ScoutRenderer::init() {
 	glDeleteShader(fs);
 	if (!points_shader_) return false;
 
+	// Cache points shader uniform location for point size
+	glUseProgram(points_shader_);
+	points_point_size_loc_ = glGetUniformLocation(points_shader_, "u_point_size");
+	glUseProgram(0);
+
 	glGenVertexArrays(1, &points_vao_);
 	glGenBuffers(1, &points_vbo_);
 	glBindVertexArray(points_vao_);
@@ -430,6 +453,11 @@ bool ScoutRenderer::init() {
 	glDeleteShader(vs);
 	glDeleteShader(fs);
 	if (!marker_shader_) return false;
+
+	// Cache marker shader uniform location for color
+	glUseProgram(marker_shader_);
+	marker_color_loc_ = glGetUniformLocation(marker_shader_, "u_color");
+	glUseProgram(0);
 
 	glGenVertexArrays(1, &marker_vao_);
 	glGenBuffers(1, &marker_vbo_);
@@ -462,12 +490,22 @@ std::optional<std::string> ScoutRenderer::render_map(GLuint texture,
 	const std::vector<Resource>& material_catalog,
 	const Planet* selected_zone,
 	double grid_spacing_km) {
-	// Draw textured quad
+	// Draw textured quad. Only change active texture / bind when texture differs
 	glUseProgram(quad_shader_);
-	glActiveTexture(GL_TEXTURE0);
-	glBindTexture(GL_TEXTURE_2D, texture);
-	const GLint tex_loc = glGetUniformLocation(quad_shader_, "u_texture");
-	glUniform1i(tex_loc, 0);
+	if (!last_bound_texture_unit0_valid_ || last_bound_texture_unit0_ != texture) {
+		glActiveTexture(GL_TEXTURE0);
+		glBindTexture(GL_TEXTURE_2D, texture);
+		last_bound_texture_unit0_ = texture;
+		last_bound_texture_unit0_valid_ = true;
+	}
+	// Ensure sampler is initialized at least once (usually set in init()).
+	if (quad_texture_loc_ == -1) {
+		const GLint tex_loc = glGetUniformLocation(quad_shader_, "u_texture");
+		if (tex_loc != -1) {
+			quad_texture_loc_ = tex_loc;
+			glUniform1i(quad_texture_loc_, 0);
+		}
+	}
 	glBindVertexArray(quad_vao_);
 	glDrawArrays(GL_TRIANGLE_FAN, 0, 4);
 	glBindVertexArray(0);
@@ -573,7 +611,12 @@ std::optional<std::string> ScoutRenderer::render_map(GLuint texture,
 		glBindVertexArray(points_vao_);
 		glBindBuffer(GL_ARRAY_BUFFER, points_vbo_);
 		glBufferData(GL_ARRAY_BUFFER, border_buf.size() * sizeof(float), border_buf.data(), GL_DYNAMIC_DRAW);
-		const GLint size_loc = glGetUniformLocation(points_shader_, "u_point_size");
+		// Use cached point-size uniform location if available (fallback to query-and-cache)
+		GLint size_loc = points_point_size_loc_;
+		if (size_loc == -1) {
+			size_loc = glGetUniformLocation(points_shader_, "u_point_size");
+			if (size_loc != -1) points_point_size_loc_ = size_loc;
+		}
 		const float base_size = 3.0f;
 		glUniform1f(size_loc, base_size + 2.0f);
 		glDrawArrays(GL_POINTS, 0, static_cast<GLsizei>(points.size()));
@@ -619,8 +662,14 @@ void ScoutRenderer::render_marker(float x, float y, float r, float g, float b, f
 	float pos[2] = { x, y };
 	glBindBuffer(GL_ARRAY_BUFFER, marker_vbo_);
 	glBufferData(GL_ARRAY_BUFFER, sizeof(pos), pos, GL_DYNAMIC_DRAW);
-	const GLint color_loc = glGetUniformLocation(marker_shader_, "u_color");
-	glUniform4f(color_loc, r, g, b, a);
+	// Use cached marker color uniform location if available
+	if (marker_color_loc_ != -1) {
+		glUniform4f(marker_color_loc_, r, g, b, a);
+	} else {
+		const GLint color_loc = glGetUniformLocation(marker_shader_, "u_color");
+		if (color_loc != -1) marker_color_loc_ = color_loc;
+		glUniform4f(color_loc, r, g, b, a);
+	}
 	glDrawArrays(GL_POINTS, 0, 1);
 	glBindVertexArray(0);
 }
@@ -647,9 +696,15 @@ void ScoutRenderer::render_track(const std::vector<DataPoint>& track, const Plan
 	glBindVertexArray(marker_vao_);
 	glBindBuffer(GL_ARRAY_BUFFER, marker_vbo_);
 	glBufferData(GL_ARRAY_BUFFER, pts.size() * sizeof(float), pts.data(), GL_DYNAMIC_DRAW);
-	const GLint color_loc = glGetUniformLocation(marker_shader_, "u_color");
-	// subtle blue with some transparency
-	glUniform4f(color_loc, 1.0f, 0.0f, 1.0f, 0.75f);
+	// Use cached marker color uniform location if available
+	if (marker_color_loc_ != -1) {
+		// subtle blue with some transparency
+		glUniform4f(marker_color_loc_, 1.0f, 0.0f, 1.0f, 0.75f);
+	} else {
+		const GLint color_loc = glGetUniformLocation(marker_shader_, "u_color");
+		if (color_loc != -1) marker_color_loc_ = color_loc;
+		glUniform4f(color_loc, 1.0f, 0.0f, 1.0f, 0.75f);
+	}
 	// draw as connected line
 	glDrawArrays(GL_LINE_STRIP, 0, static_cast<GLsizei>(pts.size() / 2));
 

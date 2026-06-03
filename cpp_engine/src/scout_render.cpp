@@ -109,8 +109,8 @@ void ScoutRenderer::render_sector_labels_grid(const Planet* selected_zone, doubl
 	const float font_size = 13.0f;
 	for (int cx = 0; cx < cols; ++cx) {
 		for (int ry = 0; ry < rows; ++ry) {
-			double a = start_x + (cx * grid_spacing_x_km) - (abs(grid_spacing_x_km) * 0.00);
-			double b = start_y + (ry * grid_spacing_y_km) + (abs(grid_spacing_y_km) * 0.00);
+			double a = start_x + (cx * grid_spacing_x_km);
+			double b = start_y + (ry * grid_spacing_y_km);
 			// For celestial, a=lon,b=lat; for asteroid field a/b are X/Y so zone_point_to_ndc handles both
 			auto ndc = zone_point_to_ndc(selected_zone, a, b, abs(grid_spacing_x_km));
 			float px = (ndc.first + 1.0f) *0.5 * disp.x;

@@ -106,21 +106,33 @@ void ScoutRenderer::render_sector_labels_grid(const Planet* selected_zone, doubl
 	ImDrawList* dl = ImGui::GetBackgroundDrawList();
 	ImVec2 disp = ImGui::GetIO().DisplaySize;
 	ImFont* font = ImGui::GetFont();
+	const std::string name = selected_zone->name;
 	const float font_size = 13.0f;
-	for (int cx = 0; cx < cols; ++cx) {
-		for (int ry = 0; ry < rows; ++ry) {
-			double a = start_x + (cx * grid_spacing_x_km);
-			double b = start_y + (ry * grid_spacing_y_km);
-			// For celestial, a=lon,b=lat; for asteroid field a/b are X/Y so zone_point_to_ndc handles both
-			auto ndc = zone_point_to_ndc(selected_zone, a, b, abs(grid_spacing_x_km));
-			float px = (ndc.first + 1.0f) *0.5 * disp.x;
-			float py = (1.0f - ((ndc.second + 1.0f) * 0.5f)) * disp.y;
-			std::string key = selected_zone->name + ":" + std::to_string(cx) + "," + std::to_string(ry) + "@" + std::to_string((int)abs(grid_spacing_x_km)) + (coords_are_latlon ? ":LONLAT" : "");
-			std::string label;
-			auto it = cell_label_cache_.find(key);
-			if (it != cell_label_cache_.end()) {
-				label = it->second;
-			} else {
+
+	auto it1 = zone_label_cache_.find(name);
+	if (it1 != zone_label_cache_.end()) {
+		std::vector<zone_label>& zone_lables = it1->second;
+		for (const auto& zl : zone_lables) {
+			float px = (zl.ndc_x + 1.0f) * 0.5f * disp.x;
+			float py = (1.0f - ((zl.ndc_y + 1.0f) * 0.5f)) * disp.y;
+			ImU32 col = ImGui::GetColorU32(ImVec4(1.0f, 1.0f, 1.0f, 0.25f));
+			dl->AddText(font, font_size, ImVec2(px, py), col, zl.label.c_str());
+		}
+	}
+	else {
+		std::vector<zone_label> zone_lables{};
+		for (int cx = 0; cx < cols; ++cx) {
+			for (int ry = 0; ry < rows; ++ry) {
+				double a = start_x + (cx * grid_spacing_x_km);
+				double b = start_y + (ry * grid_spacing_y_km);
+				// For celestial, a=lon,b=lat; for asteroid field a/b are X/Y so zone_point_to_ndc handles both
+				auto ndc = zone_point_to_ndc(selected_zone, a, b, abs(grid_spacing_x_km));
+				float px = (ndc.first + 1.0f) * 0.5 * disp.x;
+				float py = (1.0f - ((ndc.second + 1.0f) * 0.5f)) * disp.y;
+				std::string key = name + ":" + std::to_string(cx) + "," + std::to_string(ry) + "@" + std::to_string((int)abs(grid_spacing_x_km)) + (coords_are_latlon ? ":LONLAT" : "");
+				std::string label;
+
+
 				int col_idx = cx;
 				int row_idx = ry + 1;
 				std::string col_label;
@@ -131,11 +143,14 @@ void ScoutRenderer::render_sector_labels_grid(const Planet* selected_zone, doubl
 					col_label_cache_.emplace(col_idx, col_label);
 				}
 				label = col_label + std::to_string(row_idx);
-				cell_label_cache_.emplace(key, label);
+				
+				const zone_label zl{ ndc.first, ndc.second, label };
+				zone_lables.push_back(zl);
+				ImU32 col = ImGui::GetColorU32(ImVec4(1.0f, 1.0f, 1.0f, 0.25f));
+				dl->AddText(font, font_size, ImVec2(px, py), col, label.c_str());
 			}
-			ImU32 col = ImGui::GetColorU32(ImVec4(1.0f, 1.0f, 1.0f, 0.25f));
-			dl->AddText(font, font_size, ImVec2(px, py), col, label.c_str());
 		}
+		zone_label_cache_.emplace(name, zone_lables);
 	}
 }
 
@@ -195,7 +210,7 @@ void ScoutRenderer::render_grid_for_zone(const Planet* selected_zone, double gri
 			int cols = static_cast<int>(std::round((end_x - start_x) / grid_spacing_km));
 			int rows = static_cast<int>(std::round((end_y - start_y) / grid_spacing_km));
 			if (cols > 0 && rows > 0) {
-				render_sector_labels_grid(selected_zone, start_x, start_y, cols, rows, grid_spacing_km, grid_spacing_km, false);
+				render_sector_labels_grid(selected_zone, start_x, end_y, cols, rows, grid_spacing_km, -grid_spacing_km, false);
 			}
 		}
 	}

@@ -254,6 +254,7 @@ struct AppState {
 
 	std::string selected_system;
 	std::string selected_planet;
+	Planet* selected_planet_obj;
 	std::string last_detected_region;
 	std::string selected_material;
 	std::string popup_selected_item;
@@ -390,7 +391,7 @@ struct AppState {
 			for (const auto& name : kDefaultMaterials) materials.push_back(name);
 		}
 
-		selected_planet = planets.empty() ? kDefaultPlanets.front() : planets.front();
+		update_selected_planet(planets.empty() ? kDefaultPlanets.front() : planets.front());
 		update_grid_spacing();
 
 		// Initialize datatable helper structures
@@ -431,6 +432,20 @@ struct AppState {
 				glDeleteTextures(1, &texture);
 			}
 		}
+	}
+
+	void update_selected_planet(const std::string& new_planet) {
+		selected_planet = new_planet;
+		auto it = std::find_if(planet_catalog.begin(), planet_catalog.end(), [this](const Planet& p) {
+			return p.name == selected_planet;
+			});
+		if (it != planet_catalog.end()) {
+			selected_planet_obj = &(*it);
+		} else {
+			selected_planet_obj = nullptr;
+		}
+		update_grid_spacing();
+		filter_points();
 	}
 
 	std::vector<std::string> get_unique_systems(const std::vector<Planet>& planet_catalog) {
@@ -513,7 +528,7 @@ struct AppState {
 			for (const auto& key : kDefaultPlanets) planets.push_back(key);
 		}
 		if (std::find(planets.begin(), planets.end(), selected_planet) == planets.end()) {
-			selected_planet = planets.front();
+			update_selected_planet( planets.front());
 		}
 	}
 
@@ -722,7 +737,7 @@ struct AppState {
 						if (result.locationmarker.value().find(planet.zone_id) != std::string::npos) {
 							// only update if different
 							if (planet.name != selected_planet) {
-								selected_planet = planet.name;
+								update_selected_planet(planet.name);
 								filter_points();
 							}
 							break;
@@ -1015,7 +1030,7 @@ int run_scout_app() {
 					}
 					if (ImGui::BeginPopupModal("ServerSelectPopup", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
 						popup_filter(state.server_filter_text, state.popup_selected_item, state.server_ids, state.selected_server, [&](const std::string& selected) {
-							state.selected_server = selected;
+							state.update_selected_planet(selected);
 							state.new_data.server = selected;
 							state.filter_points();
 						});
@@ -1029,7 +1044,7 @@ int run_scout_app() {
 						ImGui::Text("Detected Region: %s", state.last_detected_region.c_str());
 						if (state.last_detected_region != state.selected_planet) {
 							if (ImGui::Button("Use Detected Region")) {
-								state.selected_planet = state.last_detected_region;
+								state.update_selected_planet(state.last_detected_region);
 								state.new_data.planet = state.last_detected_region;
 								state.filter_points();
 							}
@@ -1047,7 +1062,7 @@ int run_scout_app() {
 							}
 						}
 						if (std::find(state.system_planets.begin(), state.system_planets.end(), state.selected_planet) == state.system_planets.end()) {
-							state.selected_planet = state.system_planets.front();
+							state.update_selected_planet(state.system_planets.front());
 							state.new_data.planet = state.selected_planet;
 							state.update_grid_spacing();
 						}
@@ -1064,7 +1079,7 @@ int run_scout_app() {
 					if (ImGui::BeginPopupModal("ZoneSelectPopup", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
 						const std::vector<std::string>* planet_items = (state.selected_system != "All") ? &state.system_planets : &state.planets;
 						popup_filter(state.planet_filter_text, state.popup_selected_item, *planet_items, state.selected_planet, [&](const std::string& selected) {
-							state.selected_planet = selected;
+							state.update_selected_planet(selected);
 							state.new_data.planet = selected;
 							state.filter_points();
 							state.update_grid_spacing();
@@ -2331,11 +2346,33 @@ if (ImGui::Button("Browse")) {
 				location_on = !location_on;
 			}
 			if (location_on) {
-				const auto lat_lon_alt = state.new_data.to_lat_lon_alt();
-				const auto [u, v] = latlon_to_uv(lat_lon_alt[0], lat_lon_alt[1]);
-				const float px = (u * 2.0f) - 1.0f;
-				const float py = (v * 2.0f) - 1.0f;
-				renderer.render_marker(px, py, 1.0f, 1.0f, 0.0f, 0.9f, 6.0f);
+				if (state.selected_planet_obj != nullptr) {
+					if (state.selected_planet_obj->zone_type == ZoneType::AsteroidField) {
+						// For asteroid fields, use the center of the field as the location marker
+						const double x = state.new_data.x;
+						const double y = state.new_data.y;
+						const double x_min = state.selected_planet_obj->min_x_km;
+						const double x_max = state.selected_planet_obj->max_x_km;
+						const double y_min = state.selected_planet_obj->min_y_km;
+						const double y_max = state.selected_planet_obj->max_y_km;
+						double u = 0.0;
+						double v = 0.0;
+						if (x_max > x_min && y_max > y_min) {
+							u = (x - x_min) / (x_max - x_min);
+							v = (y - y_min) / (y_max - y_min);
+							const float px = (u * 2.0f) - 1.0f;
+							const float py = (v * 2.0f) - 1.0f;
+							renderer.render_marker(px, py, 1.0f, 1.0f, 0.0f, 0.9f, 6.0f);
+						} 
+						
+					} else {
+						const auto lat_lon_alt = state.new_data.to_lat_lon_alt();
+						const auto [u, v] = latlon_to_uv(lat_lon_alt[0], lat_lon_alt[1]);
+						const float px = (u * 2.0f) - 1.0f;
+						const float py = (v * 2.0f) - 1.0f;
+						renderer.render_marker(px, py, 1.0f, 1.0f, 0.0f, 0.9f, 6.0f);
+					}
+				}
 			}
 		}
 

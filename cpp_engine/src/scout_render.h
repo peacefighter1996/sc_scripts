@@ -9,6 +9,11 @@
 #include <utility>
 #include <glad/glad.h>
 
+struct zone_label {
+    double ndc_x;
+    double ndc_y;
+    std::string label;
+};
 
 class ScoutRenderer {
 public:
@@ -62,5 +67,25 @@ private:
     GLuint marker_shader_ = 0;
     // Cache for computed column labels and per-zone cell labels
     std::unordered_map<int, std::string> col_label_cache_;
-    std::unordered_map<std::string, std::string> cell_label_cache_;
+    std::unordered_map<std::string, std::vector<zone_label>> zone_label_cache_;
 };
+
+
+
+struct zone_label_cache {
+    std::string zone_name;
+    int rows;
+    int cols;
+    double grid_spacing_km;
+    bool coords_are_latlon;
+
+
+    bool operator==(const zone_label_cache& other) const {
+        return zone_name == other.zone_name &&
+            cols == other.cols &&
+            rows == other.rows &&
+            grid_spacing_km == other.grid_spacing_km &&
+            coords_are_latlon == other.coords_are_latlon;
+    }
+};
+

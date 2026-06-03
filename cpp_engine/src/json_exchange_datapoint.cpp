@@ -48,6 +48,7 @@ import_json_datapoints_result JsonExchangeDatapoint::import_json_datapoints(cons
                 if (!elem.is_object()) continue;
                 try {
                     DataPoint p = elem.get<DataPoint>();
+                    p.id = 0;
                     points_to_import.push_back(p);
                 }
                 catch (const std::exception& e) {
@@ -59,7 +60,7 @@ import_json_datapoints_result JsonExchangeDatapoint::import_json_datapoints(cons
     }
 
     int failures = 0;
-    for (const auto& p : points_to_import) {
+    for (auto& p : points_to_import) {
         int rc = store->uuid_insert_or_update(p);
         if (rc == 0) {
             std::cerr << "failed to import datapoint with id: " << p.id << '\n';

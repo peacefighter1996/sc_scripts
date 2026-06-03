@@ -487,42 +487,60 @@ bool SqliteStore::push_change_event(const ChangeEvent& ev) {
 	return true;
 }
 
-bool SqliteStore::append_point(const DataPoint& p, uuid* out_change_id) {
+bool SqliteStore::append_point(DataPoint& p, uuid* out_change_id) {
 	if (!db_handle_) return false;
-	const char* insert_sql = "INSERT OR REPLACE INTO points(recordid,server,x,y,z,planet,material,location,quality_min,quality_max,note,poi_type,poi_time,last_modified_ts,last_modified_node,guid,subtype,qt_persistent) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?);";
+	const char* insert_sql = "INSERT OR REPLACE INTO points(server,x,y,z,planet,material,location,quality_min,quality_max,note,poi_type,poi_time,last_modified_ts,last_modified_node,guid,subtype,qt_persistent) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?);";
 	sqlite3_stmt* ins = nullptr;
 	if (sqlite3_prepare_v2(db_handle_, insert_sql, -1, &ins, nullptr) != SQLITE_OK) {
 		return false;
 	}
-	sqlite3_bind_int(ins, 1, p.id);
-	sqlite3_bind_text(ins, 2, p.server.c_str(), -1, SQLITE_TRANSIENT);
-	sqlite3_bind_double(ins, 3, p.x);
-	sqlite3_bind_double(ins, 4, p.y);
-	sqlite3_bind_double(ins, 5, p.z);
-	sqlite3_bind_text(ins, 6, p.planet.c_str(), -1, SQLITE_TRANSIENT);
-	sqlite3_bind_text(ins, 7, p.material.c_str(), -1, SQLITE_TRANSIENT);
-	sqlite3_bind_int(ins, 8, p.location ? 1 : 0);
-	sqlite3_bind_int(ins, 9, p.quality_min);
-	sqlite3_bind_int(ins, 10, p.quality_max);
-	sqlite3_bind_text(ins, 11, p.note.c_str(), -1, SQLITE_TRANSIENT);
-	sqlite3_bind_int(ins, 12, static_cast<int>(p.poi_type));
-	sqlite3_bind_text(ins, 13, p.time_info.c_str(), -1, SQLITE_TRANSIENT);
+	sqlite3_bind_text(ins, 1, p.server.c_str(), -1, SQLITE_TRANSIENT);
+	sqlite3_bind_double(ins, 2, p.x);
+	sqlite3_bind_double(ins, 3, p.y);
+	sqlite3_bind_double(ins, 4, p.z);
+	sqlite3_bind_text(ins, 5, p.planet.c_str(), -1, SQLITE_TRANSIENT);
+	sqlite3_bind_text(ins, 6, p.material.c_str(), -1, SQLITE_TRANSIENT);
+	sqlite3_bind_int(ins, 7, p.location ? 1 : 0);
+	sqlite3_bind_int(ins, 8, p.quality_min);
+	sqlite3_bind_int(ins, 9, p.quality_max);
+	sqlite3_bind_text(ins, 10, p.note.c_str(), -1, SQLITE_TRANSIENT);
+	sqlite3_bind_int(ins, 11, static_cast<int>(p.poi_type));
+	sqlite3_bind_text(ins, 12, p.time_info.c_str(), -1, SQLITE_TRANSIENT);
 	const int64_t now_ms = static_cast<int64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count());
-	sqlite3_bind_int64(ins, 14, static_cast<sqlite3_int64>(now_ms));
-	sqlite3_bind_text(ins, 15, node_id_.c_str(), -1, SQLITE_TRANSIENT);
+	sqlite3_bind_int64(ins, 13, static_cast<sqlite3_int64>(now_ms));
+	sqlite3_bind_text(ins, 14, node_id_.c_str(), -1, SQLITE_TRANSIENT);
 	auto guid_blob = p.uuid;
 	if (guid_blob == nil_uuid)
 		guid_blob = uuid::generate_uuid_v4(); // assign new UUID if not set in CSV
 	auto guid_bytes = guid_blob.to_bytes();
-	sqlite3_bind_blob(ins, 16, guid_bytes.data(), static_cast<int>(guid_bytes.size()), SQLITE_TRANSIENT);
-	sqlite3_bind_int(ins, 17, static_cast<int>(p.subtype));
-	sqlite3_bind_int(ins, 18, p.qt_persistent ? 1 : 0);
+	sqlite3_bind_blob(ins, 15, guid_bytes.data(), static_cast<int>(guid_bytes.size()), SQLITE_TRANSIENT);
+	sqlite3_bind_int(ins, 16, static_cast<int>(p.subtype));
+	sqlite3_bind_int(ins, 17, p.qt_persistent ? 1 : 0);
 
 	int rc = sqlite3_step(ins);
 	if (rc != SQLITE_DONE) {
 		sqlite3_finalize(ins);
 		return false;
 	}
+
+	// check if value exists
+	auto server_id = -1;
+
+	// If the point has a UUID, try to find an existing record with that UUID
+
+	sqlite3_stmt* stmt = nullptr;
+	const char* q = "SELECT recordid FROM points WHERE guid = ? LIMIT 1;";
+	if (sqlite3_prepare_v2(db_handle_, q, -1, &stmt, nullptr) == SQLITE_OK) {
+		auto guid_bytes = guid_blob.to_bytes();
+		sqlite3_bind_blob(stmt, 1, guid_bytes.data(), static_cast<int>(guid_bytes.size()), SQLITE_TRANSIENT);
+		if (sqlite3_step(stmt) == SQLITE_ROW) {
+			server_id = sqlite3_column_int(stmt, 0);
+		}
+		sqlite3_finalize(stmt);
+	}
+	p.id = server_id; 
+	p.uuid = guid_blob;
+
 	sqlite3_finalize(ins);
 
 	// create change event (outbox)
@@ -937,7 +955,7 @@ DataPoint SqliteStore::get_datapoint(int recordid) {
 	return p;
 }
 
-int SqliteStore::uuid_insert_or_update(const DataPoint& p, uuid* out_change_id) {
+int SqliteStore::uuid_insert_or_update(DataPoint& p, uuid* out_change_id) {
 	// check if value exists
 	auto id_existing_id = -1;
 

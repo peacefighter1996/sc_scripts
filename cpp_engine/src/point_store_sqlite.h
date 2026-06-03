@@ -15,8 +15,8 @@ public:
 
     std::vector<DataPoint> load_points() override;
     std::vector<DataPoint> load_points(const std::string& zone_name, const std::string& server_filter = std::string(), const std::vector<PoiType>& poi_types = std::vector<PoiType>()) override;
-    bool append_point(const DataPoint& p, uuid* out_change_id = nullptr) override;
-    int uuid_insert_or_update(const DataPoint& p, uuid* out_change_id = nullptr) override;
+    bool append_point(DataPoint& p, uuid* out_change_id = nullptr) override;
+    int uuid_insert_or_update(DataPoint& p, uuid* out_change_id = nullptr) override;
     bool overwrite_points(const std::vector<DataPoint>& points) override;
     bool push_change_event(const ChangeEvent& ev) override;
     DataPoint get_datapoint(int id);

@@ -250,7 +250,8 @@ bool poi_subtype_from_string(const std::string& s, PoiSubType& out){
 
 
 bool operator==(const DataPoint& a, const DataPoint& b) {
-    return a.id == b.id &&
+    return 
+       //  a.id == b.id && // database id and trackking but is not a determaning factor if its equivilent
            a.server == b.server &&
            a.x == b.x &&
            a.y == b.y &&

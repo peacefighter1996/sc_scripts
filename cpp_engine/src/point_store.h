@@ -21,8 +21,8 @@ struct IStore {
     virtual ~IStore() = default;
     virtual std::vector<DataPoint> load_points() = 0;
     virtual std::vector<DataPoint> load_points(const std::string& zone_name, const std::string& server_filter = std::string(), const std::vector<PoiType>& poi_types = std::vector<PoiType>()) = 0;
-    virtual bool append_point(const DataPoint& p, uuid* out_change_id = nullptr) = 0;
-	virtual int uuid_insert_or_update(const DataPoint& p, uuid* out_change_id = nullptr) = 0;
+    virtual bool append_point(DataPoint& p, uuid* out_change_id = nullptr) = 0;
+	virtual int uuid_insert_or_update(DataPoint& p, uuid* out_change_id = nullptr) = 0;
     virtual bool overwrite_points(const std::vector<DataPoint>& points) = 0;
     virtual bool push_change_event(const ChangeEvent& ev) = 0;
     virtual std::vector<std::string> load_server_ids() = 0;

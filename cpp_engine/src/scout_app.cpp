@@ -1030,7 +1030,7 @@ int run_scout_app() {
 					}
 					if (ImGui::BeginPopupModal("ServerSelectPopup", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
 						popup_filter(state.server_filter_text, state.popup_selected_item, state.server_ids, state.selected_server, [&](const std::string& selected) {
-							state.update_selected_planet(selected);
+							state.selected_server = selected;
 							state.new_data.server = selected;
 							state.filter_points();
 						});
@@ -1168,8 +1168,8 @@ int run_scout_app() {
 
 				if (ImGui::Button("Add Point")) {
 					DataPoint new_point;
-					new_point.id = state.new_data.id;
 					new_point.server = state.selected_server;
+					new_point.uuid = uuid::generate_uuid_v4();
 					new_point.x = state.new_data.x;
 					new_point.y = state.new_data.y;
 					new_point.z = state.new_data.z;
@@ -1229,6 +1229,7 @@ int run_scout_app() {
 					DataPoint new_point;
 					new_point.id = state.new_data.id;
 					new_point.server = state.selected_server;
+					new_point.uuid = uuid::generate_uuid_v4();
 					new_point.x = state.new_data.x;
 					new_point.y = state.new_data.y;
 					new_point.z = state.new_data.z;

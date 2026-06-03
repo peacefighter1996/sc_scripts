@@ -301,6 +301,39 @@ int main(int argc, char** argv) {
 		return 0;
 	}
 
+	if (command == "fix-guid") {
+		// check in db for any points with nil UUID and assign new UUIDs to them; this can be used to fix issues with older CSV imports that didn't set UUIDs, which can cause problems with syncing and duplicate detection
+		if (argc != 3) {
+			std::cerr << "usage: scout_engine fix-guid <db>\n";
+			return 2;
+		}
+
+		auto db_path = std::string(argv[2]);
+
+		SqliteStore store(db_path, "");
+		if (!store.init()) {
+			std::cerr << "failed to initialize connection";
+			return 3;
+		}
+		auto points = store.load_points();
+		int updated_count = 0;
+		std::vector<DataPoint> points_to_update;
+		uuid c = uuid::from_string("cccccccc-cccc-cccc-cccc-cccccccccccc");
+		for (auto& p : points) {
+			std::cout << "checking point id: " << p.id << ", guid: " << p.uuid.to_string() << '\n';
+			if (p.uuid == nil_uuid || p.uuid == c) {
+				p.uuid = uuid::generate_uuid_v4();
+				points_to_update.push_back(p);
+			}
+		}
+		if (!store.overwrite_points(points_to_update)) {
+			std::cerr << "failed to update points with new UUIDs";
+			return 4;
+		}
+		std::cout << "Total points updated: " << points_to_update.size() << '\n';
+		return 0;
+	}
+
 
 	if (command == "dbimport-starmap-json") {
 		if (argc != 4) {

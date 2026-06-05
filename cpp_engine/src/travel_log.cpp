@@ -236,6 +236,8 @@ void TravelLog::restart() {
     qt_exceed_start_ = std::chrono::steady_clock::time_point();
     kf_initialized_ = false;
     last_kf_time_s_ = 0.0;
+	locked_ = false;
+    active_ = true;
 }
 
 // Persist current log to JSON and push small metadata record to store (no blob).

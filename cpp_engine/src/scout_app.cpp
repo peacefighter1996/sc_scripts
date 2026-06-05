@@ -139,6 +139,33 @@ static std::string format_iso_datetime(const std::chrono::system_clock::time_poi
 	return std::string(buf);
 }
 
+static std::string format_iso_date(const std::chrono::system_clock::time_point& tp) {
+	std::time_t t = std::chrono::system_clock::to_time_t(tp);
+	std::tm tm;
+#ifdef _WIN32
+	gmtime_s(&tm, &t);
+#else
+	gmtime_r(&t, &tm);
+#endif
+	char buf[64];
+	std::strftime(buf, sizeof(buf), "%Y-%m-%d", &tm);
+	return std::string(buf);
+}
+
+static std::string format_iso_filesystem_date(const std::chrono::system_clock::time_point& tp) {
+	std::time_t t = std::chrono::system_clock::to_time_t(tp);
+	std::tm tm;
+#ifdef _WIN32
+	gmtime_s(&tm, &t);
+#else
+	gmtime_r(&t, &tm);
+#endif
+	char buf[64];
+	std::strftime(buf, sizeof(buf), "%Y%m%d%H%M%SZ", &tm);
+	return std::string(buf);
+}
+
+
 // Frame timing (seconds per frame)
 static constexpr double kFrameTime = 1.0 / 60.0;
 
@@ -192,9 +219,11 @@ struct AppSettings {
 	bool show_timings{ false };
 	bool auto_update_ocr_newpoint_enabled{ true };
 	bool ocr_feed_planet_update_enabled{ true };
+	bool auto_export_session_minerals{ true };
 
 	// Last used export file path (persisted to settings.ini)
 	std::string last_export_path;
+	std::string session_export_dir = "./data/exports/"; // directory to export session minerals (relative to repo root or absolute path)
 
 	// Sync/storage settings
 	bool sync_enabled{ false };
@@ -220,6 +249,8 @@ struct AppSettings {
 
 struct AppState {
 	AppSettings settings;
+
+	std::chrono::system_clock::time_point app_start_time;
 
 	std::filesystem::path repo_root;
 	std::filesystem::path onnx_model_path;
@@ -298,6 +329,7 @@ struct AppState {
 		planets_dir(repo_root / "images" / "planets") {
 
 		settings = load_settings(repo_root / "config" / "settings.ini");
+		app_start_time = std::chrono::system_clock::now();
 
 		// Initialize TravelLog subsystem (kept separate from main data store)
 		travel_log = std::make_unique<TravelLog>();
@@ -605,6 +637,8 @@ struct AppState {
 		out << "qt_disable_duration_s=" << settings.qt_disable_duration_s << '\n';
 		out << "tracking_min_core_distance_km=" << settings.tracking_min_core_distance_km << '\n';
 		out << "last_export_path=" << settings.last_export_path << '\n';
+		out << "session_export_dir=" << settings.session_export_dir << '\n';
+		out << "auto_export_session_minerals=" << (settings.auto_export_session_minerals ? "1" : "0") << '\n';
 	}
 
 	AppSettings load_settings(const std::filesystem::path& path) {
@@ -678,11 +712,48 @@ struct AppState {
 				catch (...) {}
 			} else if (key == "last_export_path") {
 				settings.last_export_path = value;
+			} else if (key == "session_export_dir") {
+				settings.session_export_dir = value;
+			} else if (key == "auto_export_session_minerals") {
+				settings.auto_export_session_minerals = (value == "1" || value == "true");
 			}
 		}
 
 		return settings;
 
+	}
+	void export_session_minerals() {
+		// get start of day timestamp for filename
+		uint64_t start_of_day_ts = static_cast<int64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(app_start_time.time_since_epoch()).count());
+		std::vector<PoiType> mineral_types = { PoiType::Mineral };
+		std::vector<DataPoint> minerals = store->load_points("", "", mineral_types, start_of_day_ts, 0);
+
+		if (minerals.empty()) {
+			std::cout << "No minerals detected during this session, skipping export.\n";
+			return;
+		}
+		// make absolute path to export file in session folder with unique name
+		if (!std::filesystem::exists(settings.session_export_dir)) {
+			std::filesystem::create_directories(settings.session_export_dir);
+		}
+		std::filesystem::path export_path_dir = settings.session_export_dir;
+		std::string timestamp_str = ("session_minerals_" + format_iso_date(app_start_time) + "_" + uuid::generate_uuid_v4().to_string() + ".json");
+		std::filesystem::path export_path = (export_path_dir / timestamp_str);
+
+		// write minerals to export file as JSON
+		JsonExchangeDatapoint json_exporter;
+		if (json_exporter.export_json_datapoints(export_path, minerals)) {
+			std::cout << "Exported session minerals to " << export_path << "\n";
+		} else {
+			std::cerr << "Failed to export session minerals to " << export_path << "\n";
+		}
+	}
+
+	int finalize() {
+		if (settings.auto_export_session_minerals) {
+			export_session_minerals();
+		}
+		save_settings();
 	}
 
 	std::vector<double> process_ocr_results() {
@@ -797,7 +868,7 @@ bool combo_string(const char* label, const std::vector<std::string>& items, std:
 
 int run_scout_app() {
 	GdiplusSession gdiplus_session;
-
+    auto app_start_time = std::chrono::system_clock::now();
 
 
 	if (!glfwInit()) {
@@ -2495,7 +2566,9 @@ if (ImGui::Button("Browse")) {
 	glfwDestroyWindow(window);
 	glfwTerminate();
 
-	state.save_settings();
+
+	state.finalize();
+	
 
 	ocr_timer.join();
 

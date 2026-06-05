@@ -20,7 +20,7 @@ struct ChangeEvent {
 struct IStore {
     virtual ~IStore() = default;
     virtual std::vector<DataPoint> load_points() = 0;
-    virtual std::vector<DataPoint> load_points(const std::string& zone_name, const std::string& server_filter = std::string(), const std::vector<PoiType>& poi_types = std::vector<PoiType>()) = 0;
+    virtual std::vector<DataPoint> load_points(const std::string& zone_name, const std::string& server_filter = std::string(), const std::vector<PoiType>& poi_types = std::vector<PoiType>(), int64_t from_ts = 0, int64_t to_ts = 0) = 0;
     virtual bool append_point(DataPoint& p, uuid* out_change_id = nullptr) = 0;
 	virtual int uuid_insert_or_update(DataPoint& p, uuid* out_change_id = nullptr) = 0;
     virtual bool overwrite_points(const std::vector<DataPoint>& points) = 0;
@@ -42,6 +42,7 @@ struct import_json_datapoints_result {
 
 struct JsonExchangeDatapoint {
     JsonExchangeDatapoint(IStore* store) : store(store) {}
+    JsonExchangeDatapoint() = default;
     IStore* store;
 
     import_json_datapoints_result import_json_datapoints(const std::filesystem::path& json_path);

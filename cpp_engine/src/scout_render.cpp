@@ -791,7 +791,14 @@ std::optional<std::string> ScoutRenderer::render_map(GLuint texture,
 				});
 			const auto material_id = it != material_catalog.end() ? it->short_name : closest_point->material.substr(0, std::min<size_t>(4, closest_point->material.size()));
 			if (closest_point->poi_type == PoiType::Mineral) {
-				return material_id + " Quality: " + std::to_string(int(closest_point->quality_max)) + "\n" + closest_point->note;
+				if (dpm == DisplayMode::Asteroid_Field) {
+					return material_id + " Quality: " + std::to_string(int(closest_point->quality_max)) 
+						+ "\nz:" + std::to_string(closest_point->get_lat_lon_alt()[2]) + " km"
+						+ "\n" + closest_point->note;
+				}
+				else {
+					return material_id + " Quality: " + std::to_string(int(closest_point->quality_max)) + "\n" + closest_point->note;
+				}
 			}
 			if (closest_point->poi_type != PoiType::Mineral) {
 				return closest_point->note;

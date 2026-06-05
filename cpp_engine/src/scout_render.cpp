@@ -10,41 +10,53 @@
 #include <imgui.h>
 #include <cstdint>
 
+
+// Convert lat/lon to UV coordinates in [0,1] range. Latitude is expected in [-90,90], longitude in [-180,180].
 static std::pair<float, float> latlon_to_uv(double lat, double lon) {
 	const auto u = static_cast<float>((lon + 180.0) / 360.0);
 	const auto v = static_cast<float>((lat + 90.0) / 180.0);
 	return { u, v };
 }
 
+
+// Convert lat/lon to normalized device coordinates in [-1,1] range for rendering. Latitude is expected in [-90,90], longitude in [-180,180].
 std::pair<float, float> ScoutRenderer::latlon_to_ndc(double lat, double lon) const {
 	const auto uv = latlon_to_uv(lat, lon);
 	return { (uv.first * 2.0f) - 1.0f, (uv.second * 2.0f) - 1.0f };
 }
 
-std::pair<float, float> ScoutRenderer::zone_point_to_ndc(const Planet* selected_zone, double a, double b, double grid_spacing_km) const {
-	if (selected_zone && selected_zone->zone_type == ZoneType::AsteroidField) {
-		double minx = static_cast<double>(selected_zone->min_x_km);
-		double maxx = static_cast<double>(selected_zone->max_x_km);
-		double miny = static_cast<double>(selected_zone->min_y_km);
-		double maxy = static_cast<double>(selected_zone->max_y_km);
-		double cx = 0.0, cy = 0.0;
-		double half_w = 0.0, half_h = 0.0;
-		if (maxx > minx) {
-			cx = (minx + maxx) * 0.5;
-			half_w = (maxx - minx) * 0.5;
-		}
-		if (maxy > miny) {
-			cy = (miny + maxy) * 0.5;
-			half_h = (maxy - miny) * 0.5;
-		}
-		if (half_w <= 0.0) half_w = std::max(1.0, grid_spacing_km * 3.0);
-		if (half_h <= 0.0) half_h = std::max(1.0, grid_spacing_km * 3.0);
-		const double ndc_x = std::clamp((a - cx) / half_w, -1.0, 1.0);
-		const double ndc_y = std::clamp((b - cy) / half_h, -1.0, 1.0);
-		return { static_cast<float>(ndc_x), static_cast<float>(ndc_y) };
+std::pair<float, float> ScoutRenderer::zone_point_to_ndc(const DisplayMode dpm, const Planet* selected_zone, double a, double b, double grid_spacing_km) const {
+	if (dpm == DisplayMode::Asteroid_Field || dpm == DisplayMode::Celestial_Belt) {
+		bbox2d box = selected_zone->bounding_box_km;
+		return asteriod_point_to_ndc(box, grid_spacing_km, a, b);
 	}
 	// Treat a,b as lat,lon
-	return latlon_to_ndc(a, b);
+	if (dpm == DisplayMode::Surface) {
+		return latlon_to_ndc(a, b);
+	}
+}
+
+std::pair<float, float> ScoutRenderer::asteriod_point_to_ndc(const bbox2d& box, double grid_spacing_km, double a, double b) const
+{
+	double minx = box.min_x;
+	double maxx = box.max_x;
+	double miny = box.min_y;
+	double maxy = box.max_y;
+	double cx = 0.0, cy = 0.0;
+	double half_w = 0.0, half_h = 0.0;
+	if (maxx > minx) {
+		cx = (minx + maxx) * 0.5;
+		half_w = (maxx - minx) * 0.5;
+	}
+	if (maxy > miny) {
+		cy = (miny + maxy) * 0.5;
+		half_h = (maxy - miny) * 0.5;
+	}
+	if (half_w <= 0.0) half_w = std::max(1.0, grid_spacing_km * 3.0);
+	if (half_h <= 0.0) half_h = std::max(1.0, grid_spacing_km * 3.0);
+	const double ndc_x = (a - cx) / half_w;
+	const double ndc_y = (b - cy) / half_h;
+	return { static_cast<float>(ndc_x), static_cast<float>(ndc_y) };
 }
 
 std::string ScoutRenderer::excel_column_label(int index) {
@@ -62,16 +74,13 @@ std::string ScoutRenderer::excel_column_label(int index) {
 	return s;
 }
 
-std::string ScoutRenderer::sector_label_for_point(const Planet* selected_zone, double a, double b, double grid_spacing_km) {
+std::string ScoutRenderer::sector_label_for_point(const DisplayMode dpm, const Planet* selected_zone, double a, double b, double grid_spacing_km) {
 	if (!selected_zone) return std::string();
-	if (selected_zone->zone_type == ZoneType::AsteroidField) {
-		double minx = static_cast<double>(selected_zone->min_x_km);
-		double maxx = static_cast<double>(selected_zone->max_x_km);
-		double miny = static_cast<double>(selected_zone->min_y_km);
-		double maxy = static_cast<double>(selected_zone->max_y_km);
+	if (dpm == DisplayMode::Asteroid_Field || dpm == DisplayMode::Celestial_Belt) {
+		bbox2d box = selected_zone->bounding_box_km;
 		if (grid_spacing_km <= 0.0) grid_spacing_km = 100.0;
-		const double start_x = std::floor(minx / grid_spacing_km) * grid_spacing_km;
-		const double start_y = std::floor(miny / grid_spacing_km) * grid_spacing_km;
+		const double start_x = std::floor(box.min_x / grid_spacing_km) * grid_spacing_km;
+		const double start_y = std::floor(box.min_y / grid_spacing_km) * grid_spacing_km;
 		const int col = static_cast<int>(std::floor((a - start_x) / grid_spacing_km));
 		const int row = static_cast<int>(std::floor((b - start_y) / grid_spacing_km));
 		if (col < 0 || row < 0) return std::string();
@@ -84,29 +93,30 @@ std::string ScoutRenderer::sector_label_for_point(const Planet* selected_zone, d
 			col_label_cache_.emplace(col, col_label);
 		}
 		return col_label + std::to_string(row + 1);
+	} else if (dpm == DisplayMode::Surface) {
+		// Celestial body: treat grid_spacing_km as degrees for lat/lon
+		const double deg_step = grid_spacing_km;
+		if (deg_step <= 0.0) return std::string();
+		// longitude a is lon, latitude b is lat
+		int col = static_cast<int>(std::floor((a + 180.0) / deg_step));
+		int row = static_cast<int>(std::floor((b + 90.0) / deg_step));
+		if (col < 0 || row < 0) return std::string();
+		std::string col_label;
+		auto itc = col_label_cache_.find(col);
+		if (itc != col_label_cache_.end()) col_label = itc->second;
+		else {
+			col_label = excel_column_label(col);
+			col_label_cache_.emplace(col, col_label);
+		}
+		return col_label + std::to_string(row + 1);
 	}
-	// Celestial body: treat grid_spacing_km as degrees for lat/lon
-	const double deg_step = grid_spacing_km;
-	if (deg_step <= 0.0) return std::string();
-	// longitude a is lon, latitude b is lat
-	int col = static_cast<int>(std::floor((a + 180.0) / deg_step));
-	int row = static_cast<int>(std::floor((b + 90.0) / deg_step));
-	if (col < 0 || row < 0) return std::string();
-	std::string col_label;
-	auto itc = col_label_cache_.find(col);
-	if (itc != col_label_cache_.end()) col_label = itc->second;
-	else {
-		col_label = excel_column_label(col);
-		col_label_cache_.emplace(col, col_label);
-	}
-	return col_label + std::to_string(row + 1);
 }
 
-void ScoutRenderer::render_sector_labels_grid(const Planet* selected_zone, double start_x, double start_y, int cols, int rows, double grid_spacing_x_km, double grid_spacing_y_km, bool coords_are_latlon) {
+void ScoutRenderer::render_sector_labels_grid(const DisplayMode dpm, const Planet* selected_zone, double start_x, double start_y, int cols, int rows, double grid_spacing_x_km, double grid_spacing_y_km, bool coords_are_latlon) {
 	ImDrawList* dl = ImGui::GetBackgroundDrawList();
 	ImVec2 disp = ImGui::GetIO().DisplaySize;
 	ImFont* font = ImGui::GetFont();
-	const std::string name = selected_zone->name;
+	const std::string name = selected_zone->name + ":" + display_mode_name(dpm);
 	const float font_size = 13.0f;
 
 	auto it1 = zone_label_cache_.find(name);
@@ -118,15 +128,14 @@ void ScoutRenderer::render_sector_labels_grid(const Planet* selected_zone, doubl
 			ImU32 col = ImGui::GetColorU32(ImVec4(1.0f, 1.0f, 1.0f, 0.25f));
 			dl->AddText(font, font_size, ImVec2(px, py), col, zl.label.c_str());
 		}
-	}
-	else {
+	} else {
 		std::vector<zone_label> zone_lables{};
 		for (int cx = 0; cx < cols; ++cx) {
 			for (int ry = 0; ry < rows; ++ry) {
 				double a = start_x + (cx * grid_spacing_x_km);
 				double b = start_y + (ry * grid_spacing_y_km);
 				// For celestial, a=lon,b=lat; for asteroid field a/b are X/Y so zone_point_to_ndc handles both
-				auto ndc = zone_point_to_ndc(selected_zone, a, b, abs(grid_spacing_x_km));
+				auto ndc = zone_point_to_ndc(dpm, selected_zone, a, b, abs(grid_spacing_x_km));
 				float px = (ndc.first + 1.0f) * 0.5 * disp.x;
 				float py = (1.0f - ((ndc.second + 1.0f) * 0.5f)) * disp.y;
 				std::string key = name + ":" + std::to_string(cx) + "," + std::to_string(ry) + "@" + std::to_string((int)abs(grid_spacing_x_km)) + (coords_are_latlon ? ":LONLAT" : "");
@@ -143,7 +152,7 @@ void ScoutRenderer::render_sector_labels_grid(const Planet* selected_zone, doubl
 					col_label_cache_.emplace(col_idx, col_label);
 				}
 				label = col_label + std::to_string(row_idx);
-				
+
 				const zone_label zl{ ndc.first, ndc.second, label };
 				zone_lables.push_back(zl);
 				ImU32 col = ImGui::GetColorU32(ImVec4(1.0f, 1.0f, 1.0f, 0.25f));
@@ -154,17 +163,18 @@ void ScoutRenderer::render_sector_labels_grid(const Planet* selected_zone, doubl
 	}
 }
 
-void ScoutRenderer::render_grid_for_zone(const Planet* selected_zone, double grid_spacing_km) {
+void ScoutRenderer::render_grid_for_zone(const DisplayMode dpm, const Planet* selected_zone, double grid_spacing_km) {
 	if (!selected_zone) return;
 
-	if (selected_zone->zone_type == ZoneType::AsteroidField) {
-		double minx = static_cast<double>(selected_zone->min_x_km);
-		double maxx = static_cast<double>(selected_zone->max_x_km);
-		double miny = static_cast<double>(selected_zone->min_y_km);
-		double maxy = static_cast<double>(selected_zone->max_y_km);
+	if (dpm == DisplayMode::Asteroid_Field || dpm == DisplayMode::Celestial_Belt) {
+		bbox2d box = selected_zone->bounding_box_km;
+		double minx = box.min_x;
+		double maxx = box.max_x;
+		double miny = box.min_y;
+		double maxy = box.max_y;
 
 		// Align to grid
-		if (grid_spacing_km <= 0.0) grid_spacing_km = 100.0;
+		if (grid_spacing_km <= 100.0) grid_spacing_km = 100.0;
 		const double start_x = std::floor(minx / grid_spacing_km) * grid_spacing_km;
 		const double end_x = std::ceil(maxx / grid_spacing_km) * grid_spacing_km;
 		const double start_y = std::floor(miny / grid_spacing_km) * grid_spacing_km;
@@ -173,8 +183,8 @@ void ScoutRenderer::render_grid_for_zone(const Planet* selected_zone, double gri
 		std::vector<float> lines;
 		// vertical lines
 		for (double x = start_x; x < end_x; x += grid_spacing_km) {
-			const auto a = zone_point_to_ndc(selected_zone, x, miny, grid_spacing_km);
-			const auto b = zone_point_to_ndc(selected_zone, x, maxy, grid_spacing_km);
+			const auto a = zone_point_to_ndc(dpm, selected_zone, x, miny, grid_spacing_km);
+			const auto b = zone_point_to_ndc(dpm, selected_zone, x, maxy, grid_spacing_km);
 			lines.push_back(a.first);
 			lines.push_back(a.second);
 			lines.push_back(b.first);
@@ -182,8 +192,8 @@ void ScoutRenderer::render_grid_for_zone(const Planet* selected_zone, double gri
 		}
 		// horizontal lines
 		for (double y = start_y; y < end_y; y += grid_spacing_km) {
-			const auto a = zone_point_to_ndc(selected_zone, minx, y, grid_spacing_km);
-			const auto b = zone_point_to_ndc(selected_zone, maxx, y, grid_spacing_km);
+			const auto a = zone_point_to_ndc(dpm, selected_zone, minx, y, grid_spacing_km);
+			const auto b = zone_point_to_ndc(dpm, selected_zone, maxx, y, grid_spacing_km);
 			lines.push_back(a.first);
 			lines.push_back(a.second);
 			lines.push_back(b.first);
@@ -215,11 +225,11 @@ void ScoutRenderer::render_grid_for_zone(const Planet* selected_zone, double gri
 			int cols = static_cast<int>(std::round((end_x - start_x) / grid_spacing_km));
 			int rows = static_cast<int>(std::round((end_y - start_y) / grid_spacing_km));
 			if (cols > 0 && rows > 0) {
-				render_sector_labels_grid(selected_zone, start_x, end_y, cols, rows, grid_spacing_km, -grid_spacing_km, false);
+				render_sector_labels_grid(dpm, selected_zone, start_x, end_y, cols, rows, grid_spacing_km, -grid_spacing_km, false);
 			}
 		}
 	}
-	if (selected_zone->zone_type == ZoneType::CelestialBody) {
+	if (dpm == DisplayMode::Surface) {
 		// Draw planetary lat/lon grid lines (treat grid_spacing_km as degrees)
 		const double deg_step = grid_spacing_km;
 		if (deg_step > 0.0) {
@@ -265,7 +275,7 @@ void ScoutRenderer::render_grid_for_zone(const Planet* selected_zone, double gri
 			int cols = static_cast<int>(std::floor(360.0 / deg_step));
 			int rows = static_cast<int>(std::floor(180.0 / deg_step));
 			if (cols > 0 && rows > 0) {
-				render_sector_labels_grid(selected_zone, 90.0f, -180.0f, rows, cols,  -deg_step, deg_step, true);
+				render_sector_labels_grid(dpm, selected_zone, 90.0f, -180.0f, rows, cols, -deg_step, deg_step, true);
 			}
 		}
 	}
@@ -320,11 +330,46 @@ void main() {
 }
 )GLSL";
 
+
+static const char* planet_fs = R"GLSL(#version 330 core
+in vec2 uv;
+out vec4 out_color;
+uniform sampler2D u_texture;
+uniform vec2 u_center; // center of planet in quad UV space (0..1)
+uniform float u_radius; // planet radius in UV units (0..0.5 typical)
+uniform float u_vscale; // vertical scale for sampling (1.0 = full image, 0.5 = top-half)
+const float PI = 3.14159265358979323846;
+void main() {
+	// local coordinates relative to planet center in UV-space
+	vec2 c = uv - u_center;
+	vec2 nd = c / u_radius; // normalized disk coords (-1..1)
+	float rho = length(nd);
+	if (rho > 1.0) discard;
+
+	// Azimuthal equidistant projection (view from north pole):
+	// phi = angular distance from north pole = rho * (PI/2) [hemisphere]
+	float phi = rho * (PI * 0.5);
+	float lat = (PI * 0.5) - phi; // latitude in radians (PI/2 .. 0)
+
+	// compute longitude from disk angle; flip nd.y so screen up == north
+	float lon = atan(nd.x, -nd.y);
+
+	// convert to equirectangular UV
+	float u = (lon + PI) / (2.0 * PI);
+	float v = (lat + (PI * 0.5)) / PI;
+	v = v * u_vscale;
+
+	vec4 col = texture(u_texture, vec2(u, v));
+	out_color = col;
+}
+
+)GLSL";
+
 static const char* marker_fs = R"GLSL(#version 330 core
 uniform vec4 u_color;
 out vec4 out_color;
 void main() {
-    out_color = u_color;
+	out_color = u_color;
 }
 )GLSL";
 
@@ -334,6 +379,7 @@ ScoutRenderer::~ScoutRenderer() {
 	if (quad_vbo_) glDeleteBuffers(1, &quad_vbo_);
 	if (quad_vao_) glDeleteVertexArrays(1, &quad_vao_);
 	if (quad_shader_) glDeleteProgram(quad_shader_);
+	if (planet_shader_) glDeleteProgram(planet_shader_);
 
 	if (points_vbo_) glDeleteBuffers(1, &points_vbo_);
 	if (points_vao_) glDeleteVertexArrays(1, &points_vao_);
@@ -397,6 +443,27 @@ bool ScoutRenderer::init() {
 	quad_texture_loc_ = glGetUniformLocation(quad_shader_, "u_texture");
 	if (quad_texture_loc_ != -1) {
 		glUniform1i(quad_texture_loc_, 0);
+	}
+
+	// Planet shader: uses same vertex layout as quad, but masks to a circle and samples top-half of texture
+	GLuint pvs = compile_shader(GL_VERTEX_SHADER, quad_vs);
+	GLuint pfs = compile_shader(GL_FRAGMENT_SHADER, planet_fs);
+	if (pvs && pfs) {
+		planet_shader_ = link_program(pvs, pfs);
+	}
+	if (pvs) glDeleteShader(pvs);
+	if (pfs) glDeleteShader(pfs);
+	if (planet_shader_) {
+		glUseProgram(planet_shader_);
+		planet_texture_loc_ = glGetUniformLocation(planet_shader_, "u_texture");
+		if (planet_texture_loc_ != -1) glUniform1i(planet_texture_loc_, 0);
+		// cache and initialize new planet shader uniforms
+		planet_center_loc_ = glGetUniformLocation(planet_shader_, "u_center");
+		if (planet_center_loc_ != -1) glUniform2f(planet_center_loc_, 0.5f, 0.5f);
+		planet_radius_loc_ = glGetUniformLocation(planet_shader_, "u_radius");
+		if (planet_radius_loc_ != -1) glUniform1f(planet_radius_loc_, 0.5f);
+		planet_vscale_loc_ = glGetUniformLocation(planet_shader_, "u_vscale");
+		if (planet_vscale_loc_ != -1) glUniform1f(planet_vscale_loc_, 1.0f);
 	}
 	glUseProgram(0);
 
@@ -471,17 +538,156 @@ bool ScoutRenderer::init() {
 	return true;
 }
 
-struct rgba { float r, g, b, a; };
+struct rgba {
+	float r, g, b, a;
+	const void overide(float r_, float g_, float b_, float a_) {
+		r = r_; g = g_; b = b_; a = a_;
+	};
+	const void overide(float r_, float g_, float b_) {
+		r = r_; g = g_; b = b_;
+	};
+	const void overide(const rgba& c) {
+		r = c.r; g = c.g; b = c.b; a = c.a;
+	};
+	const float luminance() const {
+		return 0.2126f * r + 0.7152f * g + 0.0722f * b;
+	};
+};
+
+inline rgba make_rgba(uint8_t r, uint8_t g, uint8_t b, uint8_t a) {
+	return { r / 255.0f, g / 255.0f, b / 255.0f, a / 255.0f };
+}
+
 
 //rgb(183, 65, 14)
-const rgba wreck = { 183.0f / 255.0f,	65.0f / 255.0f,	14.0f / 255.0f,	0.9f };
+const rgba wreck = make_rgba(183, 65, 14, 255);
 //rgb(150, 90, 50)
-const rgba cave = { 150.0f / 255.0f,	90.0f / 255.0f,	50.0f / 255.0f,	0.9f };
+const rgba cave = make_rgba(150, 90, 50, 255);
 
 //rgb(203, 58, 51)
-const rgba onyx_facility = { 212.0f / 255.0f,	58.0f / 255.0f,	51.0f / 255.0f,	1.0f };
+const rgba onyx_facility = make_rgba(212, 58, 51, 255);
 //rgb(128, 128, 128)
-const rgba qtless_location = { 128.0f / 255.0f, 128.0f / 255.0f, 128.0f / 255.0f, 0.9f };
+const rgba qtless_location = make_rgba(128, 128, 128, 255);
+
+
+static inline void FillPointBuffer(float x, float y, std::vector<float>& buf, std::vector<float>& border_buf, rgba& colour, const DataPoint& point) {
+	colour.r = 1.0f; colour.g = 1.0f; colour.b = 1.0f; colour.a = 1.0f;
+	if (point.poi_type == PoiType::Mineral) {
+		double quality_norm = (point.quality_max - 0.0) / (1000.0 - 0.0);
+		quality_norm = std::clamp(quality_norm, 0.0, 1.0);
+		if (quality_norm < 0.5) {
+			const auto t = static_cast<float>(quality_norm * 2.0);
+			// r = 0.0f;
+			// g = t;
+			// b = 1.0f - t;
+			colour.overide(0.0f, t, 1.0f - t);
+		} else {
+			const auto t = static_cast<float>((quality_norm - 0.5) * 2.0);
+			colour.overide(t, 1.0f - t, 0.0f);
+		}
+		colour.a = 1.0f;
+	}
+	if (point.poi_type == PoiType::Cave) {
+		// give brown color to caves
+		colour.overide(cave);
+	}
+	if (point.poi_type == PoiType::Wreck) {
+		// give rust color to wrecks
+		// 	(183, 65, 14)
+		colour.overide(wreck);
+	}
+	if (point.poi_type == PoiType::Location) {
+
+
+		if (point.subtype == PoiSubType::Onyx_Facility) {
+			// give gray color to Onyx facilities
+			colour.overide(onyx_facility);
+		} else if (!point.qt_persistent) {
+			// gray color for locations that can't be quantum targeted.
+			colour.overide(qtless_location);
+		}
+	}
+
+	buf.push_back(x);
+	buf.push_back(y);
+	buf.push_back(colour.r);
+	buf.push_back(colour.g);
+	buf.push_back(colour.b);
+	buf.push_back(colour.a);
+
+	// choose border color: black if color is light, white if dark
+	const float lum = colour.luminance();
+	float br = 0.0f, bg = 0.0f, bb = 0.0f, ba = 1.0f;
+	if (lum > 0.5f) {
+		// light color -> use black border
+		br = bg = bb = 0.0f;
+	} else {
+		// dark color -> use white border
+		br = bg = bb = 0.6f;
+	}
+	border_buf.push_back(x);
+	border_buf.push_back(y);
+	border_buf.push_back(br);
+	border_buf.push_back(bg);
+	border_buf.push_back(bb);
+	border_buf.push_back(ba);
+}
+
+void ScoutRenderer::RenderPlanet(GLuint texture, const Planet* selected_zone, double radius_planet_km, double grid_spacing_km) {
+	if (!planet_shader_) return;
+	glUseProgram(planet_shader_);
+	// bind texture unit 0
+	if (!last_bound_texture_unit0_valid_ || last_bound_texture_unit0_ != texture) {
+		glActiveTexture(GL_TEXTURE0);
+		glBindTexture(GL_TEXTURE_2D, texture);
+		last_bound_texture_unit0_ = texture;
+		last_bound_texture_unit0_valid_ = true;
+	}
+
+	// compute center and radius in UV space based on selected zone bbox
+	float center_u = 0.5f, center_v = 0.5f;
+	float uv_radius = 0.5f;
+	if (selected_zone) {
+		const bbox2d& box = selected_zone->bounding_box_km;
+		// compute center in km
+		double cx = 0.0, cy = 0.0;
+		if (box.max_x > box.min_x) cx = (box.min_x + box.max_x) * 0.5;
+		if (box.max_y > box.min_y) cy = (box.min_y + box.max_y) * 0.5;
+		// map center (0,0) in world coords -> ndc via asteriod_point_to_ndc
+		auto center_ndc = asteriod_point_to_ndc(box, grid_spacing_km, 0.0, 0.0);
+		center_u = (center_ndc.first * 0.5f) + 0.5f;
+		center_v = (1.0f - center_ndc.second) * 0.5f;
+
+		// compute half extents used by asteriod_point_to_ndc
+		double half_w = (box.max_x > box.min_x) ? ((box.max_x - box.min_x) * 0.5) : std::max(1.0, grid_spacing_km * 3.0);
+		double half_h = (box.max_y > box.min_y) ? ((box.max_y - box.min_y) * 0.5) : std::max(1.0, grid_spacing_km * 3.0);
+		// If no explicit planet radius provided, default to fitting the bounding-box
+		if (radius_planet_km <= 0.0) {
+			radius_planet_km = std::min(half_w, half_h);
+		}
+		// ndc radius in X/Y
+		double ndc_rx = radius_planet_km / half_w;
+		double ndc_ry = radius_planet_km / half_h;
+		double ndc_r = std::min(ndc_rx, ndc_ry);
+		if (ndc_r < 0.0) ndc_r = 0.0;
+		if (ndc_r > 2.0) ndc_r = 2.0; // clamp
+		// convert ndc radius to uv radius (ndc range [-1,1] -> uv span 1.0 corresponds to ndc span 2.0)
+		uv_radius = static_cast<float>(ndc_r * 0.5);
+		// clamp to reasonable range
+		uv_radius = std::clamp(uv_radius, 0.0f, 0.5f);
+	}
+
+	// set planet shader uniforms (center, radius, sample v-scale for full texture)
+	if (planet_center_loc_ != -1) glUniform2f(planet_center_loc_, center_u, center_v);
+	if (planet_radius_loc_ != -1) glUniform1f(planet_radius_loc_, uv_radius);
+	if (planet_vscale_loc_ != -1) glUniform1f(planet_vscale_loc_, 1.0f);
+
+	// draw full-screen quad; planet shader will mask to circular disk and sample as a north-pole view
+	glBindVertexArray(quad_vao_);
+	glDrawArrays(GL_TRIANGLE_FAN, 0, 4);
+	glBindVertexArray(0);
+	glUseProgram(0);
+}
 
 
 std::optional<std::string> ScoutRenderer::render_map(GLuint texture,
@@ -489,8 +695,192 @@ std::optional<std::string> ScoutRenderer::render_map(GLuint texture,
 	std::optional<std::pair<float, float>> mouse_pos,
 	const std::vector<Resource>& material_catalog,
 	const Planet* selected_zone,
+	const DisplayMode dpm,
 	double grid_spacing_km) {
-	// Draw textured quad. Only change active texture / bind when texture differs
+
+	if (dpm == DisplayMode::Asteroid_Field || dpm == DisplayMode::Surface || dpm == DisplayMode::Celestial_Belt) {
+		// Draw textured quad. Only change active texture / bind when texture differs
+
+		if(dpm== DisplayMode::Celestial_Belt) {
+			// render top-down (north-pole) view of planet for celestial belt
+			RenderPlanet(texture, selected_zone, selected_zone ? selected_zone->planet_radius_km : 500.0, grid_spacing_km);
+
+			// Draw faint glow ring for asteroid belt area (if configured)
+			RenderAstroidFieldZone(selected_zone, grid_spacing_km);
+		}
+		else{
+			RenderBackground(texture);
+		}
+
+	
+
+		// Draw grid for the selected zone (asteroid bbox or planetary lat/lon)
+		if (selected_zone) {
+			render_grid_for_zone(dpm, selected_zone, grid_spacing_km);
+		}
+		// Prepare points buffer (pos + rgba) and border buffer
+		std::vector<float> buf;
+		std::vector<float> border_buf;
+		buf.reserve(points.size() * 6);
+		border_buf.reserve(points.size() * 6);
+		rgba colour = { 1.0f, 1.0f, 1.0f, 1.0f };
+		int displayed_points = 0;
+		for (const auto& point : points) {
+			float x = 0.0f, y = 0.0f;
+
+			// dont display points that are on the south size of the planet when in celestial belt mode when altitude is planetradius + 50km (likely to be planetary features)
+			if (dpm == DisplayMode::Celestial_Belt) {
+				auto latlonalt = point.get_lat_lon_alt();
+				if (latlonalt[2] < selected_zone->planet_radius_km + selected_zone->karman_line_km && latlonalt[0] < 0.0) {
+					continue;
+				}
+			}
+			else if (dpm == DisplayMode::Surface) {
+				if (point.get_lat_lon_alt()[2] > selected_zone->planet_radius_km + selected_zone->karman_line_km && point.poi_type == PoiType::Mineral) {
+					// skip points above the surface when in surface mode
+					continue;
+				}
+			}
+			displayed_points++;
+			auto ndc = dpm == DisplayMode::Asteroid_Field || dpm == DisplayMode::Celestial_Belt
+				? asteriod_point_to_ndc(selected_zone->bounding_box_km, grid_spacing_km, point.x, point.y)
+				: latlon_to_ndc(point.get_lat_lon_alt()[0], point.get_lat_lon_alt()[1]);;
+			FillPointBuffer(ndc.first, ndc.second, buf, border_buf, colour, point);
+		}
+
+		// Upload and draw border (one size larger)
+		RenderPointsWithBorder(border_buf, points, buf);
+
+		// Hover detection (CPU, same logic as before)
+		if (!mouse_pos) return std::nullopt;
+		const auto [mx, my] = *mouse_pos;
+		float closest_dist = 0.0005f;
+		DataPoint* closest_point = nullptr;
+		for (const auto& point : points) {
+			float px = 0.0f, py = 0.0f;
+
+			// dont display points that are on the south size of the planet when in celestial belt mode when altitude is planetradius + 50km (likely to be planetary features)
+			if (dpm == DisplayMode::Celestial_Belt) {
+				auto latlonalt = point.get_lat_lon_alt();
+				if (latlonalt[2] < selected_zone->planet_radius_km + selected_zone->karman_line_km && latlonalt[0] < 0.0) {
+					continue;
+				}
+			} else if (dpm == DisplayMode::Surface) {
+				if (point.get_lat_lon_alt()[2] > selected_zone->planet_radius_km + selected_zone->karman_line_km && point.poi_type == PoiType::Mineral) {
+					// skip points above the surface when in surface mode
+					continue;
+				}
+			}
+
+			auto pndc = dpm == DisplayMode::Asteroid_Field || dpm == DisplayMode::Celestial_Belt
+				? asteriod_point_to_ndc(selected_zone->bounding_box_km, grid_spacing_km, point.x, point.y)
+				: latlon_to_ndc(point.get_lat_lon_alt()[0], point.get_lat_lon_alt()[1]);
+			px = pndc.first;
+			py = pndc.second;
+			const float dx = mx - px;
+			const float dy = my - py;
+			const float dist = (dx * dx) + (dy * dy);
+			if (dist < closest_dist) {
+				closest_dist = dist;
+				closest_point = const_cast<DataPoint*>(&point);
+			}
+		}
+		if (closest_point) {
+			const auto it = std::find_if(material_catalog.begin(), material_catalog.end(), [&](const Resource& m) {
+				return m.name == closest_point->material;
+				});
+			const auto material_id = it != material_catalog.end() ? it->short_name : closest_point->material.substr(0, std::min<size_t>(4, closest_point->material.size()));
+			if (closest_point->poi_type == PoiType::Mineral) {
+				if (dpm == DisplayMode::Asteroid_Field) {
+					return material_id + " Quality: " + std::to_string(int(closest_point->quality_max)) 
+						+ "\nz:" + std::to_string(closest_point->get_lat_lon_alt()[2]) + " km"
+						+ "\n" + closest_point->note;
+				}
+				else {
+					return material_id + " Quality: " + std::to_string(int(closest_point->quality_max)) + "\n" + closest_point->note;
+				}
+			}
+			if (closest_point->poi_type != PoiType::Mineral) {
+				return closest_point->note;
+			}
+		}
+	}
+
+	return std::nullopt;
+}
+
+void ScoutRenderer::RenderAstroidFieldZone(const Planet* selected_zone, double grid_spacing_km)
+{
+	if (selected_zone && (selected_zone->has_asteroid_belt || selected_zone->belt_outer_radius_km > 0.0)) {
+		ImDrawList* dl = ImGui::GetBackgroundDrawList();
+		ImVec2 disp = ImGui::GetIO().DisplaySize;
+		const bbox2d& box = selected_zone->bounding_box_km;
+		// compute center ndc and pixel center
+		auto center_ndc = asteriod_point_to_ndc(box, grid_spacing_km, 0.0, 0.0);
+		float px = (center_ndc.first + 1.0f) * 0.5f * disp.x;
+		float py = (1.0f - ((center_ndc.second + 1.0f) * 0.5f)) * disp.y;
+
+		// compute accurate pixel radii by mapping points at planet-center + radius_km to NDC using same mapping
+		double inner_km = selected_zone->belt_inner_radius_km > 0.0 ? selected_zone->belt_inner_radius_km : (std::min(box.max_x - box.min_x, box.max_y - box.min_y) * 0.25);
+		double outer_km = selected_zone->belt_outer_radius_km > 0.0 ? selected_zone->belt_outer_radius_km : (std::min(box.max_x - box.min_x, box.max_y - box.min_y) * 0.45);
+
+		// center in world coords is 0,0 per design; map to NDC
+		auto center_ndc2 = asteriod_point_to_ndc(box, grid_spacing_km, 0.0, 0.0);
+		auto inner_ndc_x = asteriod_point_to_ndc(box, grid_spacing_km, inner_km, 0.0).first;
+		auto inner_ndc_y = asteriod_point_to_ndc(box, grid_spacing_km, 0.0, inner_km).second;
+		auto outer_ndc_x = asteriod_point_to_ndc(box, grid_spacing_km, outer_km, 0.0).first;
+		auto outer_ndc_y = asteriod_point_to_ndc(box, grid_spacing_km, 0.0, outer_km).second;
+
+		float center_px_x = (center_ndc2.first + 1.0f) * 0.5f * disp.x;
+		float center_px_y = (1.0f - ((center_ndc2.second + 1.0f) * 0.5f)) * disp.y;
+
+		// compute separate x/y pixel radii for inner and outer to form ellipses
+		float inner_px_x = std::abs((inner_ndc_x - center_ndc2.first)) * 0.5f * disp.x;
+		float inner_px_y = std::abs((inner_ndc_y - center_ndc2.second)) * 0.5f * disp.y;
+		float outer_px_x = std::abs((outer_ndc_x - center_ndc2.first)) * 0.5f * disp.x;
+		float outer_px_y = std::abs((outer_ndc_y - center_ndc2.second)) * 0.5f * disp.y;
+
+		if (outer_px_x > 1.0f && outer_px_x > inner_px_x) {
+
+			// ensure positive radii
+			inner_px_x = std::max(1.0f, inner_px_x);
+			inner_px_y = std::max(1.0f, inner_px_y);
+			outer_px_x = std::max(inner_px_x + 1.0f, outer_px_x);
+			outer_px_y = std::max(inner_px_y + 1.0f, outer_px_y);
+
+			const int segments = 64;
+			std::vector<ImVec2> inner_pts;
+			std::vector<ImVec2> outer_pts;
+			inner_pts.reserve(segments);
+			outer_pts.reserve(segments);
+
+			for (int i = 0; i < segments; ++i) {
+				float t = (2.0f * 3.14159265358979323846f) * (static_cast<float>(i) / static_cast<float>(segments));
+				float ox = center_px_x + outer_px_x * std::cos(t);
+				float oy = center_px_y + outer_px_y * std::sin(t);
+				float ix = center_px_x + inner_px_x * std::cos(t);
+				float iy = center_px_y + inner_px_y * std::sin(t);
+				outer_pts.emplace_back(ox, oy);
+				inner_pts.emplace_back(ix, iy);
+			}
+
+			// fill color: faint light blue
+			ImU32 fill_col = ImGui::GetColorU32(ImVec4(0.2f, 0.6f, 1.0f, 0.06f));
+
+			// create triangle mesh between inner and outer rings by connecting vertex i and i+1
+			for (int i = 0; i < segments; ++i) {
+				int ni = (i + 1) % segments;
+				// triangle 1: inner[i], outer[i], inner[ni]
+				dl->AddTriangleFilled(inner_pts[i], outer_pts[i], inner_pts[ni], fill_col);
+				// triangle 2: outer[i], outer[ni], inner[ni]
+				dl->AddTriangleFilled(outer_pts[i], outer_pts[ni], inner_pts[ni], fill_col);
+			}
+		}
+	}
+}
+
+void ScoutRenderer::RenderBackground(GLuint texture)
+{
 	glUseProgram(quad_shader_);
 	if (!last_bound_texture_unit0_valid_ || last_bound_texture_unit0_ != texture) {
 		glActiveTexture(GL_TEXTURE0);
@@ -509,103 +899,10 @@ std::optional<std::string> ScoutRenderer::render_map(GLuint texture,
 	glBindVertexArray(quad_vao_);
 	glDrawArrays(GL_TRIANGLE_FAN, 0, 4);
 	glBindVertexArray(0);
+}
 
-	// Draw grid for the selected zone (asteroid bbox or planetary lat/lon)
-	if (selected_zone) {
-		render_grid_for_zone(selected_zone, grid_spacing_km);
-	}
-
-	// Prepare points buffer (pos + rgba) and border buffer
-	std::vector<float> buf;
-	std::vector<float> border_buf;
-	buf.reserve(points.size() * 6);
-	border_buf.reserve(points.size() * 6);
-	for (const auto& point : points) {
-		float x = 0.0f, y = 0.0f;
-		auto ndc = (selected_zone && selected_zone->zone_type == ZoneType::AsteroidField)
-			? zone_point_to_ndc(selected_zone, point.x, point.y, grid_spacing_km)
-			: latlon_to_ndc(point.get_lat_lon_alt()[0], point.get_lat_lon_alt()[1]);
-		x = ndc.first;
-		y = ndc.second;
-
-		float r = 1.0f, g = 1.0f, b = 1.0f, a = 0.85f;
-		if (point.poi_type == PoiType::Mineral) {
-			double quality_norm = (point.quality_max - 0.0) / (1000.0 - 0.0);
-			quality_norm = std::clamp(quality_norm, 0.0, 1.0);
-			if (quality_norm < 0.5) {
-				const auto t = static_cast<float>(quality_norm * 2.0);
-				r = 0.0f;
-				g = t;
-				b = 1.0f - t;
-			} else {
-				const auto t = static_cast<float>((quality_norm - 0.5) * 2.0);
-				r = t;
-				g = 1.0f - t;
-				b = 0.0f;
-			}
-			a = 1.0f;
-		}
-		if (point.poi_type == PoiType::Cave) {
-			// give brown color to caves
-			r = cave.r;
-			g = cave.g;
-			b = cave.b;
-			a = cave.a;
-		}
-		if (point.poi_type == PoiType::Wreck) {
-			// give rust color to wrecks
-			// 	(183, 65, 14)
-			r = wreck.r;
-			g = wreck.g;
-			b = wreck.b;
-			a = wreck.a;
-		}
-		if (point.poi_type == PoiType::Location) {
-
-
-			if (point.subtype == PoiSubType::Onyx_Facility) {
-				// give gray color to Onyx facilities
-
-				r = onyx_facility.r;
-				g = onyx_facility.g;
-				b = onyx_facility.b;
-				a = onyx_facility.a;
-			}
-			else if (!point.qt_persistent) {
-				// gray color for locations that can't be quantum targeted.
-				r = qtless_location.r;
-				g = qtless_location.g;
-				b = qtless_location.b;
-				a = qtless_location.a;
-			}
-		}
-
-		buf.push_back(x);
-		buf.push_back(y);
-		buf.push_back(r);
-		buf.push_back(g);
-		buf.push_back(b);
-		buf.push_back(a);
-
-		// choose border color: black if color is light, white if dark
-		const float lum = 0.2126f * r + 0.7152f * g + 0.0722f * b;
-		float br = 0.0f, bg = 0.0f, bb = 0.0f, ba = 1.0f;
-		if (lum > 0.5f) {
-			// light color -> use black border
-			br = bg = bb = 0.0f;
-		} else {
-			// dark color -> use white border
-			br = bg = bb = 0.6f;
-		}
-		border_buf.push_back(x);
-		border_buf.push_back(y);
-		border_buf.push_back(br);
-		border_buf.push_back(bg);
-		border_buf.push_back(bb);
-		border_buf.push_back(ba);
-	}
-
-	// Upload and draw border (one size larger)
+void ScoutRenderer::RenderPointsWithBorder(std::vector<float>& border_buf, const std::vector<DataPoint>& points, std::vector<float>& buf)
+{
 	if (!border_buf.empty()) {
 		glUseProgram(points_shader_);
 		glBindVertexArray(points_vao_);
@@ -614,8 +911,9 @@ std::optional<std::string> ScoutRenderer::render_map(GLuint texture,
 		// Use cached point-size uniform location if available (fallback to query-and-cache)
 		GLint size_loc = points_point_size_loc_;
 		if (size_loc == -1) {
-			size_loc = glGetUniformLocation(points_shader_, "u_point_size");
-			if (size_loc != -1) points_point_size_loc_ = size_loc;
+			size_loc = glad_glGetUniformLocation(points_shader_, "u_point_size");
+			if (size_loc != -1)
+				points_point_size_loc_ = size_loc;
 		}
 		const float base_size = 3.0f;
 		glUniform1f(size_loc, base_size + 2.0f);
@@ -626,34 +924,6 @@ std::optional<std::string> ScoutRenderer::render_map(GLuint texture,
 		glDrawArrays(GL_POINTS, 0, static_cast<GLsizei>(points.size()));
 		glBindVertexArray(0);
 	}
-
-	// Hover detection (CPU, same logic as before)
-	if (!mouse_pos) return std::nullopt;
-	const auto [mx, my] = *mouse_pos;
-	constexpr float closest_dist = 0.02f;
-	for (const auto& point : points) {
-		float px = 0.0f, py = 0.0f;
-		auto pndc = (selected_zone && selected_zone->zone_type == ZoneType::AsteroidField)
-			? zone_point_to_ndc(selected_zone, point.x, point.y, grid_spacing_km)
-			: latlon_to_ndc(point.get_lat_lon_alt()[0], point.get_lat_lon_alt()[1]);
-		px = pndc.first;
-		py = pndc.second;
-		const float dx = mx - px;
-		const float dy = my - py;
-		const float dist = std::sqrt((dx * dx) + (dy * dy));
-		if (dist < closest_dist) {
-			const auto it = std::find_if(material_catalog.begin(), material_catalog.end(), [&](const Resource& m) {
-				return m.name == point.material;
-				});
-			const auto material_id = it != material_catalog.end() ? it->short_name : point.material.substr(0, std::min<size_t>(4, point.material.size()));
-			if (point.poi_type == PoiType::Mineral) {
-				return material_id + " Quality: " + std::to_string(int(point.quality_max)) + "\n" + point.note;
-			}
-			return point.note;
-		}
-	}
-
-	return std::nullopt;
 }
 
 void ScoutRenderer::render_marker(float x, float y, float r, float g, float b, float a, float size) {
@@ -674,15 +944,15 @@ void ScoutRenderer::render_marker(float x, float y, float r, float g, float b, f
 	glBindVertexArray(0);
 }
 
-void ScoutRenderer::render_track(const std::vector<DataPoint>& track, const Planet* selected_zone, double grid_spacing_km) {
+void ScoutRenderer::render_track(const DisplayMode dpm, const std::vector<DataPoint>& track, const Planet* selected_zone, double grid_spacing_km) {
 	if (track.empty()) return;
 
 	std::vector<float> pts;
 	pts.reserve(track.size() * 2);
 	for (const auto& p : track) {
 		std::pair<float, float> ndc;
-		if (selected_zone && selected_zone->zone_type == ZoneType::AsteroidField) {
-			ndc = zone_point_to_ndc(selected_zone, p.x, p.y, grid_spacing_km);
+		if (dpm == DisplayMode::Asteroid_Field || dpm == DisplayMode::Celestial_Belt) {
+			ndc = asteriod_point_to_ndc(selected_zone->bounding_box_km, grid_spacing_km, p.x, p.y);
 		} else {
 			const auto lla = p.get_lat_lon_alt();
 			ndc = latlon_to_ndc(lla[0], lla[1]);

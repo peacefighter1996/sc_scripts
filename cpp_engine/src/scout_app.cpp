@@ -257,6 +257,8 @@ struct AppState {
 	std::filesystem::path label_map_path;
 	std::filesystem::path planets_dir;
 
+	DisplayMode display_mode;
+
 	std::vector<DataPoint> points;
 	// Points used specifically for the datatable view (after column filters and sorting)
 	std::vector<DataPoint> datatablepoints;
@@ -478,6 +480,27 @@ struct AppState {
 		}
 		update_grid_spacing();
 		filter_points();
+
+		// Update display mode based on zone preference or default for the zone type
+		if (selected_planet_obj) {
+			if (selected_planet_obj->last_display_mode > 0) {
+				set_display_mode(static_cast<DisplayMode>(selected_planet_obj->last_display_mode));
+			} else {
+				set_display_mode(get_zone_default_display_mode(selected_planet_obj->zone_type));
+			}
+		}
+	}
+
+	void set_display_mode(DisplayMode new_mode) {
+		// update in-memory state
+		display_mode = new_mode;
+		// persist preference if backend supports it and zone has asteroid belt
+		if (store && selected_planet_obj) {
+			auto sqlite_backend = dynamic_cast<SqliteStore*>(store.get());
+			if (sqlite_backend && selected_planet_obj->has_asteroid_belt) {
+				sqlite_backend->set_zone_last_display_mode(selected_planet_obj->id, static_cast<int>(new_mode));
+			}
+		}
 	}
 
 	std::vector<std::string> get_unique_systems(const std::vector<Planet>& planet_catalog) {
@@ -749,7 +772,7 @@ struct AppState {
 		}
 	}
 
-	int finalize() {
+	void finalize() {
 		if (settings.auto_export_session_minerals) {
 			export_session_minerals();
 		}
@@ -991,6 +1014,20 @@ int run_scout_app() {
 				ImGui::SameLine();
 				if (ImGui::Button("Open Planets Editor")) {
 					state.planets_form_active = true;
+				}
+
+				if (state.selected_planet_obj->has_asteroid_belt && state.selected_planet_obj->zone_type == ZoneType::CelestialBody) {
+					ImGui::Separator();
+					if (state.display_mode == DisplayMode::Surface) {
+						if (ImGui::Button("Switch to Asteroid Belt Display Mode")) {
+							state.set_display_mode(DisplayMode::Celestial_Belt);
+						}
+					} else {
+						if (ImGui::Button("Switch to Surface Display Mode")) {
+							state.set_display_mode(DisplayMode::Surface);
+						}
+					}
+
 				}
 
 				ImGui::Separator();
@@ -2229,10 +2266,10 @@ if (ImGui::Button("Browse")) {
 
 					// Controls (Delete + optional BBox editor for asteroid fields)
 					ImGui::TableSetColumnIndex(6);
-					if (pl.zone_type == ZoneType::AsteroidField) {
+					if (pl.zone_type == ZoneType::AsteroidField || pl.has_asteroid_belt) {
 						std::string bbox_btn = std::string("BBox##bbox") + std::to_string(i);
 						if (ImGui::SmallButton(bbox_btn.c_str())) {
-							bbox_edits[i] = { pl.min_x_km, pl.max_x_km, pl.min_y_km, pl.max_y_km };
+							bbox_edits[i] = { static_cast<int>(pl.bounding_box_km.min_x), static_cast<int>(pl.bounding_box_km.max_x), static_cast<int>(pl.bounding_box_km.min_y), static_cast<int>(pl.bounding_box_km.max_y) };
 							std::string popup_name = std::string("Edit BBox##popup") + std::to_string(i);
 							ImGui::OpenPopup(popup_name.c_str());
 						}
@@ -2254,10 +2291,7 @@ if (ImGui::Button("Browse")) {
 							ImGui::InputInt((std::string("Min Y (km)##miny") + std::to_string(i)).c_str(), &vals[2]);
 							ImGui::InputInt((std::string("Max Y (km)##maxy") + std::to_string(i)).c_str(), &vals[3]);
 							if (ImGui::Button((std::string("Save##bboxsave") + std::to_string(i)).c_str())) {
-								pl.min_x_km = vals[0];
-								pl.max_x_km = vals[1];
-								pl.min_y_km = vals[2];
-								pl.max_y_km = vals[3];
+								pl.bounding_box_km = { static_cast<double>(vals[0]), static_cast<double>(vals[1]), static_cast<double>(vals[2]), static_cast<double>(vals[3]) };
 								planets_dirty = true;
 								bbox_edits.erase(it);
 								ImGui::CloseCurrentPopup();
@@ -2322,10 +2356,7 @@ if (ImGui::Button("Browse")) {
 				Planet p{ new_planet_id, std::string(new_sys), std::string(new_name), std::string(new_img), std::string(new_zone) };
 				p.zone_type = static_cast<ZoneType>(new_zone_type);
 				if (p.zone_type == ZoneType::AsteroidField) {
-					p.min_x_km = new_min_x;
-					p.max_x_km = new_max_x;
-					p.min_y_km = new_min_y;
-					p.max_y_km = new_max_y;
+					p.bounding_box_km = { static_cast<double>(new_min_x), static_cast<double>(new_max_x), static_cast<double>(new_min_y), static_cast<double>(new_max_y) };
 				}
 				state.planet_catalog.push_back(p);
 				planets_dirty = true;
@@ -2404,12 +2435,12 @@ if (ImGui::Button("Browse")) {
 			}
 
 
-			state.hovered_text = renderer.render_map(texture, state.filtered_points, mouse_pos, state.material_catalog, selected_zone, state.grid_spacing);
+			state.hovered_text = renderer.render_map(texture, state.filtered_points, mouse_pos, state.material_catalog, selected_zone, state.display_mode, state.grid_spacing);
 			// Render travel log overlay (if available) so users can see their tracked path
 			if (state.travel_log) {
 				const auto track = state.travel_log->get_tracked_points_copy();
 				if (!track.empty()) {
-					renderer.render_track(track, selected_zone, state.grid_spacing);
+					renderer.render_track(state.display_mode, track, selected_zone, state.grid_spacing);
 				}
 			}
 			const auto toggle_now = std::chrono::steady_clock::now();
@@ -2423,10 +2454,11 @@ if (ImGui::Button("Browse")) {
 						// For asteroid fields, use the center of the field as the location marker
 						const double x = state.new_data.x;
 						const double y = state.new_data.y;
-						const double x_min = state.selected_planet_obj->min_x_km;
-						const double x_max = state.selected_planet_obj->max_x_km;
-						const double y_min = state.selected_planet_obj->min_y_km;
-						const double y_max = state.selected_planet_obj->max_y_km;
+						const bbox2d box = state.selected_planet_obj->bounding_box_km;
+						const double x_min = box.min_x;
+						const double x_max = box.max_x;
+						const double y_min = box.min_y;
+						const double y_max = box.max_y;
 						double u = 0.0;
 						double v = 0.0;
 						if (x_max > x_min && y_max > y_min) {
@@ -2474,11 +2506,12 @@ if (ImGui::Button("Browse")) {
 			for (const auto& z : state.planet_catalog) {
 				if (z.name == state.selected_planet) { sel_zone = &z; break; }
 			}
-			if (sel_zone && sel_zone->zone_type == ZoneType::AsteroidField) {
-				double minx = static_cast<double>(sel_zone->min_x_km);
-				double maxx = static_cast<double>(sel_zone->max_x_km);
-				double miny = static_cast<double>(sel_zone->min_y_km);
-				double maxy = static_cast<double>(sel_zone->max_y_km);
+			if (sel_zone && (state.display_mode == DisplayMode::Asteroid_Field || state.display_mode == DisplayMode::Celestial_Belt)) {
+				const bbox2d box = sel_zone->bounding_box_km;
+				double minx = box.min_x;
+				double maxx = box.max_x;
+				double miny = box.min_y;
+				double maxy = box.max_y;
 				double cx = 0.0, cy = 0.0;
 				double half_w = 0.0, half_h = 0.0;
 				if (maxx > minx) {

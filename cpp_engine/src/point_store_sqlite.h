@@ -28,6 +28,7 @@ public:
     bool overwrite_planets(const std::vector<Planet>& planets);
     // Ensure the named zone contains the given point; expand bounding box if necessary.
     bool ensure_zone_contains_point(const std::string& zone_name, double x, double y, double grid_spacing_km);
+    bool set_zone_last_display_mode(int zone_id, int last_display_mode) override;
 
 private:
     std::string db_path_;
@@ -38,5 +39,9 @@ private:
     bool migrate_to_v1();
     bool migrate_to_v2();
     bool migrate_to_v3();
+    bool migrate_to_v4();
+    bool migrate_to_v5();
+    // Set the last display mode for a zone (zone id must be valid). Returns true on success.
+    
     std::string data_point_to_json(const DataPoint& p);
 };

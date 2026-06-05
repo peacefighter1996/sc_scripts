@@ -121,6 +121,22 @@ int main(int argc, char** argv) {
 		}
 	}
 
+	if (command == "export-json") {
+		if (argc != 3) {
+			std::cerr << "usage: scout_engine export-json <db_path> <json_path>\n";
+			return 2;
+		}
+		SqliteStore store(argv[2]);
+		if (!store.init()) {
+			std::cerr << "failed to initialize sqlite store\n";
+			return 1;
+		}
+		JsonExchangeDatapoint je(&store);
+
+		je.export_json_datapoints(argv[3], {PoiType::Mineral});
+	}
+
+
 	if (command == "parse-xyz") {
 		if (argc != 3) {
 			std::cerr << "usage: scout_engine parse-xyz <ocr_text>\n";

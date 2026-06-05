@@ -40,6 +40,7 @@ private:
     bool migrate_to_v2();
     bool migrate_to_v3();
     bool migrate_to_v4();
+    bool migrate_to_v5();
     // Set the last display mode for a zone (zone id must be valid). Returns true on success.
     
     std::string data_point_to_json(const DataPoint& p);

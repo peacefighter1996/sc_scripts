@@ -96,7 +96,7 @@ bool SqliteStore::ensure_migrations() {
 	if (!db_handle_) return false;
 		// Use PRAGMA user_version to manage schema version.
 	const int current = get_user_version(db_handle_);
-	const int target = 4;
+	const int target = 5;
 	if (current >= target) return true;
 
 	for (int v = current + 1; v <= target; ++v) {
@@ -113,6 +113,9 @@ bool SqliteStore::ensure_migrations() {
 				break;
 			case 4:
 				ok = migrate_to_v4();
+				break;
+			case 5:
+				ok = migrate_to_v5();
 				break;
 			default:
 				ok = false;
@@ -249,6 +252,25 @@ bool SqliteStore::migrate_to_v4() {
 	return true;
 }
 
+bool SqliteStore::migrate_to_v5() {
+	if (!db_handle_) return false;
+	// Add planetary/belt geometry columns to zones table
+	std::string sql = R"SQL(
+	ALTER TABLE zones ADD COLUMN karman_line_km REAL DEFAULT 100.0;
+	ALTER TABLE zones ADD COLUMN belt_inner_radius_km REAL DEFAULT 0.0;
+	ALTER TABLE zones ADD COLUMN belt_outer_radius_km REAL DEFAULT 0.0;
+	ALTER TABLE zones ADD COLUMN belt_thickness_km REAL DEFAULT 0.0;
+)SQL";
+	if (!exec_sql(db_handle_, sql)) {
+		// tolerate errors if columns already exist
+		exec_sql(db_handle_, "ALTER TABLE zones ADD COLUMN karman_line_km REAL DEFAULT 100.0;");
+		exec_sql(db_handle_, "ALTER TABLE zones ADD COLUMN belt_inner_radius_km REAL DEFAULT 0.0;");
+		exec_sql(db_handle_, "ALTER TABLE zones ADD COLUMN belt_outer_radius_km REAL DEFAULT 0.0;");
+		exec_sql(db_handle_, "ALTER TABLE zones ADD COLUMN belt_thickness_km REAL DEFAULT 0.0;");
+	}
+	return true;
+}
+
 bool SqliteStore::populate_reference_tables_if_empty() {
 	if (!db_handle_) return false;
 	std::filesystem::path dbp(db_path_);
@@ -346,7 +368,7 @@ bool SqliteStore::populate_reference_tables_if_empty() {
 		// fallback: load legacy planets.csv into zones table via CSV parser
 		const auto catalog = ::load_planet_catalog(planets_csv, {});
 		if (!catalog.empty()) {
-			const char* insert_sql = "INSERT OR REPLACE INTO zones(id,system,name,image_dir,zone_id,zone_type,quantumable,center_x,center_y,center_z,min_x_km,max_x_km,min_y_km,max_y_km,has_asteroid_belt,planet_radius,last_display_mode) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?);";
+			const char* insert_sql = "INSERT OR REPLACE INTO zones(id,system,name,image_dir,zone_id,zone_type,quantumable,center_x,center_y,center_z,min_x_km,max_x_km,min_y_km,max_y_km,has_asteroid_belt,planet_radius,last_display_mode,karman_line_km,belt_inner_radius_km,belt_outer_radius_km,belt_thickness_km) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?);";
 			sqlite3_stmt* ins = nullptr;
 			if (sqlite3_prepare_v2(db_handle_, insert_sql, -1, &ins, nullptr) == SQLITE_OK) {
 				for (const auto& plt : catalog) {
@@ -364,6 +386,14 @@ bool SqliteStore::populate_reference_tables_if_empty() {
 					sqlite3_bind_int(ins, 12, static_cast<int>(plt.bounding_box_km.max_x));
 					sqlite3_bind_int(ins, 13, static_cast<int>(plt.bounding_box_km.min_y));
 					sqlite3_bind_int(ins, 14, static_cast<int>(plt.bounding_box_km.max_y));
+					// new columns: has_asteroid_belt, planet_radius, last_display_mode, karman, belt inner/outer/thickness
+					sqlite3_bind_int(ins, 15, plt.has_asteroid_belt ? 1 : 0);
+					sqlite3_bind_double(ins, 16, plt.planet_radius_km);
+					sqlite3_bind_int(ins, 17, plt.last_display_mode);
+					sqlite3_bind_double(ins, 18, plt.karman_line_km);
+					sqlite3_bind_double(ins, 19, plt.belt_inner_radius_km);
+					sqlite3_bind_double(ins, 20, plt.belt_outer_radius_km);
+					sqlite3_bind_double(ins, 21, plt.belt_thickness_km);
 					sqlite3_step(ins);
 					sqlite3_reset(ins);
 				}
@@ -600,7 +630,7 @@ std::vector<std::string> SqliteStore::load_server_ids() {
 std::vector<Planet> SqliteStore::load_planets() {
 	std::vector<Planet> result;
 	if (!db_handle_) return result;
-	const char* q = "SELECT id, system, name, image_dir, zone_id, zone_type, quantumable, center_x, center_y, center_z, min_x_km, max_x_km, min_y_km, max_y_km, has_asteroid_belt, planet_radius, last_display_mode FROM zones ORDER BY name ASC;";
+	const char* q = "SELECT id, system, name, image_dir, zone_id, zone_type, quantumable, center_x, center_y, center_z, min_x_km, max_x_km, min_y_km, max_y_km, has_asteroid_belt, planet_radius, last_display_mode, karman_line_km, belt_inner_radius_km, belt_outer_radius_km, belt_thickness_km FROM zones ORDER BY name ASC;";
 	sqlite3_stmt* stmt = nullptr;
 	if (sqlite3_prepare_v2(db_handle_, q, -1, &stmt, nullptr) != SQLITE_OK) return result;
 	while (sqlite3_step(stmt) == SQLITE_ROW) {
@@ -627,6 +657,10 @@ std::vector<Planet> SqliteStore::load_planets() {
 		p.has_asteroid_belt = sqlite3_column_int(stmt, 14) != 0;
 		p.planet_radius_km = sqlite3_column_double(stmt, 15);
 		p.last_display_mode = sqlite3_column_int(stmt, 16);
+		p.karman_line_km = sqlite3_column_double(stmt, 17);
+		p.belt_inner_radius_km = sqlite3_column_double(stmt, 18);
+		p.belt_outer_radius_km = sqlite3_column_double(stmt, 19);
+		p.belt_thickness_km = sqlite3_column_double(stmt, 20);
 		result.push_back(p);
 	}
 	sqlite3_finalize(stmt);
@@ -677,7 +711,7 @@ bool SqliteStore::overwrite_planets(const std::vector<Planet>& planets) {
 		return false;
 	}
 
-	static const char* insert_sql = "INSERT OR REPLACE INTO zones(id,system,name,image_dir,zone_id,zone_type,quantumable,center_x,center_y,center_z,min_x_km,max_x_km,min_y_km,max_y_km) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?);";
+	static const char* insert_sql = "INSERT OR REPLACE INTO zones(id,system,name,image_dir,zone_id,zone_type,quantumable,center_x,center_y,center_z,min_x_km,max_x_km,min_y_km,max_y_km,has_asteroid_belt,planet_radius,last_display_mode,karman_line_km,belt_inner_radius_km,belt_outer_radius_km,belt_thickness_km) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?);";
 	sqlite3_stmt* ins = nullptr;
 	if (sqlite3_prepare_v2(db_handle_, insert_sql, -1, &ins, nullptr) != SQLITE_OK) {
 		exec_sql(db_handle_, "ROLLBACK;");
@@ -699,6 +733,14 @@ bool SqliteStore::overwrite_planets(const std::vector<Planet>& planets) {
 		sqlite3_bind_int(ins, 12, static_cast<int>(p.bounding_box_km.max_x));
 		sqlite3_bind_int(ins, 13, static_cast<int>(p.bounding_box_km.min_y));
 		sqlite3_bind_int(ins, 14, static_cast<int>(p.bounding_box_km.max_y));
+		// new columns for v5
+		sqlite3_bind_int(ins, 15, p.has_asteroid_belt ? 1 : 0);
+		sqlite3_bind_double(ins, 16, p.planet_radius_km);
+		sqlite3_bind_int(ins, 17, p.last_display_mode);
+		sqlite3_bind_double(ins, 18, p.karman_line_km);
+		sqlite3_bind_double(ins, 19, p.belt_inner_radius_km);
+		sqlite3_bind_double(ins, 20, p.belt_outer_radius_km);
+		sqlite3_bind_double(ins, 21, p.belt_thickness_km);
 
 		int rc = sqlite3_step(ins);
 		if (rc != SQLITE_DONE) {

@@ -33,8 +33,11 @@ public:
                                           const DisplayMode display_mode = DisplayMode::Default,
                                           double grid_spacing_km = 100.0);
 
+    void RenderAstroidFieldZone(const Planet* selected_zone, double grid_spacing_km);
+
     void RenderBackground(GLuint texture);
-    void RenderPlanet(GLuint texture, double radius_planet);
+    // Render the planet disk positioned and scaled according to the selected zone's bounding box.
+    void RenderPlanet(GLuint texture, const Planet* selected_zone, double radius_planet_km, double grid_spacing_km);
 
     void RenderPointsWithBorder(std::vector<float> &border_buf, const std::vector<DataPoint> &points, std::vector<float> &buf);
 
@@ -52,7 +55,7 @@ public:
 private:
     // Convert a point (either asteroid-field XY or lat/lon) to normalized device coords [-1,1]
     std::pair<float, float> zone_point_to_ndc(const DisplayMode dpm, const Planet* selected_zone, double a, double b, double grid_spacing_km) const;
-    const std::pair<float, float>& asteriod_point_to_ndc(const bbox2d& box, double grid_spacing_km, double a, double b) const;
+    std::pair<float, float> asteriod_point_to_ndc(const bbox2d& box, double grid_spacing_km, double a, double b) const;
     std::pair<float, float> latlon_to_ndc(double lat, double lon) const;
     // Render grid lines for asteroid fields
     void render_grid_for_zone(const DisplayMode dpm, const Planet* selected_zone, double grid_spacing_km);
@@ -68,9 +71,15 @@ private:
     GLuint quad_vao_ = 0;
     GLuint quad_vbo_ = 0;
     GLuint quad_shader_ = 0;
+    GLuint planet_shader_ = 0;
     // Cached location of the quad shader's sampler uniform to avoid expensive
     // glGetUniformLocation calls each frame.
     GLint quad_texture_loc_ = -1;
+    GLint planet_texture_loc_ = -1;
+    // Planet shader uniform locations
+    GLint planet_center_loc_ = -1;
+    GLint planet_radius_loc_ = -1;
+    GLint planet_vscale_loc_ = -1;
 
     GLuint points_vao_ = 0;
     GLuint points_vbo_ = 0;

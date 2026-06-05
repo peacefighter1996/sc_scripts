@@ -302,6 +302,12 @@ struct Zone {
 	bool has_asteroid_belt{ false };
 	// Planet physical radius in kilometers (optional, used for rendering disks/occlusion in asteroid-field view)
 	double planet_radius_km{ 0.0 };
+	// Karman line altitude in kilometers: used as threshold for planetary features/atmosphere rendering
+	double karman_line_km{ 100.0 };
+	// Asteroid belt geometry (in kilometers) relative to zone center
+	double belt_inner_radius_km{ 0.0 }; // inner radius of main belt area
+	double belt_outer_radius_km{ 0.0 }; // outer radius of main belt area
+	double belt_thickness_km{ 0.0 }; // vertical/thickness of belt volume (for future use)
 	// Last display mode selected for this zone (store DisplayMode as int). -1 = unset
 	int last_display_mode{ -1 };
 };

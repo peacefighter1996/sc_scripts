@@ -36,7 +36,7 @@ std::pair<float, float> ScoutRenderer::zone_point_to_ndc(const DisplayMode dpm, 
 	}
 }
 
-const std::pair<float, float>& ScoutRenderer::asteriod_point_to_ndc(const bbox2d& box, double grid_spacing_km, double a, double b) const
+std::pair<float, float> ScoutRenderer::asteriod_point_to_ndc(const bbox2d& box, double grid_spacing_km, double a, double b) const
 {
 	double minx = box.min_x;
 	double maxx = box.max_x;
@@ -54,8 +54,8 @@ const std::pair<float, float>& ScoutRenderer::asteriod_point_to_ndc(const bbox2d
 	}
 	if (half_w <= 0.0) half_w = std::max(1.0, grid_spacing_km * 3.0);
 	if (half_h <= 0.0) half_h = std::max(1.0, grid_spacing_km * 3.0);
-	const double ndc_x = std::clamp((a - cx) / half_w, -1.0, 1.0);
-	const double ndc_y = std::clamp((b - cy) / half_h, -1.0, 1.0);
+	const double ndc_x = (a - cx) / half_w;
+	const double ndc_y = (b - cy) / half_h;
 	return { static_cast<float>(ndc_x), static_cast<float>(ndc_y) };
 }
 
@@ -330,11 +330,46 @@ void main() {
 }
 )GLSL";
 
+
+static const char* planet_fs = R"GLSL(#version 330 core
+in vec2 uv;
+out vec4 out_color;
+uniform sampler2D u_texture;
+uniform vec2 u_center; // center of planet in quad UV space (0..1)
+uniform float u_radius; // planet radius in UV units (0..0.5 typical)
+uniform float u_vscale; // vertical scale for sampling (1.0 = full image, 0.5 = top-half)
+const float PI = 3.14159265358979323846;
+void main() {
+	// local coordinates relative to planet center in UV-space
+	vec2 c = uv - u_center;
+	vec2 nd = c / u_radius; // normalized disk coords (-1..1)
+	float rho = length(nd);
+	if (rho > 1.0) discard;
+
+	// Azimuthal equidistant projection (view from north pole):
+	// phi = angular distance from north pole = rho * (PI/2) [hemisphere]
+	float phi = rho * (PI * 0.5);
+	float lat = (PI * 0.5) - phi; // latitude in radians (PI/2 .. 0)
+
+	// compute longitude from disk angle; flip nd.y so screen up == north
+	float lon = atan(nd.x, -nd.y);
+
+	// convert to equirectangular UV
+	float u = (lon + PI) / (2.0 * PI);
+	float v = (lat + (PI * 0.5)) / PI;
+	v = v * u_vscale;
+
+	vec4 col = texture(u_texture, vec2(u, v));
+	out_color = col;
+}
+
+)GLSL";
+
 static const char* marker_fs = R"GLSL(#version 330 core
 uniform vec4 u_color;
 out vec4 out_color;
 void main() {
-    out_color = u_color;
+	out_color = u_color;
 }
 )GLSL";
 
@@ -344,6 +379,7 @@ ScoutRenderer::~ScoutRenderer() {
 	if (quad_vbo_) glDeleteBuffers(1, &quad_vbo_);
 	if (quad_vao_) glDeleteVertexArrays(1, &quad_vao_);
 	if (quad_shader_) glDeleteProgram(quad_shader_);
+	if (planet_shader_) glDeleteProgram(planet_shader_);
 
 	if (points_vbo_) glDeleteBuffers(1, &points_vbo_);
 	if (points_vao_) glDeleteVertexArrays(1, &points_vao_);
@@ -407,6 +443,27 @@ bool ScoutRenderer::init() {
 	quad_texture_loc_ = glGetUniformLocation(quad_shader_, "u_texture");
 	if (quad_texture_loc_ != -1) {
 		glUniform1i(quad_texture_loc_, 0);
+	}
+
+	// Planet shader: uses same vertex layout as quad, but masks to a circle and samples top-half of texture
+	GLuint pvs = compile_shader(GL_VERTEX_SHADER, quad_vs);
+	GLuint pfs = compile_shader(GL_FRAGMENT_SHADER, planet_fs);
+	if (pvs && pfs) {
+		planet_shader_ = link_program(pvs, pfs);
+	}
+	if (pvs) glDeleteShader(pvs);
+	if (pfs) glDeleteShader(pfs);
+	if (planet_shader_) {
+		glUseProgram(planet_shader_);
+		planet_texture_loc_ = glGetUniformLocation(planet_shader_, "u_texture");
+		if (planet_texture_loc_ != -1) glUniform1i(planet_texture_loc_, 0);
+		// cache and initialize new planet shader uniforms
+		planet_center_loc_ = glGetUniformLocation(planet_shader_, "u_center");
+		if (planet_center_loc_ != -1) glUniform2f(planet_center_loc_, 0.5f, 0.5f);
+		planet_radius_loc_ = glGetUniformLocation(planet_shader_, "u_radius");
+		if (planet_radius_loc_ != -1) glUniform1f(planet_radius_loc_, 0.5f);
+		planet_vscale_loc_ = glGetUniformLocation(planet_shader_, "u_vscale");
+		if (planet_vscale_loc_ != -1) glUniform1f(planet_vscale_loc_, 1.0f);
 	}
 	glUseProgram(0);
 
@@ -576,8 +633,60 @@ static inline void FillPointBuffer(float x, float y, std::vector<float>& buf, st
 	border_buf.push_back(ba);
 }
 
-void ScoutRenderer::RenderPlanet(GLuint texture, float radius_planet) {
-	
+void ScoutRenderer::RenderPlanet(GLuint texture, const Planet* selected_zone, double radius_planet_km, double grid_spacing_km) {
+	if (!planet_shader_) return;
+	glUseProgram(planet_shader_);
+	// bind texture unit 0
+	if (!last_bound_texture_unit0_valid_ || last_bound_texture_unit0_ != texture) {
+		glActiveTexture(GL_TEXTURE0);
+		glBindTexture(GL_TEXTURE_2D, texture);
+		last_bound_texture_unit0_ = texture;
+		last_bound_texture_unit0_valid_ = true;
+	}
+
+	// compute center and radius in UV space based on selected zone bbox
+	float center_u = 0.5f, center_v = 0.5f;
+	float uv_radius = 0.5f;
+	if (selected_zone) {
+		const bbox2d& box = selected_zone->bounding_box_km;
+		// compute center in km
+		double cx = 0.0, cy = 0.0;
+		if (box.max_x > box.min_x) cx = (box.min_x + box.max_x) * 0.5;
+		if (box.max_y > box.min_y) cy = (box.min_y + box.max_y) * 0.5;
+		// map center (0,0) in world coords -> ndc via asteriod_point_to_ndc
+		auto center_ndc = asteriod_point_to_ndc(box, grid_spacing_km, 0.0, 0.0);
+		center_u = (center_ndc.first * 0.5f) + 0.5f;
+		center_v = (1.0f - center_ndc.second) * 0.5f;
+
+		// compute half extents used by asteriod_point_to_ndc
+		double half_w = (box.max_x > box.min_x) ? ((box.max_x - box.min_x) * 0.5) : std::max(1.0, grid_spacing_km * 3.0);
+		double half_h = (box.max_y > box.min_y) ? ((box.max_y - box.min_y) * 0.5) : std::max(1.0, grid_spacing_km * 3.0);
+		// If no explicit planet radius provided, default to fitting the bounding-box
+		if (radius_planet_km <= 0.0) {
+			radius_planet_km = std::min(half_w, half_h);
+		}
+		// ndc radius in X/Y
+		double ndc_rx = radius_planet_km / half_w;
+		double ndc_ry = radius_planet_km / half_h;
+		double ndc_r = std::min(ndc_rx, ndc_ry);
+		if (ndc_r < 0.0) ndc_r = 0.0;
+		if (ndc_r > 2.0) ndc_r = 2.0; // clamp
+		// convert ndc radius to uv radius (ndc range [-1,1] -> uv span 1.0 corresponds to ndc span 2.0)
+		uv_radius = static_cast<float>(ndc_r * 0.5);
+		// clamp to reasonable range
+		uv_radius = std::clamp(uv_radius, 0.0f, 0.5f);
+	}
+
+	// set planet shader uniforms (center, radius, sample v-scale for full texture)
+	if (planet_center_loc_ != -1) glUniform2f(planet_center_loc_, center_u, center_v);
+	if (planet_radius_loc_ != -1) glUniform1f(planet_radius_loc_, uv_radius);
+	if (planet_vscale_loc_ != -1) glUniform1f(planet_vscale_loc_, 1.0f);
+
+	// draw full-screen quad; planet shader will mask to circular disk and sample as a north-pole view
+	glBindVertexArray(quad_vao_);
+	glDrawArrays(GL_TRIANGLE_FAN, 0, 4);
+	glBindVertexArray(0);
+	glUseProgram(0);
 }
 
 
@@ -593,8 +702,11 @@ std::optional<std::string> ScoutRenderer::render_map(GLuint texture,
 		// Draw textured quad. Only change active texture / bind when texture differs
 
 		if(dpm== DisplayMode::Celestial_Belt) {
-			// rened top down view of planet for celestial belt
-			RenderPlanet(texture, selected_zone ? selected_zone->planet_radius_km : 1000.0f);
+			// render top-down (north-pole) view of planet for celestial belt
+			RenderPlanet(texture, selected_zone, selected_zone ? selected_zone->planet_radius_km : 500.0, grid_spacing_km);
+
+			// Draw faint glow ring for asteroid belt area (if configured)
+			RenderAstroidFieldZone(selected_zone, grid_spacing_km);
 		}
 		else{
 			RenderBackground(texture);
@@ -612,8 +724,24 @@ std::optional<std::string> ScoutRenderer::render_map(GLuint texture,
 		buf.reserve(points.size() * 6);
 		border_buf.reserve(points.size() * 6);
 		rgba colour = { 1.0f, 1.0f, 1.0f, 1.0f };
+		int displayed_points = 0;
 		for (const auto& point : points) {
 			float x = 0.0f, y = 0.0f;
+
+			// dont display points that are on the south size of the planet when in celestial belt mode when altitude is planetradius + 50km (likely to be planetary features)
+			if (dpm == DisplayMode::Celestial_Belt) {
+				auto latlonalt = point.get_lat_lon_alt();
+				if (latlonalt[2] < selected_zone->planet_radius_km + selected_zone->karman_line_km && latlonalt[0] < 0.0) {
+					continue;
+				}
+			}
+			else if (dpm == DisplayMode::Surface) {
+				if (point.get_lat_lon_alt()[2] > selected_zone->planet_radius_km + selected_zone->karman_line_km && point.poi_type == PoiType::Mineral) {
+					// skip points above the surface when in surface mode
+					continue;
+				}
+			}
+			displayed_points++;
 			auto ndc = dpm == DisplayMode::Asteroid_Field || dpm == DisplayMode::Celestial_Belt
 				? asteriod_point_to_ndc(selected_zone->bounding_box_km, grid_spacing_km, point.x, point.y)
 				: latlon_to_ndc(point.get_lat_lon_alt()[0], point.get_lat_lon_alt()[1]);;
@@ -626,10 +754,24 @@ std::optional<std::string> ScoutRenderer::render_map(GLuint texture,
 		// Hover detection (CPU, same logic as before)
 		if (!mouse_pos) return std::nullopt;
 		const auto [mx, my] = *mouse_pos;
-		float closest_dist = 0.02f;
+		float closest_dist = 0.0005f;
 		DataPoint* closest_point = nullptr;
 		for (const auto& point : points) {
 			float px = 0.0f, py = 0.0f;
+
+			// dont display points that are on the south size of the planet when in celestial belt mode when altitude is planetradius + 50km (likely to be planetary features)
+			if (dpm == DisplayMode::Celestial_Belt) {
+				auto latlonalt = point.get_lat_lon_alt();
+				if (latlonalt[2] < selected_zone->planet_radius_km + selected_zone->karman_line_km && latlonalt[0] < 0.0) {
+					continue;
+				}
+			} else if (dpm == DisplayMode::Surface) {
+				if (point.get_lat_lon_alt()[2] > selected_zone->planet_radius_km + selected_zone->karman_line_km && point.poi_type == PoiType::Mineral) {
+					// skip points above the surface when in surface mode
+					continue;
+				}
+			}
+
 			auto pndc = dpm == DisplayMode::Asteroid_Field || dpm == DisplayMode::Celestial_Belt
 				? asteriod_point_to_ndc(selected_zone->bounding_box_km, grid_spacing_km, point.x, point.y)
 				: latlon_to_ndc(point.get_lat_lon_alt()[0], point.get_lat_lon_alt()[1]);
@@ -637,7 +779,7 @@ std::optional<std::string> ScoutRenderer::render_map(GLuint texture,
 			py = pndc.second;
 			const float dx = mx - px;
 			const float dy = my - py;
-			const float dist = std::sqrt((dx * dx) + (dy * dy));
+			const float dist = (dx * dx) + (dy * dy);
 			if (dist < closest_dist) {
 				closest_dist = dist;
 				closest_point = const_cast<DataPoint*>(&point);
@@ -651,10 +793,83 @@ std::optional<std::string> ScoutRenderer::render_map(GLuint texture,
 			if (closest_point->poi_type == PoiType::Mineral) {
 				return material_id + " Quality: " + std::to_string(int(closest_point->quality_max)) + "\n" + closest_point->note;
 			}
+			if (closest_point->poi_type != PoiType::Mineral) {
+				return closest_point->note;
+			}
 		}
 	}
 
 	return std::nullopt;
+}
+
+void ScoutRenderer::RenderAstroidFieldZone(const Planet* selected_zone, double grid_spacing_km)
+{
+	if (selected_zone && (selected_zone->has_asteroid_belt || selected_zone->belt_outer_radius_km > 0.0)) {
+		ImDrawList* dl = ImGui::GetBackgroundDrawList();
+		ImVec2 disp = ImGui::GetIO().DisplaySize;
+		const bbox2d& box = selected_zone->bounding_box_km;
+		// compute center ndc and pixel center
+		auto center_ndc = asteriod_point_to_ndc(box, grid_spacing_km, 0.0, 0.0);
+		float px = (center_ndc.first + 1.0f) * 0.5f * disp.x;
+		float py = (1.0f - ((center_ndc.second + 1.0f) * 0.5f)) * disp.y;
+
+		// compute accurate pixel radii by mapping points at planet-center + radius_km to NDC using same mapping
+		double inner_km = selected_zone->belt_inner_radius_km > 0.0 ? selected_zone->belt_inner_radius_km : (std::min(box.max_x - box.min_x, box.max_y - box.min_y) * 0.25);
+		double outer_km = selected_zone->belt_outer_radius_km > 0.0 ? selected_zone->belt_outer_radius_km : (std::min(box.max_x - box.min_x, box.max_y - box.min_y) * 0.45);
+
+		// center in world coords is 0,0 per design; map to NDC
+		auto center_ndc2 = asteriod_point_to_ndc(box, grid_spacing_km, 0.0, 0.0);
+		auto inner_ndc_x = asteriod_point_to_ndc(box, grid_spacing_km, inner_km, 0.0).first;
+		auto inner_ndc_y = asteriod_point_to_ndc(box, grid_spacing_km, 0.0, inner_km).second;
+		auto outer_ndc_x = asteriod_point_to_ndc(box, grid_spacing_km, outer_km, 0.0).first;
+		auto outer_ndc_y = asteriod_point_to_ndc(box, grid_spacing_km, 0.0, outer_km).second;
+
+		float center_px_x = (center_ndc2.first + 1.0f) * 0.5f * disp.x;
+		float center_px_y = (1.0f - ((center_ndc2.second + 1.0f) * 0.5f)) * disp.y;
+
+		// compute separate x/y pixel radii for inner and outer to form ellipses
+		float inner_px_x = std::abs((inner_ndc_x - center_ndc2.first)) * 0.5f * disp.x;
+		float inner_px_y = std::abs((inner_ndc_y - center_ndc2.second)) * 0.5f * disp.y;
+		float outer_px_x = std::abs((outer_ndc_x - center_ndc2.first)) * 0.5f * disp.x;
+		float outer_px_y = std::abs((outer_ndc_y - center_ndc2.second)) * 0.5f * disp.y;
+
+		if (outer_px_x > 1.0f && outer_px_x > inner_px_x) {
+
+			// ensure positive radii
+			inner_px_x = std::max(1.0f, inner_px_x);
+			inner_px_y = std::max(1.0f, inner_px_y);
+			outer_px_x = std::max(inner_px_x + 1.0f, outer_px_x);
+			outer_px_y = std::max(inner_px_y + 1.0f, outer_px_y);
+
+			const int segments = 64;
+			std::vector<ImVec2> inner_pts;
+			std::vector<ImVec2> outer_pts;
+			inner_pts.reserve(segments);
+			outer_pts.reserve(segments);
+
+			for (int i = 0; i < segments; ++i) {
+				float t = (2.0f * 3.14159265358979323846f) * (static_cast<float>(i) / static_cast<float>(segments));
+				float ox = center_px_x + outer_px_x * std::cos(t);
+				float oy = center_px_y + outer_px_y * std::sin(t);
+				float ix = center_px_x + inner_px_x * std::cos(t);
+				float iy = center_px_y + inner_px_y * std::sin(t);
+				outer_pts.emplace_back(ox, oy);
+				inner_pts.emplace_back(ix, iy);
+			}
+
+			// fill color: faint light blue
+			ImU32 fill_col = ImGui::GetColorU32(ImVec4(0.2f, 0.6f, 1.0f, 0.06f));
+
+			// create triangle mesh between inner and outer rings by connecting vertex i and i+1
+			for (int i = 0; i < segments; ++i) {
+				int ni = (i + 1) % segments;
+				// triangle 1: inner[i], outer[i], inner[ni]
+				dl->AddTriangleFilled(inner_pts[i], outer_pts[i], inner_pts[ni], fill_col);
+				// triangle 2: outer[i], outer[ni], inner[ni]
+				dl->AddTriangleFilled(outer_pts[i], outer_pts[ni], inner_pts[ni], fill_col);
+			}
+		}
+	}
 }
 
 void ScoutRenderer::RenderBackground(GLuint texture)

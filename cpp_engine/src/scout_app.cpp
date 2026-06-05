@@ -1020,7 +1020,7 @@ int run_scout_app() {
 					ImGui::Separator();
 					if (state.display_mode == DisplayMode::Surface) {
 						if (ImGui::Button("Switch to Asteroid Belt Display Mode")) {
-							state.set_display_mode(DisplayMode::Asteroid_Field);
+							state.set_display_mode(DisplayMode::Celestial_Belt);
 						}
 					} else {
 						if (ImGui::Button("Switch to Surface Display Mode")) {

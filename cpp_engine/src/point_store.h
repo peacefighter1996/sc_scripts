@@ -30,6 +30,7 @@ struct IStore {
     virtual std::vector<Resource> load_resources() = 0;
     virtual DataPoint get_datapoint(int id) = 0;
     virtual bool delete_point_by_id(int id) = 0;
+    virtual bool set_zone_last_display_mode(int zone_id, int last_display_mode) = 0;
 };
 
 struct import_json_datapoints_result {

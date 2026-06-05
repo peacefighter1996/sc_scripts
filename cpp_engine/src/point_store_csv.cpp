@@ -311,16 +311,16 @@ std::vector<Planet> load_planet_catalog(const std::filesystem::path& path, const
             try { planet.center_z = std::stod(trim(cells[static_cast<size_t>(center_z_index)])); } catch(...) {}
         }
         if (min_x_index >= 0 && min_x_index < static_cast<int>(cells.size())) {
-            try { planet.min_x_km = static_cast<int>(std::round(std::stod(trim(cells[static_cast<size_t>(min_x_index)])))); } catch(...) {}
+            try { planet.bounding_box_km.min_x = static_cast<double>(std::round(std::stod(trim(cells[static_cast<size_t>(min_x_index)])))); } catch(...) {}
         }
         if (max_x_index >= 0 && max_x_index < static_cast<int>(cells.size())) {
-            try { planet.max_x_km = static_cast<int>(std::round(std::stod(trim(cells[static_cast<size_t>(max_x_index)])))); } catch(...) {}
+            try { planet.bounding_box_km.max_x = static_cast<double>(std::round(std::stod(trim(cells[static_cast<size_t>(max_x_index)])))); } catch(...) {}
         }
         if (min_y_index >= 0 && min_y_index < static_cast<int>(cells.size())) {
-            try { planet.min_y_km = static_cast<int>(std::round(std::stod(trim(cells[static_cast<size_t>(min_y_index)])))); } catch(...) {}
+            try { planet.bounding_box_km.min_y = static_cast<double>(std::round(std::stod(trim(cells[static_cast<size_t>(min_y_index)])))); } catch(...) {}
         }
         if (max_y_index >= 0 && max_y_index < static_cast<int>(cells.size())) {
-            try { planet.max_y_km = static_cast<int>(std::round(std::stod(trim(cells[static_cast<size_t>(max_y_index)])))); } catch(...) {}
+            try { planet.bounding_box_km.max_y = static_cast<double>(std::round(std::stod(trim(cells[static_cast<size_t>(max_y_index)])))); } catch(...) {}
         }
         // per-zone grid fields removed; ignore if present in legacy CSVs
         catalog.push_back(planet);
@@ -522,10 +522,10 @@ bool write_planets_csv(const std::filesystem::path& csv_path, const std::vector<
             << std::setprecision(15) << p.center_x << ','
             << std::setprecision(15) << p.center_y << ','
             << std::setprecision(15) << p.center_z << ','
-            << p.min_x_km << ','
-            << p.max_x_km << ','
-            << p.min_y_km << ','
-            << p.max_y_km << ','
+            << static_cast<int>(p.bounding_box_km.min_x) << ','
+            << static_cast<int>(p.bounding_box_km.max_x) << ','
+            << static_cast<int>(p.bounding_box_km.min_y) << ','
+            << static_cast<int>(p.bounding_box_km.max_y) << ','
             << '\n';
     }
 

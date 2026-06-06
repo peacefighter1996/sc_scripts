@@ -2175,24 +2175,41 @@ if (ImGui::Button("Browse")) {
 			static bool planets_dirty = false;
 			static std::string planets_save_message;
 
+			static int new_planet_id = 0;
+			static char new_sys[64] = "";
+			static char new_name[128] = "";
+			static char new_img[128] = "";
+			static char new_zone[64] = "";
+			static bool new_has_asteroid_belt = false;
+			static double new_planet_radius = 0.0;
+			static double new_karman_line = 100.0;
+			static double new_belt_inner = 0.0;
+			static double new_belt_outer = 0.0;
+			static double new_belt_thickness = 0.0;
+			static int new_zone_type = zone_type_to_int(ZoneType::CelestialBody);
+			const char* zone_items_new[] = { zone_type_name(ZoneType::CelestialBody), zone_type_name(ZoneType::AsteroidField), zone_type_name(ZoneType::Solar) };
+
+			int spacers = new_has_asteroid_belt?8:7;
 			ImGui::Text("Edit planet catalog (changes are in-memory until you Save)");
 			ImGui::Separator();
 
 			ImGuiTableFlags table_flags = ImGuiTableFlags_Resizable | ImGuiTableFlags_Reorderable | ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerH | ImGuiTableFlags_ScrollY;
-			// added one more column for Zone Type selection
-			if (ImGui::BeginTable("PlanetsTable_v1", 7, table_flags, ImVec2(0, ImGui::GetContentRegionAvail().y - 80))) {
+			// added one more column for Zone Type selection and Belt editing
+			if (ImGui::BeginTable("PlanetsTable_v1", 8, table_flags, ImVec2(0, ImGui::GetContentRegionAvail().y - 165))) {
 				ImGui::TableSetupColumn("ID", ImGuiTableColumnFlags_WidthFixed, 50.0f);
 				ImGui::TableSetupColumn("System");
 				ImGui::TableSetupColumn("Planet");
 				ImGui::TableSetupColumn("Image Dir");
 				ImGui::TableSetupColumn("Zone ID");
 				ImGui::TableSetupColumn("Zone Type");
+				ImGui::TableSetupColumn("Belt");
 				ImGui::TableSetupColumn("Control", ImGuiTableColumnFlags_WidthFixed, 80.0f);
 				ImGui::TableSetupScrollFreeze(0, 1);
 				ImGui::TableHeadersRow();
 
 				std::vector<size_t> to_erase;
 				static std::unordered_map<size_t, std::array<int, 4>> bbox_edits;
+				static std::unordered_map<size_t, std::array<double, 5>> belt_edits; // planet_radius, karman_line, inner, outer, thickness
 				for (size_t i = 0; i < state.planet_catalog.size(); ++i) {
 					Planet& pl = state.planet_catalog[i];
 					ImGui::TableNextRow();
@@ -2264,8 +2281,27 @@ if (ImGui::Button("Browse")) {
 					}
 					ImGui::PopItemWidth();
 
-					// Controls (Delete + optional BBox editor for asteroid fields)
+					// Belt controls (checkbox + edit popup)
 					ImGui::TableSetColumnIndex(6);
+					// Checkbox for whether this zone has an asteroid belt
+					if (pl.zone_type == ZoneType::AsteroidField) {
+						ImGui::TextDisabled("Asteroid Field");
+					} else {
+						if (ImGui::Checkbox((std::string("##hasbelt") + std::to_string(i)).c_str(), &pl.has_asteroid_belt)) {
+							planets_dirty = true;
+						}
+						
+						ImGui::SameLine();
+						// Edit Planet button
+						std::string edit_belt_btn = std::string("Edit Planet##belt") + std::to_string(i);
+						if (ImGui::SmallButton(edit_belt_btn.c_str())) {
+							belt_edits[i] = { pl.planet_radius_km, pl.karman_line_km, pl.belt_inner_radius_km, pl.belt_outer_radius_km, pl.belt_thickness_km };
+							std::string popup_name = std::string("Edit Planet##beltpopup") + std::to_string(i);
+							ImGui::OpenPopup(popup_name.c_str());
+					}	
+					}
+					// Delete button moved to next column
+					ImGui::TableSetColumnIndex(7);
 					if (pl.zone_type == ZoneType::AsteroidField || pl.has_asteroid_belt) {
 						std::string bbox_btn = std::string("BBox##bbox") + std::to_string(i);
 						if (ImGui::SmallButton(bbox_btn.c_str())) {
@@ -2307,6 +2343,39 @@ if (ImGui::Button("Browse")) {
 						}
 						ImGui::EndPopup();
 					}
+
+					// Popup modal for editing belt params
+					std::string belt_popup = std::string("Edit Planet##beltpopup") + std::to_string(i);
+					if (ImGui::BeginPopupModal(belt_popup.c_str(), nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+						auto itb = belt_edits.find(i);
+						if (itb != belt_edits.end()) {
+							auto& bvals = itb->second;
+							ImGui::InputDouble((std::string("Planet Radius (km)##pr") + std::to_string(i)).c_str(), &bvals[0]);
+							ImGui::InputDouble((std::string("Karman Line (km)##kl") + std::to_string(i)).c_str(), &bvals[1]);
+							ImGui::InputDouble((std::string("Belt Inner (km)##bi") + std::to_string(i)).c_str(), &bvals[2]);
+							ImGui::InputDouble((std::string("Belt Outer (km)##bo") + std::to_string(i)).c_str(), &bvals[3]);
+							ImGui::InputDouble((std::string("Belt Thickness (km)##bt") + std::to_string(i)).c_str(), &bvals[4]);
+							if (ImGui::Button((std::string("Save##beltsave") + std::to_string(i)).c_str())) {
+								pl.planet_radius_km = bvals[0];
+								pl.karman_line_km = bvals[1];
+								pl.belt_inner_radius_km = bvals[2];
+								pl.belt_outer_radius_km = bvals[3];
+								pl.belt_thickness_km = bvals[4];
+								planets_dirty = true;
+								belt_edits.erase(itb);
+								ImGui::CloseCurrentPopup();
+							}
+							ImGui::SameLine();
+							if (ImGui::Button((std::string("Cancel##beltcancel") + std::to_string(i)).c_str())) {
+								belt_edits.erase(itb);
+								ImGui::CloseCurrentPopup();
+							}
+						} else {
+							ImGui::Text("No belt data available");
+							if (ImGui::Button("Close")) ImGui::CloseCurrentPopup();
+						}
+						ImGui::EndPopup();
+					}
 				}
 
 				if (!to_erase.empty()) {
@@ -2324,37 +2393,65 @@ if (ImGui::Button("Browse")) {
 
 			ImGui::Separator();
 			ImGui::Text("Add new planet:");
-			static int new_planet_id = 0;
-			static char new_sys[64] = "";
-			static char new_name[128] = "";
-			static char new_img[128] = "";
-			static char new_zone[64] = "";
+			
+			
 			if (new_planet_id == 0) {
 				int maxid = -1;
 				for (const auto& p : state.planet_catalog) maxid = max(maxid, p.id);
 				new_planet_id = maxid + 1;
 			}
-			ImGui::InputInt("ID##newplanet", &new_planet_id);
-			ImGui::InputText("System##newplanet", new_sys, IM_ARRAYSIZE(new_sys));
-			ImGui::InputText("Planet##newplanet", new_name, IM_ARRAYSIZE(new_name));
-			ImGui::InputText("Image Dir##newplanet", new_img, IM_ARRAYSIZE(new_img));
+			// ImGui::InputInt("ID##newplanet", &new_planet_id);
+			ImGui::PushItemWidth(100);
+			ImGui::InputText("System##newplanet", new_sys, IM_ARRAYSIZE(new_sys));ImGui::SameLine();
+			ImGui::PushItemWidth(100);
+			ImGui::InputText("Planet##newplanet", new_name, IM_ARRAYSIZE(new_name));ImGui::SameLine();
+			ImGui::PushItemWidth(100);
+			ImGui::Combo("Zone Type##newplanet", &new_zone_type, zone_items_new, IM_ARRAYSIZE(zone_items_new));ImGui::SameLine();
+			ImGui::PushItemWidth(100);
 			ImGui::InputText("Zone ID##newplanet", new_zone, IM_ARRAYSIZE(new_zone));
-			static int new_zone_type = zone_type_to_int(ZoneType::CelestialBody);
-			const char* zone_items_new[] = { zone_type_name(ZoneType::CelestialBody), zone_type_name(ZoneType::AsteroidField), zone_type_name(ZoneType::Solar) };
-			ImGui::Combo("Zone Type##newplanet", &new_zone_type, zone_items_new, IM_ARRAYSIZE(zone_items_new));
+			ImGui::PushItemWidth(300);
+			ImGui::InputText("Image Dir##newplanet", new_img, IM_ARRAYSIZE(new_img)); 
+			
 			static int new_min_x = -300;
 			static int new_max_x = 300;
 			static int new_min_y = -300;
 			static int new_max_y = 300;
-			if (static_cast<ZoneType>(new_zone_type) == ZoneType::AsteroidField) {
-				ImGui::InputInt("Min X (km)##new_minx", &new_min_x);
-				ImGui::InputInt("Max X (km)##new_maxx", &new_max_x);
-				ImGui::InputInt("Min Y (km)##new_miny", &new_min_y);
+			if (static_cast<ZoneType>(new_zone_type) == ZoneType::CelestialBody) {
+				ImGui::Checkbox("Has Asteroid Belt##newbelt", &new_has_asteroid_belt);
+			}
+			if (new_has_asteroid_belt || static_cast<ZoneType>(new_zone_type) == ZoneType::AsteroidField) {
+				ImGui::PushItemWidth(100);
+				ImGui::SameLine();ImGui::InputDouble("Planet Radius (km)##new_pr", &new_planet_radius);ImGui::SameLine();
+				ImGui::PushItemWidth(100);
+				ImGui::InputDouble("Karman Line (km)##new_kl", &new_karman_line);ImGui::SameLine();
+				ImGui::PushItemWidth(100);
+				ImGui::InputDouble("Belt Inner (km)##new_bi", &new_belt_inner);ImGui::SameLine();
+				ImGui::PushItemWidth(100);
+				ImGui::InputDouble("Belt Outer (km)##new_bo", &new_belt_outer);ImGui::SameLine();
+				ImGui::PushItemWidth(100);
+				ImGui::InputDouble("Belt Thickness (km)##new_bt", &new_belt_thickness);
+			}
+			if (static_cast<ZoneType>(new_zone_type) == ZoneType::AsteroidField || new_has_asteroid_belt) {
+				ImGui::Text("Bounding Box (km):"); ImGui::SameLine();
+				ImGui::PushItemWidth(100);
+				ImGui::InputInt("Min X (km)##new_minx", &new_min_x); ImGui::SameLine();
+				ImGui::PushItemWidth(100);
+				ImGui::InputInt("Max X (km)##new_maxx", &new_max_x); ImGui::SameLine();
+				ImGui::PushItemWidth(100);
+				ImGui::InputInt("Min Y (km)##new_miny", &new_min_y); ImGui::SameLine();
+				ImGui::PushItemWidth(100);
 				ImGui::InputInt("Max Y (km)##new_maxy", &new_max_y);
 			}
+
 			if (ImGui::Button("Add Planet")) {
 				Planet p{ new_planet_id, std::string(new_sys), std::string(new_name), std::string(new_img), std::string(new_zone) };
 				p.zone_type = static_cast<ZoneType>(new_zone_type);
+				p.has_asteroid_belt = new_has_asteroid_belt;
+				p.planet_radius_km = new_planet_radius;
+				p.karman_line_km = new_karman_line;
+				p.belt_inner_radius_km = new_belt_inner;
+				p.belt_outer_radius_km = new_belt_outer;
+				p.belt_thickness_km = new_belt_thickness;
 				if (p.zone_type == ZoneType::AsteroidField) {
 					p.bounding_box_km = { static_cast<double>(new_min_x), static_cast<double>(new_max_x), static_cast<double>(new_min_y), static_cast<double>(new_max_y) };
 				}
@@ -2365,6 +2462,8 @@ if (ImGui::Button("Browse")) {
 				new_sys[0] = '\0'; new_name[0] = '\0'; new_img[0] = '\0'; new_zone[0] = '\0';
 				new_zone_type = zone_type_to_int(ZoneType::CelestialBody);
 				new_min_x = -300; new_max_x = 300; new_min_y = -300; new_max_y = 300;
+				new_has_asteroid_belt = false;
+				new_planet_radius = 0.0; new_karman_line = 100.0; new_belt_inner = 0.0; new_belt_outer = 0.0; new_belt_thickness = 0.0;
 			}
 
 			ImGui::Separator();

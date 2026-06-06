@@ -395,10 +395,10 @@ void main() {
 	// Azimuthal equidistant projection (view from north pole):
 	// phi = angular distance from north pole = rho * (PI/2) [hemisphere]
 	float phi = rho * (PI * 0.5);
-	float lat = (PI * 0.5) - phi; // latitude in radians (PI/2 .. 0)
+	float lat = (PI * 0.5) + phi; // latitude in radians (PI/2 .. 0)
 
 	// compute longitude from disk angle; flip nd.y so screen up == north
-	float lon = atan(nd.x, -nd.y);
+	float lon = atan(-nd.x, -nd.y);
 
 	// convert to equirectangular UV relative to disk center (0.5..0.5)
 	float u = (lon + PI) / (2.0 * PI);

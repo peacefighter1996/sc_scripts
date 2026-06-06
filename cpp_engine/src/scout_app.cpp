@@ -2533,6 +2533,67 @@ if (ImGui::Button("Browse")) {
 			};
 		}
 
+		// Mouse-driven pan/zoom (only when ImGui is not capturing the mouse)
+		{
+			ImGuiIO& io = ImGui::GetIO();
+			static bool map_panning = false;
+			static std::pair<float,float> last_mouse_ndc = {0.0f, 0.0f};
+			// Zoom with mouse wheel centered at cursor
+			if (mouse_pos && !io.WantCaptureMouse && std::abs(io.MouseWheel) > 1e-6f) {
+				double wheel = io.MouseWheel; // positive = up
+				double factor = std::pow(1.25, wheel);
+				double oldZoom = state.camera2d.getZoom();
+				double newZoom = oldZoom * factor;
+				if (newZoom < 1.0) newZoom = 1.0;
+				if (newZoom > 8.0) newZoom = 8.0;
+				if (std::abs(newZoom - oldZoom) > 1e-9) {
+					// compute world point under cursor (pre-zoom)
+					auto pan = state.camera2d.getPan();
+					float sX = (*mouse_pos).first;
+					float sY = (*mouse_pos).second;
+					float wX = (sX - pan.first) / static_cast<float>(oldZoom) + pan.first;
+					float wY = (sY - pan.second) / static_cast<float>(oldZoom) + pan.second;
+					float denomX = 1.0f - static_cast<float>(newZoom);
+					if (std::abs(denomX) > 1e-6f) {
+						float newPanX = (sX - wX * static_cast<float>(newZoom)) / denomX;
+						float newPanY = (sY - wY * static_cast<float>(newZoom)) / denomX;
+						state.camera2d.setPan({ newPanX, newPanY });
+					}
+					state.camera2d.setZoom(newZoom);
+				}
+			}
+
+			// Pan via left-button drag (only when ImGui isn't capturing)
+			if (mouse_pos && !io.WantCaptureMouse) {
+				if (io.MouseDown[0]) {
+					if (!map_panning) {
+						map_panning = true;
+						last_mouse_ndc = *mouse_pos;
+					} else {
+						// compute world point under previous cursor position
+						auto pan = state.camera2d.getPan();
+						double zoom = state.camera2d.getZoom();
+						float s0x = last_mouse_ndc.first;
+						float s0y = last_mouse_ndc.second;
+						float w0x = (s0x - pan.first) / static_cast<float>(zoom) + pan.first;
+						float w0y = (s0y - pan.second) / static_cast<float>(zoom) + pan.second;
+						// desired new screen position is current cursor NDC
+						float s1x = (*mouse_pos).first;
+						float s1y = (*mouse_pos).second;
+						float denom = 1.0f - static_cast<float>(zoom);
+						if (std::abs(denom) > 1e-6f) {
+							float newPanX = (s1x - w0x * static_cast<float>(zoom)) / denom;
+							float newPanY = (s1y - w0y * static_cast<float>(zoom)) / denom;
+							state.camera2d.setPan({ newPanX, newPanY });
+						}
+						last_mouse_ndc = *mouse_pos;
+					}
+				} else {
+					map_panning = false;
+				}
+			}
+		}
+
 		state.hovered_text.reset();
 		if (texture != 0) {
 			const Planet* selected_zone = nullptr;

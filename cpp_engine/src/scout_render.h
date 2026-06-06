@@ -43,9 +43,6 @@ public:
     // Render the planet disk positioned and scaled according to the selected zone's bounding box.
     void RenderPlanet(GLuint texture, const Planet* selected_zone, double radius_planet_km, double grid_spacing_km, const Camera2D &camera = Camera2D());
 
-    void RenderPointsWithBorder(std::vector<float> &border_buf, const std::vector<DataPoint> &points, std::vector<float> &buf);
-
-    void NewFunction(std::vector<float> &border_buf, const std::vector<DataPoint> &points, std::vector<float> &buf);
 
     // Render a travel track (connected line strip) in NDC using the supplied DataPoint list.
     void render_track(const DisplayMode dpm, 
@@ -55,7 +52,8 @@ public:
                       const Camera2D &camera = Camera2D());
 
     // Render a single marker at normalized device coords (x,y in [-1,1]).
-    void render_marker(float x, float y, float r, float g, float b, float a, float size = 5.0f);
+    // (Declaration with Camera2D is provided later near uniform fields.)
+    void render_marker(float x, float y, float r, float g, float b, float a, float size = 5.0f, const Camera2D &camera = Camera2D());
 
 private:
     // Convert a point (either asteroid-field XY or lat/lon) to normalized device coords [-1,1]
@@ -96,6 +94,12 @@ private:
     // Cached uniform locations
     GLint marker_color_loc_ = -1;
     GLint points_point_size_loc_ = -1;
+    // Points/marker pan & zoom uniform locations (for GPU transforms)
+    GLint points_pan_ndc_loc_ = -1;
+    GLint points_zoom_loc_ = -1;
+    GLint marker_pan_ndc_loc_ = -1;
+    GLint marker_zoom_loc_ = -1;
+        void RenderPointsWithBorder(std::vector<float> &border_buf, const std::vector<DataPoint> &points, std::vector<float> &buf, const Camera2D &camera);
     // Quad/planet pan & zoom uniform locations
     GLint quad_pan_ndc_loc_ = -1;
     GLint quad_uv_pan_loc_ = -1;

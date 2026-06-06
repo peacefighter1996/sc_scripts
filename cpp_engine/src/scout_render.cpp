@@ -194,40 +194,32 @@ void ScoutRenderer::render_grid_for_zone(const DisplayMode dpm, const Planet* se
 
 		std::vector<float> lines;
 		// vertical lines
-		for (double x = start_x; x < end_x; x += grid_spacing_km) {
+		for (double x = start_x + grid_spacing_km; x < end_x; x += grid_spacing_km) {
 			const auto a = zone_point_to_ndc(dpm, selected_zone, x, miny, grid_spacing_km);
 			const auto b = zone_point_to_ndc(dpm, selected_zone, x, maxy, grid_spacing_km);
-			// apply pan/zoom transform via camera
-			auto at = camera.applyToNdc(a.first, a.second);
-			auto bt = camera.applyToNdc(b.first, b.second);
-			float ax = at.first;
-			float ay = at.second;
-			float bx = bt.first;
-			float by = bt.second;
-			lines.push_back(ax);
-			lines.push_back(ay);
-			lines.push_back(bx);
-			lines.push_back(by);
+			// Buffer raw NDC; GPU will apply pan/zoom in marker shader
+			lines.push_back(a.first);
+			lines.push_back(a.second);
+			lines.push_back(b.first);
+			lines.push_back(b.second);
 		}
 		// horizontal lines
-		for (double y = start_y; y < end_y; y += grid_spacing_km) {
+		for (double y = start_y + grid_spacing_km; y < end_y; y += grid_spacing_km) {
 			const auto a = zone_point_to_ndc(dpm, selected_zone, minx, y, grid_spacing_km);
 			const auto b = zone_point_to_ndc(dpm, selected_zone, maxx, y, grid_spacing_km);
-			auto at = camera.applyToNdc(a.first, a.second);
-			auto bt = camera.applyToNdc(b.first, b.second);
-			float ax = at.first;
-			float ay = at.second;
-			float bx = bt.first;
-			float by = bt.second;
-			lines.push_back(ax);
-			lines.push_back(ay);
-			lines.push_back(bx);
-			lines.push_back(by);
+			// Buffer raw NDC; GPU will apply pan/zoom in marker shader
+			lines.push_back(a.first);
+			lines.push_back(a.second);
+			lines.push_back(b.first);
+			lines.push_back(b.second);
 		}
 
 		// If bounding-box grid produced lines, draw them in gray (opaque)
 		if (!lines.empty()) {
 			glUseProgram(marker_shader_);
+			// set camera pan/zoom uniforms for grid rendering
+			if (marker_pan_ndc_loc_ != -1) glUniform2f(marker_pan_ndc_loc_, pan.first, pan.second);
+			if (marker_zoom_loc_ != -1) glUniform1f(marker_zoom_loc_, static_cast<float>(zoom));
 			glBindVertexArray(marker_vao_);
 			glBindBuffer(GL_ARRAY_BUFFER, marker_vbo_);
 			glBufferData(GL_ARRAY_BUFFER, lines.size() * sizeof(float), lines.data(), GL_DYNAMIC_DRAW);
@@ -280,15 +272,12 @@ void ScoutRenderer::render_grid_for_zone(const DisplayMode dpm, const Planet* se
 
 			if (!latlon_lines.empty()) {
 				glUseProgram(marker_shader_);
+				// set camera pan/zoom uniforms for planetary grid rendering
+				if (marker_pan_ndc_loc_ != -1) glUniform2f(marker_pan_ndc_loc_, pan.first, pan.second);
+				if (marker_zoom_loc_ != -1) glUniform1f(marker_zoom_loc_, static_cast<float>(zoom));
 				glBindVertexArray(marker_vao_);
 				glBindBuffer(GL_ARRAY_BUFFER, marker_vbo_);
-				// apply pan/zoom transform to latlon lines
-				for (size_t i = 0; i < latlon_lines.size(); i += 2) {
-					float nx = (latlon_lines[i] - pan.first) * static_cast<float>(zoom) + pan.first;
-					float ny = (latlon_lines[i+1] - pan.second) * static_cast<float>(zoom) + pan.second;
-					latlon_lines[i] = nx;
-					latlon_lines[i+1] = ny;
-				}
+				// buffer raw NDC lat/lon lines; shader applies pan/zoom
 				glBufferData(GL_ARRAY_BUFFER, latlon_lines.size() * sizeof(float), latlon_lines.data(), GL_DYNAMIC_DRAW);
 				// gray and opaque; slightly thicker for planetary grid
 				if (marker_color_loc_ != -1) {
@@ -321,11 +310,23 @@ layout(location = 1) in vec2 in_uv;
 out vec2 uv;
 uniform vec2 u_pan_uv;
 uniform float u_zoom;
+// Optional planet-centering: when enabled the vertex shader will remap
+// the transformed UV so that the supplied `u_planet_center` maps to 0.5,0.5
+// in the fragment shader. This prevents needing to shift sample coords in
+// the planet fragment shader which can introduce apparent rotation.
+uniform vec2 u_planet_center;
+uniform int u_apply_planet_center;
 void main() {
 	// Do NOT transform vertex positions here; keep quad covering NDC [-1,1].
 	// Transform UVs only: sample a different region of the texture to produce
 	// the visual pan/zoom effect that matches points/grid rendered in NDC.
-	uv = (in_uv - u_pan_uv) / u_zoom + u_pan_uv;
+	vec2 uv_t = (in_uv - u_pan_uv) / u_zoom + u_pan_uv;
+	if (u_apply_planet_center == 1) {
+		// remap so planet center is at 0.5,0.5 in fragment-space
+		uv = uv_t - u_planet_center + vec2(0.5, 0.5);
+	} else {
+		uv = uv_t;
+	}
 	gl_Position = vec4(in_pos, 0.0, 1.0);
 }
 )GLSL";
@@ -344,11 +345,15 @@ static const char* point_vs = R"GLSL(#version 330 core
 layout(location = 0) in vec2 in_pos;
 layout(location = 1) in vec4 in_color;
 out vec4 v_color;
+uniform vec2 u_pan_ndc;
+uniform float u_zoom;
 uniform float u_point_size;
 void main() {
-    v_color = in_color;
-    gl_Position = vec4(in_pos, 0.0, 1.0);
-    gl_PointSize = u_point_size;
+	v_color = in_color;
+	// apply pan/zoom in NDC space on GPU
+	vec2 p = (in_pos - u_pan_ndc) * u_zoom + u_pan_ndc;
+	gl_Position = vec4(p, 0.0, 1.0);
+	gl_PointSize = u_point_size;
 }
 )GLSL";
 
@@ -362,9 +367,12 @@ void main() {
 
 static const char* marker_vs = R"GLSL(#version 330 core
 layout(location = 0) in vec2 in_pos;
+uniform vec2 u_pan_ndc;
+uniform float u_zoom;
 void main() {
-    gl_Position = vec4(in_pos, 0.0, 1.0);
-    gl_PointSize = 4.0;
+	vec2 p = (in_pos - u_pan_ndc) * u_zoom + u_pan_ndc;
+	gl_Position = vec4(p, 0.0, 1.0);
+	gl_PointSize = 4.0;
 }
 )GLSL";
 
@@ -373,13 +381,13 @@ static const char* planet_fs = R"GLSL(#version 330 core
 in vec2 uv;
 out vec4 out_color;
 uniform sampler2D u_texture;
-uniform vec2 u_center; // center of planet in quad UV space (0..1)
 uniform float u_radius; // planet radius in UV units (0..0.5 typical)
 uniform float u_vscale; // vertical scale for sampling (1.0 = full image, 0.5 = top-half)
 const float PI = 3.14159265358979323846;
 void main() {
-	// local coordinates relative to planet center in UV-space
-	vec2 c = uv - u_center;
+	// local coordinates relative to planet center mapped to fragment-space
+	// (vertex shader remapped the incoming UV so that planet center == 0.5,0.5)
+	vec2 c = uv - vec2(0.5, 0.5);
 	vec2 nd = c / u_radius; // normalized disk coords (-1..1)
 	float rho = length(nd);
 	if (rho > 1.0) discard;
@@ -392,12 +400,19 @@ void main() {
 	// compute longitude from disk angle; flip nd.y so screen up == north
 	float lon = atan(nd.x, -nd.y);
 
-	// convert to equirectangular UV
+	// convert to equirectangular UV relative to disk center (0.5..0.5)
 	float u = (lon + PI) / (2.0 * PI);
 	float v = (lat + (PI * 0.5)) / PI;
 	v = v * u_vscale;
 
-	vec4 col = texture(u_texture, vec2(u, v));
+	// sample_uv: map relative u/v back into global texture space by adding
+	// the planet center that the vertex shader removed (vertex shader set
+	// uv such that center=0.5). That mapping happens implicitly here by
+	// adding 0.5 to re-center and then relying on the vertex remap.
+	vec2 sample_uv = vec2(u, v) + (vec2(0.5, 0.5) - vec2(0.5, 0.5));
+	// In our setup the vertex stage already performed the center translation
+	// so sample_uv is directly usable relative to the original texture coords.
+	vec4 col = texture(u_texture, sample_uv);
 	out_color = col;
 }
 
@@ -543,6 +558,8 @@ bool ScoutRenderer::init() {
 	// Cache points shader uniform location for point size
 	glUseProgram(points_shader_);
 	points_point_size_loc_ = glGetUniformLocation(points_shader_, "u_point_size");
+	points_pan_ndc_loc_ = glGetUniformLocation(points_shader_, "u_pan_ndc");
+	points_zoom_loc_ = glGetUniformLocation(points_shader_, "u_zoom");
 	glUseProgram(0);
 
 	glGenVertexArrays(1, &points_vao_);
@@ -570,6 +587,8 @@ bool ScoutRenderer::init() {
 	// Cache marker shader uniform location for color
 	glUseProgram(marker_shader_);
 	marker_color_loc_ = glGetUniformLocation(marker_shader_, "u_color");
+	marker_pan_ndc_loc_ = glGetUniformLocation(marker_shader_, "u_pan_ndc");
+	marker_zoom_loc_ = glGetUniformLocation(marker_shader_, "u_zoom");
 	glUseProgram(0);
 
 	glGenVertexArrays(1, &marker_vao_);
@@ -811,10 +830,9 @@ std::optional<std::string> ScoutRenderer::render_map(GLuint texture,
 			auto ndc = dpm == DisplayMode::Asteroid_Field || dpm == DisplayMode::Celestial_Belt
 				? asteriod_point_to_ndc(selected_zone->bounding_box_km, grid_spacing_km, point.x, point.y)
 				: latlon_to_ndc(point.get_lat_lon_alt()[0], point.get_lat_lon_alt()[1]);
-			// transform via camera
-			auto t = camera.applyToNdc(ndc.first, ndc.second);
-			float tx = t.first;
-			float ty = t.second;
+			// Buffer raw NDC positions; GPU will apply pan/zoom in the vertex shader
+			float tx = ndc.first;
+			float ty = ndc.second;
 			// If highlighted set provided and this point's material is highlighted, adjust colour/alpha
 			if (highlighted_materials && highlighted_materials->count(point.material) == 0 && !highlighted_materials->empty()) {
 				// dim non-highlighted points
@@ -824,7 +842,7 @@ std::optional<std::string> ScoutRenderer::render_map(GLuint texture,
 		}
 
 		// Upload and draw border (one size larger)
-		RenderPointsWithBorder(border_buf, points, buf);
+		RenderPointsWithBorder(border_buf, points, buf, camera);
 
 		// Hover detection (CPU, same logic as before)
 		if (!mouse_pos) return std::nullopt;
@@ -1011,10 +1029,15 @@ void ScoutRenderer::RenderBackground(GLuint texture, const Camera2D &camera)
 	glBindVertexArray(0);
 }
 
-void ScoutRenderer::RenderPointsWithBorder(std::vector<float>& border_buf, const std::vector<DataPoint>& points, std::vector<float>& buf)
+void ScoutRenderer::RenderPointsWithBorder(std::vector<float>& border_buf, const std::vector<DataPoint>& points, std::vector<float>& buf, const Camera2D &camera)
 {
 	if (!border_buf.empty()) {
 		glUseProgram(points_shader_);
+		// set camera pan/zoom uniforms for points shader
+		auto pan = camera.getPan();
+		double zoom = camera.getZoom();
+		if (points_pan_ndc_loc_ != -1) glUniform2f(points_pan_ndc_loc_, pan.first, pan.second);
+		if (points_zoom_loc_ != -1) glUniform1f(points_zoom_loc_, static_cast<float>(zoom));
 		glBindVertexArray(points_vao_);
 		glBindBuffer(GL_ARRAY_BUFFER, points_vbo_);
 		glBufferData(GL_ARRAY_BUFFER, border_buf.size() * sizeof(float), border_buf.data(), GL_DYNAMIC_DRAW);
@@ -1036,8 +1059,13 @@ void ScoutRenderer::RenderPointsWithBorder(std::vector<float>& border_buf, const
 	}
 }
 
-void ScoutRenderer::render_marker(float x, float y, float r, float g, float b, float a, float size) {
+void ScoutRenderer::render_marker(float x, float y, float r, float g, float b, float a, float size, const Camera2D &camera) {
 	glUseProgram(marker_shader_);
+	// set camera pan/zoom uniforms for marker shader
+	auto pan = camera.getPan();
+	double zoom = camera.getZoom();
+	if (marker_pan_ndc_loc_ != -1) glUniform2f(marker_pan_ndc_loc_, pan.first, pan.second);
+	if (marker_zoom_loc_ != -1) glUniform1f(marker_zoom_loc_, static_cast<float>(zoom));
 	glBindVertexArray(marker_vao_);
 	float pos[2] = { x, y };
 	glBindBuffer(GL_ARRAY_BUFFER, marker_vbo_);
@@ -1067,16 +1095,20 @@ void ScoutRenderer::render_track(const DisplayMode dpm, const std::vector<DataPo
 			const auto lla = p.get_lat_lon_alt();
 			ndc = latlon_to_ndc(lla[0], lla[1]);
 		}
-		// apply camera transform so track aligns with point rendering
-		auto t = camera.applyToNdc(ndc.first, ndc.second);
-		float tx = t.first;
-		float ty = t.second;
+		// Buffer raw NDC; GPU will apply camera pan/zoom
+		float tx = ndc.first;
+		float ty = ndc.second;
 		pts.push_back(tx);
 		pts.push_back(ty);
 	}
 
 	// Draw line strip in marker shader with a distinct color
 	glUseProgram(marker_shader_);
+	// set camera pan/zoom uniforms for marker shader
+	auto pan = camera.getPan();
+	double zoom = camera.getZoom();
+	if (marker_pan_ndc_loc_ != -1) glUniform2f(marker_pan_ndc_loc_, pan.first, pan.second);
+	if (marker_zoom_loc_ != -1) glUniform1f(marker_zoom_loc_, static_cast<float>(zoom));
 	glBindVertexArray(marker_vao_);
 	glBindBuffer(GL_ARRAY_BUFFER, marker_vbo_);
 	glBufferData(GL_ARRAY_BUFFER, pts.size() * sizeof(float), pts.data(), GL_DYNAMIC_DRAW);
@@ -1095,7 +1127,7 @@ void ScoutRenderer::render_track(const DisplayMode dpm, const std::vector<DataPo
 	// Draw start (yellow) and end (red) markers for quick orientation
 	if (!pts.empty()) {
 		const float sx = pts[0]; const float sy = pts[1];
-		render_marker(sx, sy, 1.0f, 1.0f, 1.0f, 0.95f, 3.0f);
+		render_marker(sx, sy, 1.0f, 1.0f, 1.0f, 0.95f, 3.0f, camera);
 		//const float ex = pts[pts.size() - 2]; const float ey = pts[pts.size() - 1];
 		//render_marker(ex, ey, 1.0f, 0.0f, 1.0f, 0.95f, 3.0f);
 	}

@@ -2574,9 +2574,7 @@ if (ImGui::Button("Browse")) {
 							v = (y - y_min) / (y_max - y_min);
 							const float px = (u * 2.0f) - 1.0f;
 							const float py = (v * 2.0f) - 1.0f;
-							// apply global map pan/zoom
-							const auto t = state.camera2d.applyToNdc(px, py);
-							renderer.render_marker(t.first, t.second, 1.0f, 1.0f, 0.0f, 0.9f, 6.0f);
+							renderer.render_marker(px, py, 1.0f, 1.0f, 0.0f, 0.9f, 6.0f, state.camera2d);
 						} 
 						
 					} else {
@@ -2584,8 +2582,7 @@ if (ImGui::Button("Browse")) {
 						const auto [u, v] = latlon_to_uv(lat_lon_alt[0], lat_lon_alt[1]);
 						const float px = (u * 2.0f) - 1.0f;
 						const float py = (v * 2.0f) - 1.0f;
-						const auto t = state.camera2d.applyToNdc(px, py);
-						renderer.render_marker(t.first, t.second, 1.0f, 1.0f, 0.0f, 0.9f, 6.0f);
+						renderer.render_marker(px, py, 1.0f, 1.0f, 0.0f, 0.9f, 6.0f, state.camera2d);
 					}
 				}
 			}

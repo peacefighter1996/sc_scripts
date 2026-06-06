@@ -7,8 +7,10 @@
 #include <string>
 #include <vector>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <glad/glad.h>
+#include "camera.h"
 
 struct zone_label {
     double ndc_x;
@@ -31,13 +33,15 @@ public:
                                           const std::vector<Resource> &material_catalog,
                                           const Planet *selected_zone = nullptr,
                                           const DisplayMode display_mode = DisplayMode::Default,
-                                          double grid_spacing_km = 100.0);
+                                          double grid_spacing_km = 100.0,
+                                          const Camera2D &camera = Camera2D(),
+                                          const std::unordered_set<std::string>* highlighted_materials = nullptr);
 
-    void RenderAstroidFieldZone(const Planet* selected_zone, double grid_spacing_km);
+    void RenderAstroidFieldZone(const Planet* selected_zone, double grid_spacing_km, const Camera2D &camera = Camera2D());
 
-    void RenderBackground(GLuint texture);
+    void RenderBackground(GLuint texture, const Camera2D &camera = Camera2D());
     // Render the planet disk positioned and scaled according to the selected zone's bounding box.
-    void RenderPlanet(GLuint texture, const Planet* selected_zone, double radius_planet_km, double grid_spacing_km);
+    void RenderPlanet(GLuint texture, const Planet* selected_zone, double radius_planet_km, double grid_spacing_km, const Camera2D &camera = Camera2D());
 
     void RenderPointsWithBorder(std::vector<float> &border_buf, const std::vector<DataPoint> &points, std::vector<float> &buf);
 
@@ -47,7 +51,8 @@ public:
     void render_track(const DisplayMode dpm, 
                       const std::vector<DataPoint>& track,
                       const Planet* selected_zone = nullptr,
-                      double grid_spacing_km = 100.0);
+                      double grid_spacing_km = 100.0,
+                      const Camera2D &camera = Camera2D());
 
     // Render a single marker at normalized device coords (x,y in [-1,1]).
     void render_marker(float x, float y, float r, float g, float b, float a, float size = 5.0f);
@@ -58,13 +63,13 @@ private:
     std::pair<float, float> asteriod_point_to_ndc(const bbox2d& box, double grid_spacing_km, double a, double b) const;
     std::pair<float, float> latlon_to_ndc(double lat, double lon) const;
     // Render grid lines for asteroid fields
-    void render_grid_for_zone(const DisplayMode dpm, const Planet* selected_zone, double grid_spacing_km);
+    void render_grid_for_zone(const DisplayMode dpm, const Planet* selected_zone, double grid_spacing_km, const Camera2D &camera = Camera2D());
     // Excel-style column label helper (A..Z, AA..ZZ, etc.)
     std::string excel_column_label(int index);
     // Compute sector label for a point in the selected zone (e.g. "B12")
     std::string sector_label_for_point(const DisplayMode dpm, const Planet* selected_zone, double a, double b, double grid_spacing_km);
     // Render cached sector labels for a rectangular grid defined by start, cols, rows.
-    void render_sector_labels_grid(const DisplayMode dpm, const Planet* selected_zone, double start_x, double start_y, int cols, int rows, double grid_spacing_x_km, double grid_spacing_y_km, bool coords_are_latlon = false);
+    void render_sector_labels_grid(const DisplayMode dpm, const Planet* selected_zone, double start_x, double start_y, int cols, int rows, double grid_spacing_x_km, double grid_spacing_y_km, bool coords_are_latlon = false, const Camera2D &camera = Camera2D());
     GLuint compile_shader(GLenum type, const char* src);
     GLuint link_program(GLuint vs, GLuint fs);
 
@@ -91,6 +96,13 @@ private:
     // Cached uniform locations
     GLint marker_color_loc_ = -1;
     GLint points_point_size_loc_ = -1;
+    // Quad/planet pan & zoom uniform locations
+    GLint quad_pan_ndc_loc_ = -1;
+    GLint quad_uv_pan_loc_ = -1;
+    GLint quad_zoom_loc_ = -1;
+    GLint planet_pan_ndc_loc_ = -1;
+    GLint planet_uv_pan_loc_ = -1;
+    GLint planet_zoom_loc_ = -1;
     // Cache last texture bound to texture unit 0 to avoid redundant glActiveTexture/glBindTexture calls
     GLuint last_bound_texture_unit0_ = 0;
     bool last_bound_texture_unit0_valid_ = false;

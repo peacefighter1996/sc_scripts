@@ -111,7 +111,10 @@ static bool win32_save_file_dialog(std::wstring& out_path) {
 
 #include "travel_log.h"
 
+#include "camera.h"
+
 #include <unordered_map>
+#include <unordered_set>
 
 // Fallback defaults (original defaults may live elsewhere; provide minimal fallbacks to compile)
 static const std::vector<std::string> kDefaultPlanets = { "Default" };
@@ -311,6 +314,12 @@ struct AppState {
 	DataPoint new_data{};
 	std::unordered_map<std::string, GLuint> texture_cache;
 	std::optional<std::string> hovered_text;
+
+	// Map interaction/cameras
+	Camera2D camera2d;
+	Camera3D camera3d;
+	// Highlighted materials (names)
+	std::unordered_set<std::string> highlighted_materials;
 
 	bool data_form_active{ false };
 	bool planets_form_active{ false };
@@ -2534,12 +2543,12 @@ if (ImGui::Button("Browse")) {
 			}
 
 
-			state.hovered_text = renderer.render_map(texture, state.filtered_points, mouse_pos, state.material_catalog, selected_zone, state.display_mode, state.grid_spacing);
+			state.hovered_text = renderer.render_map(texture, state.filtered_points, mouse_pos, state.material_catalog, selected_zone, state.display_mode, state.grid_spacing, state.camera2d, &state.highlighted_materials);
 			// Render travel log overlay (if available) so users can see their tracked path
 			if (state.travel_log) {
 				const auto track = state.travel_log->get_tracked_points_copy();
 				if (!track.empty()) {
-					renderer.render_track(state.display_mode, track, selected_zone, state.grid_spacing);
+					renderer.render_track(state.display_mode, track, selected_zone, state.grid_spacing, state.camera2d);
 				}
 			}
 			const auto toggle_now = std::chrono::steady_clock::now();
@@ -2565,7 +2574,9 @@ if (ImGui::Button("Browse")) {
 							v = (y - y_min) / (y_max - y_min);
 							const float px = (u * 2.0f) - 1.0f;
 							const float py = (v * 2.0f) - 1.0f;
-							renderer.render_marker(px, py, 1.0f, 1.0f, 0.0f, 0.9f, 6.0f);
+							// apply global map pan/zoom
+							const auto t = state.camera2d.applyToNdc(px, py);
+							renderer.render_marker(t.first, t.second, 1.0f, 1.0f, 0.0f, 0.9f, 6.0f);
 						} 
 						
 					} else {
@@ -2573,10 +2584,48 @@ if (ImGui::Button("Browse")) {
 						const auto [u, v] = latlon_to_uv(lat_lon_alt[0], lat_lon_alt[1]);
 						const float px = (u * 2.0f) - 1.0f;
 						const float py = (v * 2.0f) - 1.0f;
-						renderer.render_marker(px, py, 1.0f, 1.0f, 0.0f, 0.9f, 6.0f);
+						const auto t = state.camera2d.applyToNdc(px, py);
+						renderer.render_marker(t.first, t.second, 1.0f, 1.0f, 0.0f, 0.9f, 6.0f);
 					}
 				}
 			}
+		}
+
+		// Small legend / controls overlay (top-left)
+		{
+			ImGui::SetNextWindowBgAlpha(0.55f);
+			ImGui::Begin("Map Legend", nullptr, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoTitleBar);
+			ImGui::Text("Zoom: %.2fx", state.camera2d.getZoom());
+			if (ImGui::Button("+")) state.camera2d.zoomBy(1.25);
+			ImGui::SameLine();
+			if (ImGui::Button("-")) state.camera2d.zoomBy(1.0/1.25);
+			ImGui::SameLine();
+			if (ImGui::Button("Reset")) { state.camera2d.setZoom(1.0); state.camera2d.setPan({0.0f,0.0f}); }
+
+			ImGui::Separator();
+			ImGui::Text("Pan:");
+			if (ImGui::Button("Up")) state.camera2d.panBy(0.0f, 0.05f);
+			ImGui::SameLine(); if (ImGui::Button("Down")) state.camera2d.panBy(0.0f, -0.05f);
+			ImGui::SameLine(); if (ImGui::Button("Left")) state.camera2d.panBy(-0.05f, 0.0f);
+			ImGui::SameLine(); if (ImGui::Button("Right")) state.camera2d.panBy(0.05f, 0.0f);
+
+			ImGui::Separator();
+			ImGui::Text("Legend (materials)");
+			// Collect materials visible on map
+			std::unordered_map<std::string,int> counts;
+			for (const auto &p : state.filtered_points) {
+				counts[p.material]++;
+			}
+			for (const auto &m : state.material_catalog) {
+				const auto it = counts.find(m.name);
+				if (it == counts.end()) continue;
+				bool highlighted = state.highlighted_materials.count(m.name) > 0;
+				if (ImGui::Checkbox((m.name + " (" + std::to_string(it->second) + ")").c_str(), &highlighted)) {
+					if (highlighted) state.highlighted_materials.insert(m.name);
+					else state.highlighted_materials.erase(m.name);
+				}
+			}
+			ImGui::End();
 		}
 
 		if (state.hovered_text) {

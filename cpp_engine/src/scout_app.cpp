@@ -2666,41 +2666,41 @@ if (ImGui::Button("Browse")) {
 		}
 
 		// Small legend / controls overlay (top-left)
-		{
-			ImGui::SetNextWindowBgAlpha(0.55f);
-			ImGui::Begin("Map Legend", nullptr, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoTitleBar);
-			ImGui::Text("Zoom: %.2fx", state.camera2d.getZoom());
-			if (ImGui::Button("+")) state.camera2d.increaseZoomBy(0.25);
-			ImGui::SameLine();
-			if (ImGui::Button("-")) state.camera2d.increaseZoomBy(-0.25);
-			ImGui::SameLine();
-			if (ImGui::Button("Reset")) { state.camera2d.setZoom(1.0); state.camera2d.setPan({0.0f,0.0f}); }
+		//{
+		//	ImGui::SetNextWindowBgAlpha(0.55f);
+		//	ImGui::Begin("Map Legend", nullptr, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoTitleBar);
+		//	ImGui::Text("Zoom: %.2fx", state.camera2d.getZoom());
+		//	if (ImGui::Button("+")) state.camera2d.increaseZoomBy(0.25);
+		//	ImGui::SameLine();
+		//	if (ImGui::Button("-")) state.camera2d.increaseZoomBy(-0.25);
+		//	ImGui::SameLine();
+		//	if (ImGui::Button("Reset")) { state.camera2d.setZoom(1.0); state.camera2d.setPan({0.0f,0.0f}); }
 
-			ImGui::Separator();
-			ImGui::Text("Pan:");
-			if (ImGui::Button("Up")) state.camera2d.panBy(0.0f, 0.05f);
-			ImGui::SameLine(); if (ImGui::Button("Down")) state.camera2d.panBy(0.0f, -0.05f);
-			ImGui::SameLine(); if (ImGui::Button("Left")) state.camera2d.panBy(-0.05f, 0.0f);
-			ImGui::SameLine(); if (ImGui::Button("Right")) state.camera2d.panBy(0.05f, 0.0f);
+		//	ImGui::Separator();
+		//	ImGui::Text("Pan:");
+		//	if (ImGui::Button("Up")) state.camera2d.panBy(0.0f, 0.05f);
+		//	ImGui::SameLine(); if (ImGui::Button("Down")) state.camera2d.panBy(0.0f, -0.05f);
+		//	ImGui::SameLine(); if (ImGui::Button("Left")) state.camera2d.panBy(-0.05f, 0.0f);
+		//	ImGui::SameLine(); if (ImGui::Button("Right")) state.camera2d.panBy(0.05f, 0.0f);
 
-			ImGui::Separator();
-			ImGui::Text("Legend (materials)");
-			// Collect materials visible on map
-			std::unordered_map<std::string,int> counts;
-			for (const auto &p : state.filtered_points) {
-				counts[p.material]++;
-			}
-			for (const auto &m : state.material_catalog) {
-				const auto it = counts.find(m.name);
-				if (it == counts.end()) continue;
-				bool highlighted = state.highlighted_materials.count(m.name) > 0;
-				if (ImGui::Checkbox((m.name + " (" + std::to_string(it->second) + ")").c_str(), &highlighted)) {
-					if (highlighted) state.highlighted_materials.insert(m.name);
-					else state.highlighted_materials.erase(m.name);
-				}
-			}
-			ImGui::End();
-		}
+		//	ImGui::Separator();
+		//	ImGui::Text("Legend (materials)");
+		//	// Collect materials visible on map
+		//	std::unordered_map<std::string,int> counts;
+		//	for (const auto &p : state.filtered_points) {
+		//		counts[p.material]++;
+		//	}
+		//	for (const auto &m : state.material_catalog) {
+		//		const auto it = counts.find(m.name);
+		//		if (it == counts.end()) continue;
+		//		bool highlighted = state.highlighted_materials.count(m.name) > 0;
+		//		if (ImGui::Checkbox((m.name + " (" + std::to_string(it->second) + ")").c_str(), &highlighted)) {
+		//			if (highlighted) state.highlighted_materials.insert(m.name);
+		//			else state.highlighted_materials.erase(m.name);
+		//		}
+		//	}
+		//	ImGui::End();
+		//}
 
 		if (state.hovered_text) {
 			ImVec2 mouse = ImGui::GetMousePos();

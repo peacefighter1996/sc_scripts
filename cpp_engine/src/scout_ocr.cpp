@@ -241,10 +241,9 @@ namespace {
         return capture_rect(monitors[best_index], reusable_bitmap, reusable_pixels, reusable_width, reusable_height, reusable_mem_dc, reusable_old_bitmap, out_width, out_height);
     }
 
-    std::vector<float> extract_characters_rtl(const void* pixels_void, int width, int height) {
-        // This function now expects a grayscale buffer pointer. If callers pass BGRA,
-        // reinterpretation will still work but we compute grayscale earlier into a buffer.
-        const auto gray = reinterpret_cast<const std::uint8_t*>(pixels_void);
+    std::vector<float> extract_characters_rtl(const void* pixels_void, int width, int height ) {
+
+        const auto bgra = reinterpret_cast<const std::uint8_t*>(pixels_void);
         const int start_y = 30;
         const int end_y = 44;
         const int start_x = std::max(0, width - 1000);
@@ -261,6 +260,7 @@ namespace {
         const int int_char_w = static_cast<int>(char_w);
 
         std::vector<float> samples;
+        samples.reserve((int_char_w + 2) * (char_h) * (text_width / int_char_w));
         double x = static_cast<double>(text_width - int_char_w - 1);
         while (x >= 0.0) {
             const int x_start = static_cast<int>(x);
@@ -274,8 +274,12 @@ namespace {
                         samples.push_back(0.0f);
                     }
                     else {
-                        const size_t idx = (static_cast<size_t>(src_y) * static_cast<size_t>(width) + static_cast<size_t>(src_x));
-                        samples.push_back(static_cast<float>(gray[idx]) / 255.0f);
+                        const size_t idx = (static_cast<size_t>(src_y) * static_cast<size_t>(width) + static_cast<size_t>(src_x)) * 4;
+                        samples.push_back(static_cast<float>(
+                            bgra[idx + 0] * 0.114f
+                            + bgra[idx + 1] * 0.587f
+                            + bgra[idx + 2] * 0.299f
+                        ) / 255.0f);
                     }
                 }
             }
@@ -447,37 +451,37 @@ std::string ScoutOcr::get_coordinates_ocr_text() const {
     if (width < 200 || height < 100) {
         return {};
     }
-        // Compute grayscale into per-instance buffer for fast sampling.
-        {
-            std::vector<std::uint8_t>& gray = reusable_gray_;
-            gray.resize(static_cast<size_t>(width) * static_cast<size_t>(height));
-            const std::uint8_t* src = reinterpret_cast<const std::uint8_t*>(reusable_pixels_);
-            std::uint8_t* dst = gray.data();
-            const size_t px_count = static_cast<size_t>(width) * static_cast<size_t>(height);
-            size_t i = 0;
-            // Unrolled loop for small speedup; integer approx for coefficients.
-            for (; i + 4 <= px_count; i += 4) {
-                for (int k = 0; k < 4; ++k) {
-                    const std::uint8_t b = src[0];
-                    const std::uint8_t g = src[1];
-                    const std::uint8_t r = src[2];
-                    const unsigned grayv = (29u * b + 150u * g + 77u * r + 128u) >> 8;
-                    dst[0] = static_cast<std::uint8_t>(grayv);
-                    dst++;
-                    src += 4;
-                }
-            }
-            for (; i < px_count; ++i) {
-                const std::uint8_t b = src[0];
-                const std::uint8_t g = src[1];
-                const std::uint8_t r = src[2];
-                const unsigned grayv = (29u * b + 150u * g + 77u * r + 128u) >> 8;
-                *dst++ = static_cast<std::uint8_t>(grayv);
-                src += 4;
-            }
-        }
+    // Compute grayscale into per-instance buffer for fast sampling.
+    //{
+    //    std::vector<std::uint8_t>& gray = reusable_gray_displayinfo_;
+    //    gray.resize(static_cast<size_t>(width) * static_cast<size_t>(height));
+    //    const std::uint8_t* src = reinterpret_cast<const std::uint8_t*>(reusable_pixels_);
+    //    std::uint8_t* dst = gray.data();
+    //    const size_t px_count = static_cast<size_t>(width) * static_cast<size_t>(height);
+    //    size_t i = 0;
+    //    // Unrolled loop for small speedup; integer approx for coefficients.
+    //    for (; i + 4 <= px_count; i += 4) {
+    //        for (int k = 0; k < 4; ++k) {
+    //            const std::uint8_t b = src[0];
+    //            const std::uint8_t g = src[1];
+    //            const std::uint8_t r = src[2];
+    //            const unsigned grayv = (29u * b + 150u * g + 77u * r + 128u) >> 8;
+    //            dst[0] = static_cast<std::uint8_t>(grayv);
+    //            dst++;
+    //            src += 4;
+    //        }
+    //    }
+    //    for (; i < px_count; ++i) {
+    //        const std::uint8_t b = src[0];
+    //        const std::uint8_t g = src[1];
+    //        const std::uint8_t r = src[2];
+    //        const unsigned grayv = (29u * b + 150u * g + 77u * r + 128u) >> 8;
+    //        *dst++ = static_cast<std::uint8_t>(grayv);
+    //        src += 4;
+    //    }
+    //}
 
-        const auto input_values = extract_characters_rtl(reusable_gray_.data(), width, height);
+    const auto input_values = extract_characters_rtl(reusable_pixels_, width, height);
 
     const int64_t sample_count = static_cast<int64_t>(input_values.size() / (14 * 9));
     std::vector<int64_t> predicted_labels;

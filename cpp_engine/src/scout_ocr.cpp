@@ -241,7 +241,9 @@ namespace {
         return capture_rect(monitors[best_index], reusable_bitmap, reusable_pixels, reusable_width, reusable_height, reusable_mem_dc, reusable_old_bitmap, out_width, out_height);
     }
 
-    std::vector<float> extract_characters_rtl(const void* pixels_void, int width, int height ) {
+    // Fill the provided reusable float buffer with character samples and return
+    // a reference to it. This avoids repeated allocations and push_back hot-paths.
+    std::vector<float>& extract_characters_rtl(const void* pixels_void, int width, int height, std::vector<float>& out_samples) {
 
         const auto bgra = reinterpret_cast<const std::uint8_t*>(pixels_void);
         const int start_y = 30;
@@ -251,7 +253,8 @@ namespace {
         const int text_width = end_x - start_x;
         const int text_height = end_y - start_y;
         if (text_width <= 0 || text_height <= 0 || end_y > height) {
-            return {};
+            out_samples.clear();
+            return out_samples;
         }
 
         constexpr double char_w = 7.5;
@@ -259,34 +262,50 @@ namespace {
         const int y_start = (text_height - char_h) / 2;
         const int int_char_w = static_cast<int>(char_w);
 
-        std::vector<float> samples;
-        samples.reserve((int_char_w + 2) * (char_h) * (text_width / int_char_w));
+        // Count how many character sample blocks will be produced so we can size
+        // the output buffer up-front and write by index (no push_back).
+        int char_count = 0;
+        for (double x = static_cast<double>(text_width - int_char_w - 1); x >= 0.0; x -= char_w) {
+            ++char_count;
+        }
+
+        const int samples_per_char = char_h * (int_char_w + 2); // 14 * 9 in practice
+        const size_t total_samples = static_cast<size_t>(char_count) * static_cast<size_t>(samples_per_char);
+        if (out_samples.size() != total_samples) {
+            out_samples.clear();
+            out_samples.resize(total_samples);
+        }
+        // out_samples.clear();
+        // out_samples.resize(total_samples);
+
+        size_t pos = 0;
         double x = static_cast<double>(text_width - int_char_w - 1);
         while (x >= 0.0) {
             const int x_start = static_cast<int>(x);
             const int x_end = static_cast<int>(x + int_char_w);
             for (int yy = 0; yy < char_h; ++yy) {
                 for (int xx = x_start - 1; xx < x_end + 1; ++xx) {
-                    const int clamped_x = std::clamp(xx, 0, text_width - 1);
-                    const int src_x = start_x + clamped_x;
+					// not required atm as end_x is computed to fit within text_width
+                    // const int clamped_x = std::clamp(xx, 0, text_width - 1);
+                    const int src_x = start_x + xx;
                     const int src_y = start_y + y_start + yy;
                     if (src_y < 0 || src_y >= height) {
-                        samples.push_back(0.0f);
+                        out_samples[pos++] = 0.0f;
                     }
                     else {
                         const size_t idx = (static_cast<size_t>(src_y) * static_cast<size_t>(width) + static_cast<size_t>(src_x)) * 4;
-                        samples.push_back(static_cast<float>(
+                        out_samples[pos++] = static_cast<float>(
                             bgra[idx + 0] * 0.114f
                             + bgra[idx + 1] * 0.587f
                             + bgra[idx + 2] * 0.299f
-                        ) / 255.0f);
+                        ) / 255.0f;
                     }
                 }
             }
             x -= char_w;
         }
 
-        return samples;
+        return out_samples;
     }
 
 } // namespace
@@ -481,7 +500,7 @@ std::string ScoutOcr::get_coordinates_ocr_text() const {
     //    }
     //}
 
-    const auto input_values = extract_characters_rtl(reusable_pixels_, width, height);
+    const auto& input_values = extract_characters_rtl(reusable_pixels_, width, height, reusable_gray_displayinfo_);
 
     const int64_t sample_count = static_cast<int64_t>(input_values.size() / (14 * 9));
     std::vector<int64_t> predicted_labels;

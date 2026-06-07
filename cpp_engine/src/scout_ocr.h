@@ -76,7 +76,7 @@ private:
     mutable void* reusable_pixels_{nullptr};
     mutable int reusable_width_{0};
     mutable int reusable_height_{0};
-    //mutable std::vector<std::uint8_t> reusable_gray_displayinfo_;
+    mutable std::vector<float> reusable_gray_displayinfo_;
     // Reusable compatible DC and previous bitmap selected into it.
     mutable void* reusable_mem_dc_{nullptr};
     mutable void* reusable_old_bitmap_{nullptr};

@@ -14,6 +14,7 @@ struct Camera2D {
     double getZoom() const { return zoom; }
     void setZoom(double z) { zoom = z; if (zoom < 1.0) zoom = 1.0; if (zoom > 8.0) zoom = 8.0; }
     void zoomBy(double factor) { zoom *= factor; if (zoom < 1.0) zoom = 1.0; if (zoom > 8.0) zoom = 8.0; }
+    void increaseZoomBy(float value) { zoom += value; if (zoom < 1.0) zoom = 1.0; if (zoom > 8.0) zoom = 8.0; }
 
     std::pair<float,float> getPan() const { return pan; }
     void setPan(std::pair<float,float> p) { pan = p; }

@@ -310,23 +310,11 @@ layout(location = 1) in vec2 in_uv;
 out vec2 uv;
 uniform vec2 u_pan_uv;
 uniform float u_zoom;
-// Optional planet-centering: when enabled the vertex shader will remap
-// the transformed UV so that the supplied `u_planet_center` maps to 0.5,0.5
-// in the fragment shader. This prevents needing to shift sample coords in
-// the planet fragment shader which can introduce apparent rotation.
-uniform vec2 u_planet_center;
-uniform int u_apply_planet_center;
 void main() {
 	// Do NOT transform vertex positions here; keep quad covering NDC [-1,1].
 	// Transform UVs only: sample a different region of the texture to produce
 	// the visual pan/zoom effect that matches points/grid rendered in NDC.
-	vec2 uv_t = (in_uv - u_pan_uv) / u_zoom + u_pan_uv;
-	if (u_apply_planet_center == 1) {
-		// remap so planet center is at 0.5,0.5 in fragment-space
-		uv = uv_t - u_planet_center + vec2(0.5, 0.5);
-	} else {
-		uv = uv_t;
-	}
+	uv = (in_uv - u_pan_uv) / u_zoom + u_pan_uv;
 	gl_Position = vec4(in_pos, 0.0, 1.0);
 }
 )GLSL";
@@ -390,33 +378,27 @@ void main() {
 	// (vertex shader remapped the incoming UV so that planet center == 0.5,0.5)
 	vec2 c = uv - vec2(0.5, 0.5);
 	vec2 nd = c / u_radius; // normalized disk coords (-1..1)
-	float rho = length(nd);
-	if (rho > 1.0) discard;
+	float r2 = dot(nd, nd);
+	if (r2 > 1.0) discard;
 
-	// Azimuthal equidistant projection (view from north pole):
-	// phi = angular distance from north pole = rho * (PI/2) [hemisphere]
-	float phi = rho * (PI * 0.5);
-	float lat = (PI * 0.5) + phi; // latitude in radians (PI/2 .. 0)
-
-	// compute longitude from disk angle; flip nd.y so screen up == north
+	// Orthographic / top-down sphere mapping:
+	// treat nd as X,Y on the unit disk; compute Z on the unit sphere and
+	// convert to latitude/longitude for equirectangular sampling.
+	float z = sqrt(max(0.0, 1.0 - r2));
+	// latitude: asin(1-z) gives range [0 .. PI/2] for visible hemisphere
+	float lat = asin(-z);
+	// longitude: atan2(x, -y) so that screen-up corresponds to north
 	float lon = atan(-nd.x, -nd.y);
 
-	// convert to equirectangular UV relative to disk center (0.5..0.5)
-	float u = (lon + PI) / (2.0 * PI)+u_rotate; // add 0.25 to rotate so that north pole is at top of texture
+	// convert to equirectangular UV (0..1)
+	float u = (lon + PI) / (2.0 * PI) + u_rotate;
 	float v = (lat + (PI * 0.5)) / PI;
-	v = v * u_vscale;
 
-	// sample_uv: map relative u/v back into global texture space by adding
-	// the planet center that the vertex shader removed (vertex shader set
-	// uv such that center=0.5). That mapping happens implicitly here by
-	// adding 0.5 to re-center and then relying on the vertex remap.
-	vec2 sample_uv = vec2(u, v) + (vec2(0.5, 0.5) - vec2(0.5, 0.5));
-	// In our setup the vertex stage already performed the center translation
-	// so sample_uv is directly usable relative to the original texture coords.
+	// sample directly (vertex shader already applied the center translation)
+	vec2 sample_uv = vec2(u, v);
 	vec4 col = texture(u_texture, sample_uv);
 	out_color = col;
 }
-
 )GLSL";
 
 static const char* marker_fs = R"GLSL(#version 330 core
@@ -519,9 +501,11 @@ bool ScoutRenderer::init() {
 		planet_center_loc_ = glGetUniformLocation(planet_shader_, "u_center");
 		if (planet_center_loc_ != -1) glUniform2f(planet_center_loc_, 0.5f, 0.5f);
 		planet_radius_loc_ = glGetUniformLocation(planet_shader_, "u_radius");
-		if (planet_radius_loc_ != -1) glUniform1f(planet_radius_loc_, 0.5f);
+		if (planet_radius_loc_ != -1) glUniform1f(planet_radius_loc_, 1.0f);
 		planet_vscale_loc_ = glGetUniformLocation(planet_shader_, "u_vscale");
 		if (planet_vscale_loc_ != -1) glUniform1f(planet_vscale_loc_, 1.0f);
+		planet_rotate_loc_ = glGetUniformLocation(planet_shader_, "u_rotate");
+		if (planet_rotate_loc_ != -1) glUniform1f(planet_rotate_loc_, 0.25f);
 		// cache pan/zoom uniforms for planet shader
 		planet_pan_ndc_loc_ = glGetUniformLocation(planet_shader_, "u_pan_ndc");
 		planet_uv_pan_loc_ = glGetUniformLocation(planet_shader_, "u_pan_uv");
@@ -847,19 +831,17 @@ std::optional<std::string> ScoutRenderer::render_map(GLuint texture,
 
 		// Hover detection (CPU, same logic as before)
 		if (!mouse_pos) return std::nullopt;
-		const auto [mx_raw, my_raw] = *mouse_pos;
-		// convert mouse NDC into pre-zoom/pan space for hit testing: ndc = (mouse - pan)/zoom + pan
-		const float mx = (mx_raw - pan.first) / static_cast<float>(zoom) + pan.first;
-		const float my = (my_raw - pan.second) / static_cast<float>(zoom) + pan.second;
-		float closest_dist = 0.0005f;
-		DataPoint* closest_point = nullptr;
+		const auto [mx, my] = *mouse_pos;
+		float closest_dist = 0.001f;
+		std::vector<std::pair<float, DataPoint*>> closest_points;
+
 		for (const auto& point : points) {
 			float px = 0.0f, py = 0.0f;
 
 			// dont display points that are on the south size of the planet when in celestial belt mode when altitude is planetradius + 50km (likely to be planetary features)
 			if (dpm == DisplayMode::Celestial_Belt) {
 				auto latlonalt = point.get_lat_lon_alt();
-				if (latlonalt[2] < selected_zone->planet_radius_km + selected_zone->karman_line_km && latlonalt[0] < 0.0) {
+				if (latlonalt[0] < 0.0 && latlonalt[2] < selected_zone->planet_radius_km + selected_zone->karman_line_km) {
 					continue;
 				}
 			} else if (dpm == DisplayMode::Surface) {
@@ -879,29 +861,50 @@ std::optional<std::string> ScoutRenderer::render_map(GLuint texture,
 			const float dx = mx - px;
 			const float dy = my - py;
 			const float dist = (dx * dx) + (dy * dy);
-			if (dist < closest_dist) {
-				closest_dist = dist;
-				closest_point = const_cast<DataPoint*>(&point);
+			if (dist <= closest_dist) {
+				closest_points.push_back({dist, const_cast<DataPoint*>(&point)});
 			}
 		}
-		if (closest_point) {
-			const auto it = std::find_if(material_catalog.begin(), material_catalog.end(), [&](const Resource& m) {
-				return m.name == closest_point->material;
+		
+		if (!closest_points.empty()) {
+			std::string tooltip;
+			// sort by distance and keep only those within the closest distance threshold (to allow for multiple points at same location)
+			std::sort(closest_points.begin(), closest_points.end(), [](const auto& a, const auto& b) {
+				return a.first < b.first;
 				});
-			const auto material_id = it != material_catalog.end() ? it->short_name : closest_point->material.substr(0, std::min<size_t>(4, closest_point->material.size()));
+			
+			
+			
+			for (size_t i = 0; i < closest_points.size(); ++i) {
+				const auto& [dist, closest_point] = closest_points[i];
 				if (closest_point->poi_type == PoiType::Mineral) {
-				if (dpm == DisplayMode::Asteroid_Field) {
-					return material_id + " Quality: " + std::to_string(int(closest_point->quality_max)) 
-						+ "\nz:" + std::to_string(closest_point->get_lat_lon_alt()[2]) + " km"
-						+ "\n" + closest_point->note;
+					// if this point is a mineral, prepend material and quality info to the tooltip
+					const auto it = std::find_if(material_catalog.begin(), material_catalog.end(), [&](const Resource& m) {
+						return m.name == closest_point->material;
+						});
+					if (it != material_catalog.end()) {
+						// if this material is highlighted, add a marker to the tooltip
+						const auto material_id = it != material_catalog.end() ? it->short_name : closest_point->material.substr(0, std::min<size_t>(4, closest_point->material.size()));
+						tooltip += material_id + " Quality: " + std::to_string(int(closest_point->quality_max));
+						if (closest_point->note.size() > 0)
+							tooltip += "\n" + closest_point->note;
+					}
 				}
 				else {
-					return material_id + " Quality: " + std::to_string(int(closest_point->quality_max)) + "\n" + closest_point->note;
+					tooltip += closest_point->note;
 				}
+
+				if (i < closest_points.size() - 1) {
+					tooltip += "\n";
+				}
+				//auto latlonalt = closest_point->get_lat_lon_alt();
+				//auto pndc = latlon_to_ndc(latlonalt[0], latlonalt[1]);
+				//auto pt = camera.applyToNdc(pndc.first, pndc.second);
+				//auto px = pt.first;
+				//auto py = pt.second;
+				//tooltip += "\n" + std::to_string(dist) + " " + std::to_string(px) +" "+ std::to_string(py) + "\n";
 			}
-			if (closest_point->poi_type != PoiType::Mineral) {
-				return closest_point->note;
-			}
+			return tooltip;
 		}
 	}
 

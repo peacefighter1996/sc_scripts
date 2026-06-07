@@ -9,6 +9,7 @@
 #include <mutex>
 #include <sstream>
 #include <unordered_map>
+#include <regex>
 
 const double rad_to_deg = 180.0 / 3.14159265358979323846;
 const double deg_to_rad = 3.14159265358979323846 / 180.0;
@@ -156,6 +157,12 @@ bool try_parse_xyz_from_ocr_text(const std::string& ocr_text, double& x, double&
     std::vector<double> parsed(3, 0.0);
     for (size_t i = 0; i < coordinates.size(); ++i) {
         auto value = coordinates[i];
+		// regex expression check if value matches something like 123.45km or 123.45m (case insensitive)
+		if (!std::regex_match(value, std::regex(R"(^\s*-?\d+(\.\d+)?\s*[kmKM]?\s*$)"))) {
+            return false;
+        }
+
+
         value.erase(std::remove(value.begin(), value.end(), 'm'), value.end());
         if (value.empty()) {
             return false;

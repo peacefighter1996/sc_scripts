@@ -226,6 +226,8 @@ struct AppSettings {
 
 	// Last used export file path (persisted to settings.ini)
 	std::string last_export_path;
+	// Last selected planet to restore on startup
+	std::string last_selected_planet;
 	std::string session_export_dir = "./data/exports/"; // directory to export session minerals (relative to repo root or absolute path)
 
 	// Sync/storage settings
@@ -434,7 +436,14 @@ struct AppState {
 			for (const auto& name : kDefaultMaterials) materials.push_back(name);
 		}
 
-		update_selected_planet(planets.empty() ? kDefaultPlanets.front() : planets.front());
+		// Restore last selected planet from settings when possible
+		std::string initial_planet;
+		if (!settings.last_selected_planet.empty() && std::find(planets.begin(), planets.end(), settings.last_selected_planet) != planets.end()) {
+			initial_planet = settings.last_selected_planet;
+		} else {
+			initial_planet = planets.empty() ? kDefaultPlanets.front() : planets.front();
+		}
+		update_selected_planet(initial_planet);
 		update_grid_spacing();
 
 		// Initialize datatable helper structures
@@ -498,6 +507,10 @@ struct AppState {
 				set_display_mode(get_zone_default_display_mode(selected_planet_obj->zone_type));
 			}
 		}
+
+		// Persist last-selected planet immediately so restarts restore selection
+		settings.last_selected_planet = selected_planet;
+		save_settings();
 	}
 
 	void set_display_mode(DisplayMode new_mode) {
@@ -669,6 +682,7 @@ struct AppState {
 		out << "qt_disable_duration_s=" << settings.qt_disable_duration_s << '\n';
 		out << "tracking_min_core_distance_km=" << settings.tracking_min_core_distance_km << '\n';
 		out << "last_export_path=" << settings.last_export_path << '\n';
+		out << "last_selected_planet=" << settings.last_selected_planet << '\n';
 		out << "session_export_dir=" << settings.session_export_dir << '\n';
 		out << "auto_export_session_minerals=" << (settings.auto_export_session_minerals ? "1" : "0") << '\n';
 	}
@@ -744,6 +758,8 @@ struct AppState {
 				catch (...) {}
 			} else if (key == "last_export_path") {
 				settings.last_export_path = value;
+			} else if (key == "last_selected_planet") {
+				settings.last_selected_planet = value;
 			} else if (key == "session_export_dir") {
 				settings.session_export_dir = value;
 			} else if (key == "auto_export_session_minerals") {
@@ -2650,41 +2666,41 @@ if (ImGui::Button("Browse")) {
 		}
 
 		// Small legend / controls overlay (top-left)
-		// {
-		// 	ImGui::SetNextWindowBgAlpha(0.55f);
-		// 	ImGui::Begin("Map Legend", nullptr, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoTitleBar);
-		// 	ImGui::Text("Zoom: %.2fx", state.camera2d.getZoom());
-		// 	if (ImGui::Button("+")) state.camera2d.zoomBy(1.25);
-		// 	ImGui::SameLine();
-		// 	if (ImGui::Button("-")) state.camera2d.zoomBy(1.0/1.25);
-		// 	ImGui::SameLine();
-		// 	if (ImGui::Button("Reset")) { state.camera2d.setZoom(1.0); state.camera2d.setPan({0.0f,0.0f}); }
+		{
+			ImGui::SetNextWindowBgAlpha(0.55f);
+			ImGui::Begin("Map Legend", nullptr, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoTitleBar);
+			ImGui::Text("Zoom: %.2fx", state.camera2d.getZoom());
+			if (ImGui::Button("+")) state.camera2d.increaseZoomBy(0.25);
+			ImGui::SameLine();
+			if (ImGui::Button("-")) state.camera2d.increaseZoomBy(-0.25);
+			ImGui::SameLine();
+			if (ImGui::Button("Reset")) { state.camera2d.setZoom(1.0); state.camera2d.setPan({0.0f,0.0f}); }
 
-		// 	ImGui::Separator();
-		// 	ImGui::Text("Pan:");
-		// 	if (ImGui::Button("Up")) state.camera2d.panBy(0.0f, 0.05f);
-		// 	ImGui::SameLine(); if (ImGui::Button("Down")) state.camera2d.panBy(0.0f, -0.05f);
-		// 	ImGui::SameLine(); if (ImGui::Button("Left")) state.camera2d.panBy(-0.05f, 0.0f);
-		// 	ImGui::SameLine(); if (ImGui::Button("Right")) state.camera2d.panBy(0.05f, 0.0f);
+			ImGui::Separator();
+			ImGui::Text("Pan:");
+			if (ImGui::Button("Up")) state.camera2d.panBy(0.0f, 0.05f);
+			ImGui::SameLine(); if (ImGui::Button("Down")) state.camera2d.panBy(0.0f, -0.05f);
+			ImGui::SameLine(); if (ImGui::Button("Left")) state.camera2d.panBy(-0.05f, 0.0f);
+			ImGui::SameLine(); if (ImGui::Button("Right")) state.camera2d.panBy(0.05f, 0.0f);
 
-		// 	ImGui::Separator();
-		// 	ImGui::Text("Legend (materials)");
-		// 	// Collect materials visible on map
-		// 	std::unordered_map<std::string,int> counts;
-		// 	for (const auto &p : state.filtered_points) {
-		// 		counts[p.material]++;
-		// 	}
-		// 	for (const auto &m : state.material_catalog) {
-		// 		const auto it = counts.find(m.name);
-		// 		if (it == counts.end()) continue;
-		// 		bool highlighted = state.highlighted_materials.count(m.name) > 0;
-		// 		if (ImGui::Checkbox((m.name + " (" + std::to_string(it->second) + ")").c_str(), &highlighted)) {
-		// 			if (highlighted) state.highlighted_materials.insert(m.name);
-		// 			else state.highlighted_materials.erase(m.name);
-		// 		}
-		// 	}
-		// 	ImGui::End();
-		// }
+			ImGui::Separator();
+			ImGui::Text("Legend (materials)");
+			// Collect materials visible on map
+			std::unordered_map<std::string,int> counts;
+			for (const auto &p : state.filtered_points) {
+				counts[p.material]++;
+			}
+			for (const auto &m : state.material_catalog) {
+				const auto it = counts.find(m.name);
+				if (it == counts.end()) continue;
+				bool highlighted = state.highlighted_materials.count(m.name) > 0;
+				if (ImGui::Checkbox((m.name + " (" + std::to_string(it->second) + ")").c_str(), &highlighted)) {
+					if (highlighted) state.highlighted_materials.insert(m.name);
+					else state.highlighted_materials.erase(m.name);
+				}
+			}
+			ImGui::End();
+		}
 
 		if (state.hovered_text) {
 			ImVec2 mouse = ImGui::GetMousePos();

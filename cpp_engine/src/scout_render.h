@@ -83,6 +83,9 @@ private:
     GLint planet_center_loc_ = -1;
     GLint planet_radius_loc_ = -1;
     GLint planet_vscale_loc_ = -1;
+    GLint planet_rotate_loc_ = -1;
+    // Whether to apply planet-centering remap in the vertex shader (program-specific uniform)
+    GLint planet_apply_center_loc_ = -1;
 
     GLuint points_vao_ = 0;
     GLuint points_vbo_ = 0;

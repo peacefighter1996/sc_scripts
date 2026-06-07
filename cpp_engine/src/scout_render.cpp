@@ -383,6 +383,7 @@ out vec4 out_color;
 uniform sampler2D u_texture;
 uniform float u_radius; // planet radius in UV units (0..0.5 typical)
 uniform float u_vscale; // vertical scale for sampling (1.0 = full image, 0.5 = top-half)
+uniform float u_rotate; // rotation angle in UV space (0..1, where 1 = full rotation = 360 degrees)
 const float PI = 3.14159265358979323846;
 void main() {
 	// local coordinates relative to planet center mapped to fragment-space
@@ -401,7 +402,7 @@ void main() {
 	float lon = atan(-nd.x, -nd.y);
 
 	// convert to equirectangular UV relative to disk center (0.5..0.5)
-	float u = (lon + PI) / (2.0 * PI);
+	float u = (lon + PI) / (2.0 * PI)+u_rotate; // add 0.25 to rotate so that north pole is at top of texture
 	float v = (lat + (PI * 0.5)) / PI;
 	v = v * u_vscale;
 
@@ -820,7 +821,7 @@ std::optional<std::string> ScoutRenderer::render_map(GLuint texture,
 					continue;
 				}
 			}
-			else if (dpm == DisplayMode::Surface) {
+			else if (dpm == DisplayMode::Surface && selected_zone->has_asteroid_belt) {
 				if (point.get_lat_lon_alt()[2] > selected_zone->planet_radius_km + selected_zone->karman_line_km && point.poi_type == PoiType::Mineral) {
 					// skip points above the surface when in surface mode
 					continue;

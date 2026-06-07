@@ -14,31 +14,21 @@
 const double rad_to_deg = 180.0 / 3.14159265358979323846;
 const double deg_to_rad = 3.14159265358979323846 / 180.0;
 
-std::vector<double> DataPoint::get_lat_lon_alt() const {
-    if (!lat_lon_alt_cache_.empty()) {
+const LatLonAlt DataPoint::get_lat_lon_alt() const {
+    if (lat_lon_alt_cache_.latitude != 0.0 || lat_lon_alt_cache_.longitude != 0.0 || lat_lon_alt_cache_.altitude != 0.0) {
         return lat_lon_alt_cache_;
     }
-    const double r = std::sqrt((x * x) + (y * y) + (z * z));
-    if (r == 0.0) {
-        return {0.0, 0.0, 0.0};
-    }
-
-    const double lat = std::asin(z / r) * rad_to_deg;
-    const double lon = std::atan2(y, x) * rad_to_deg;
-
-    lat_lon_alt_cache_ = {lat, lon, r};
-
-    return lat_lon_alt_cache_;
+	return to_lat_lon_alt();
 }
 
-std::vector<double> DataPoint::to_lat_lon_alt() const {
-    const double r = std::sqrt((x * x) + (y * y) + (z * z));
+const LatLonAlt DataPoint::to_lat_lon_alt() const {
+    const double r = std::sqrt((coord.x * coord.x) + (coord.y * coord.y) + (coord.z * coord.z));
     if (r == 0.0) {
-        return {0.0, 0.0, 0.0};
+        return origin_latlonalt;
     }
 
-    const double lat = std::asin(z / r) * rad_to_deg;
-    const double lon = std::atan2(y, x) * rad_to_deg;
+    const double lat = std::asin(coord.z / r) * rad_to_deg;
+    const double lon = std::atan2(coord.y, coord.x) * rad_to_deg;
 
     lat_lon_alt_cache_ = {lat, lon, r};
 
@@ -118,9 +108,9 @@ void print_dump(const std::vector<DataPoint>& points) {
     for (const auto& point : points) {
         std::cout << point.id << '\t'
                   << point.server << '\t'
-                  << std::setprecision(15) << point.x << '\t'
-                  << std::setprecision(15) << point.y << '\t'
-                  << std::setprecision(15) << point.z << '\t'
+                  << std::setprecision(15) << point.coord.x << '\t'
+                  << std::setprecision(15) << point.coord.y << '\t'
+                  << std::setprecision(15) << point.coord.z << '\t'
                   << point.planet << '\t'
                   << point.material << '\t'
                   << poi_type_name(point.poi_type) << '\t'
@@ -158,7 +148,7 @@ bool try_parse_xyz_from_ocr_text(const std::string& ocr_text, double& x, double&
     for (size_t i = 0; i < coordinates.size(); ++i) {
         auto value = coordinates[i];
 		// regex expression check if value matches something like 123.45km or 123.45m (case insensitive)
-		if (!std::regex_match(value, std::regex(R"(^\s*-?\d+(\.\d+)?\s*[kmKM]?\s*$)"))) {
+		if (!std::regex_match(value, std::regex(R"(-?\d+(\.\d+)[kmKM]{1,2})"))) {
             return false;
         }
 
@@ -260,9 +250,9 @@ bool operator==(const DataPoint& a, const DataPoint& b) {
     return 
        //  a.id == b.id && // database id and trackking but is not a determaning factor if its equivilent
            a.server == b.server &&
-           a.x == b.x &&
-           a.y == b.y &&
-           a.z == b.z &&
+           a.coord.x == b.coord.x &&
+           a.coord.y == b.coord.y &&
+           a.coord.z == b.coord.z &&
            a.planet == b.planet &&
            a.material == b.material &&
            a.poi_type == b.poi_type &&

@@ -103,9 +103,9 @@ int main(int argc, char** argv) {
 			DataPoint point;
 			point.id = std::stoi(argv[3]);
 			point.server = argv[4];
-			point.x = std::stod(argv[5]);
-			point.y = std::stod(argv[6]);
-			point.z = std::stod(argv[7]);
+			point.coord.x = std::stod(argv[5]);
+			point.coord.y = std::stod(argv[6]);
+			point.coord.z = std::stod(argv[7]);
 			point.planet = argv[8];
 			point.material = argv[9];
 			point.quality_min = std::stod(argv[10]);
@@ -254,7 +254,7 @@ int main(int argc, char** argv) {
 			if (p.subtype != PoiSubType::None) {
 				continue;
 			}
-			std::cout << "[x,y,z]: [" << p.x << ", " << p.y << ", " << p.z << "]" <<", Name: " << p.note
+			std::cout << "[x,y,z]: [" << p.coord.x << ", " << p.coord.y << ", " << p.coord.z << "]" <<", Name: " << p.note
 				<< ", Type: " << poi_type_name(p.poi_type) << ", Subtype: " << poi_subtype_name(p.subtype) << '\n';
 		}
 

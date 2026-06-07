@@ -12,20 +12,20 @@
 
 
 // Convert lat/lon to UV coordinates in [0,1] range. Latitude is expected in [-90,90], longitude in [-180,180].
-static std::pair<float, float> latlon_to_uv(double lat, double lon) {
-	const auto u = static_cast<float>((lon + 180.0) / 360.0);
-	const auto v = static_cast<float>((lat + 90.0) / 180.0);
-	return { u, v };
-}
+//static std::pair<float, float> latlon_to_uv(double lat, double lon) {
+//	const auto u = static_cast<float>((lon + 180.0) / 360.0);
+//	const auto v = static_cast<float>((lat + 90.0) / 180.0);
+//	return { u, v };
+//}
 
 
 // Convert lat/lon to normalized device coordinates in [-1,1] range for rendering. Latitude is expected in [-90,90], longitude in [-180,180].
-std::pair<float, float> ScoutRenderer::latlon_to_ndc(double lat, double lon) const {
-	const auto uv = latlon_to_uv(lat, lon);
-	return { (uv.first * 2.0f) - 1.0f, (uv.second * 2.0f) - 1.0f };
-}
+//std::pair<float, float> ScoutRenderer::latlon_to_ndc(double lat, double lon) const {
+//	const auto uv = latlon_to_uv(lat, lon);
+//	return { (uv.first * 2.0f) - 1.0f, (uv.second * 2.0f) - 1.0f };
+//}
 
-std::pair<float, float> ScoutRenderer::zone_point_to_ndc(const DisplayMode dpm, const Planet* selected_zone, double a, double b, double grid_spacing_km) const {
+Vector2 ScoutRenderer::zone_point_to_ndc(const DisplayMode dpm, const Planet* selected_zone, double a, double b, double grid_spacing_km) const {
 	if (dpm == DisplayMode::Asteroid_Field || dpm == DisplayMode::Celestial_Belt) {
 		bbox2d box = selected_zone->bounding_box_km;
 		return asteriod_point_to_ndc(box, grid_spacing_km, a, b);
@@ -36,7 +36,7 @@ std::pair<float, float> ScoutRenderer::zone_point_to_ndc(const DisplayMode dpm, 
 	}
 }
 
-std::pair<float, float> ScoutRenderer::asteriod_point_to_ndc(const bbox2d& box, double grid_spacing_km, double a, double b) const
+Vector2 ScoutRenderer::asteriod_point_to_ndc(const bbox2d& box, double grid_spacing_km, double a, double b) const
 {
 	double minx = box.min_x;
 	double maxx = box.max_x;
@@ -143,8 +143,8 @@ void ScoutRenderer::render_sector_labels_grid(const DisplayMode dpm, const Plane
 				// For celestial, a=lon,b=lat; for asteroid field a/b are X/Y so zone_point_to_ndc handles both
 				auto ndc = zone_point_to_ndc(dpm, selected_zone, a, b, abs(grid_spacing_x_km));
 				// compute transformed ndc for drawing
-				float tndc_x = (ndc.first - pan.first) * static_cast<float>(zoom) + pan.first;
-				float tndc_y = (ndc.second - pan.second) * static_cast<float>(zoom) + pan.second;
+				float tndc_x = (ndc.x - pan.first) * static_cast<float>(zoom) + pan.first;
+				float tndc_y = (ndc.y - pan.second) * static_cast<float>(zoom) + pan.second;
 				float px = (tndc_x + 1.0f) * 0.5 * disp.x;
 				float py = (1.0f - ((tndc_y + 1.0f) * 0.5f)) * disp.y;
 				std::string key = name + ":" + std::to_string(cx) + "," + std::to_string(ry) + "@" + std::to_string((int)abs(grid_spacing_x_km)) + (coords_are_latlon ? ":LONLAT" : "");
@@ -162,7 +162,7 @@ void ScoutRenderer::render_sector_labels_grid(const DisplayMode dpm, const Plane
 				}
 				label = col_label + std::to_string(row_idx);
 
-				const zone_label zl{ ndc.first, ndc.second, label };
+				const zone_label zl{ ndc.x, ndc.y, label };
 				zone_lables.push_back(zl);
 				ImU32 col = ImGui::GetColorU32(ImVec4(1.0f, 1.0f, 1.0f, 0.25f));
 				dl->AddText(font, font_size, ImVec2(px, py), col, label.c_str());
@@ -193,25 +193,27 @@ void ScoutRenderer::render_grid_for_zone(const DisplayMode dpm, const Planet* se
 		const double end_y = std::ceil(maxy / grid_spacing_km) * grid_spacing_km;
 
 		std::vector<float> lines;
+
+		lines.reserve(static_cast<size_t>((end_x - start_x) / grid_spacing_km + (end_y - start_y) / grid_spacing_km - 4) * 4);
 		// vertical lines
 		for (double x = start_x + grid_spacing_km; x < end_x; x += grid_spacing_km) {
 			const auto a = zone_point_to_ndc(dpm, selected_zone, x, miny, grid_spacing_km);
 			const auto b = zone_point_to_ndc(dpm, selected_zone, x, maxy, grid_spacing_km);
 			// Buffer raw NDC; GPU will apply pan/zoom in marker shader
-			lines.push_back(a.first);
-			lines.push_back(a.second);
-			lines.push_back(b.first);
-			lines.push_back(b.second);
+			lines.push_back(a.x);
+			lines.push_back(a.y);
+			lines.push_back(b.x);
+			lines.push_back(b.y);
 		}
 		// horizontal lines
 		for (double y = start_y + grid_spacing_km; y < end_y; y += grid_spacing_km) {
 			const auto a = zone_point_to_ndc(dpm, selected_zone, minx, y, grid_spacing_km);
 			const auto b = zone_point_to_ndc(dpm, selected_zone, maxx, y, grid_spacing_km);
 			// Buffer raw NDC; GPU will apply pan/zoom in marker shader
-			lines.push_back(a.first);
-			lines.push_back(a.second);
-			lines.push_back(b.first);
-			lines.push_back(b.second);
+			lines.push_back(a.x);
+			lines.push_back(a.y);
+			lines.push_back(b.x);
+			lines.push_back(b.y);
 		}
 
 		// If bounding-box grid produced lines, draw them in gray (opaque)
@@ -255,19 +257,19 @@ void ScoutRenderer::render_grid_for_zone(const DisplayMode dpm, const Planet* se
 			for (double lon = -180.0 + deg_step; lon < 180.0; lon += deg_step) {
 				const auto p1 = latlon_to_ndc(-90.0, lon);
 				const auto p2 = latlon_to_ndc(90.0, lon);
-				latlon_lines.push_back(p1.first);
-				latlon_lines.push_back(p1.second);
-				latlon_lines.push_back(p2.first);
-				latlon_lines.push_back(p2.second);
+				latlon_lines.push_back(p1.x);
+				latlon_lines.push_back(p1.y);
+				latlon_lines.push_back(p2.x);
+				latlon_lines.push_back(p2.y);
 			}
 			// latitude lines (parallels)
 			for (double lat = -90.0 + deg_step; lat < 90.0; lat += deg_step) {
 				const auto p1 = latlon_to_ndc(lat, -180.0);
 				const auto p2 = latlon_to_ndc(lat, 180.0);
-				latlon_lines.push_back(p1.first);
-				latlon_lines.push_back(p1.second);
-				latlon_lines.push_back(p2.first);
-				latlon_lines.push_back(p2.second);
+				latlon_lines.push_back(p1.x);
+				latlon_lines.push_back(p1.y);
+				latlon_lines.push_back(p2.x);
+				latlon_lines.push_back(p2.y);
 			}
 
 			if (!latlon_lines.empty()) {
@@ -706,8 +708,8 @@ void ScoutRenderer::RenderPlanet(GLuint texture, const Planet* selected_zone, do
 		if (box.max_y > box.min_y) cy = (box.min_y + box.max_y) * 0.5;
 		// map center (0,0) in world coords -> ndc via asteriod_point_to_ndc
 		auto center_ndc = asteriod_point_to_ndc(box, grid_spacing_km, 0.0, 0.0);
-		center_u = (center_ndc.first * 0.5f) + 0.5f;
-		center_v = (1.0f - center_ndc.second) * 0.5f;
+		center_u = (center_ndc.x * 0.5f) + 0.5f;
+		center_v = (1.0f - center_ndc.y) * 0.5f;
 
 		// compute half extents used by asteriod_point_to_ndc
 		double half_w = (box.max_x > box.min_x) ? ((box.max_x - box.min_x) * 0.5) : std::max(1.0, grid_spacing_km * 3.0);
@@ -797,33 +799,31 @@ std::optional<std::string> ScoutRenderer::render_map(GLuint texture,
 		int displayed_points = 0;
 		for (const auto& point : points) {
 			float x = 0.0f, y = 0.0f;
-
+			LatLonAlt latlonalt = point.get_lat_lon_alt();
 			// dont display points that are on the south size of the planet when in celestial belt mode when altitude is planetradius + 50km (likely to be planetary features)
 			if (dpm == DisplayMode::Celestial_Belt) {
-				auto latlonalt = point.get_lat_lon_alt();
-				if (latlonalt[2] < selected_zone->planet_radius_km + selected_zone->karman_line_km && latlonalt[0] < 0.0) {
+				if (latlonalt.altitude < selected_zone->planet_radius_km + selected_zone->karman_line_km && latlonalt.latitude < 0.0) {
 					continue;
 				}
 			}
 			else if (dpm == DisplayMode::Surface && selected_zone->has_asteroid_belt) {
-				if (point.get_lat_lon_alt()[2] > selected_zone->planet_radius_km + selected_zone->karman_line_km && point.poi_type == PoiType::Mineral) {
+				if (latlonalt.altitude > selected_zone->planet_radius_km + selected_zone->karman_line_km && point.poi_type == PoiType::Mineral) {
 					// skip points above the surface when in surface mode
 					continue;
 				}
 			}
-			displayed_points++;
+			
 			auto ndc = dpm == DisplayMode::Asteroid_Field || dpm == DisplayMode::Celestial_Belt
-				? asteriod_point_to_ndc(selected_zone->bounding_box_km, grid_spacing_km, point.x, point.y)
-				: latlon_to_ndc(point.get_lat_lon_alt()[0], point.get_lat_lon_alt()[1]);
-			// Buffer raw NDC positions; GPU will apply pan/zoom in the vertex shader
-			float tx = ndc.first;
-			float ty = ndc.second;
+				? asteriod_point_to_ndc(selected_zone->bounding_box_km, grid_spacing_km, point.coord.x, point.coord.y)
+				: latlon_to_ndc(latlonalt.latitude, latlonalt.longitude);
 			// If highlighted set provided and this point's material is highlighted, adjust colour/alpha
 			if (highlighted_materials && highlighted_materials->count(point.material) == 0 && !highlighted_materials->empty()) {
 				// dim non-highlighted points
 				colour.overide(colour.r * 0.25f + 0.75f * 0.25f, colour.g * 0.25f + 0.75f * 0.25f, colour.b * 0.25f + 0.75f * 0.25f, 0.35f);
 			}
-			FillPointBuffer(tx, ty, buf, border_buf, colour, point);
+
+			FillPointBuffer(ndc.x, ndc.y, buf, border_buf, colour, point);
+			displayed_points++;
 		}
 
 		// Upload and draw border (one size larger)
@@ -837,25 +837,25 @@ std::optional<std::string> ScoutRenderer::render_map(GLuint texture,
 
 		for (const auto& point : points) {
 			float px = 0.0f, py = 0.0f;
+			LatLonAlt latlonalt = point.get_lat_lon_alt();
 
 			// dont display points that are on the south size of the planet when in celestial belt mode when altitude is planetradius + 50km (likely to be planetary features)
 			if (dpm == DisplayMode::Celestial_Belt) {
-				auto latlonalt = point.get_lat_lon_alt();
-				if (latlonalt[0] < 0.0 && latlonalt[2] < selected_zone->planet_radius_km + selected_zone->karman_line_km) {
+				if (latlonalt.latitude < 0.0 && latlonalt.altitude < selected_zone->planet_radius_km + selected_zone->karman_line_km) {
 					continue;
 				}
 			} else if (dpm == DisplayMode::Surface) {
-				if (point.get_lat_lon_alt()[2] > selected_zone->planet_radius_km + selected_zone->karman_line_km && point.poi_type == PoiType::Mineral) {
+				if (latlonalt.altitude > selected_zone->planet_radius_km + selected_zone->karman_line_km && point.poi_type == PoiType::Mineral) {
 					// skip points above the surface when in surface mode
 					continue;
 				}
 			}
 
 			auto pndc = dpm == DisplayMode::Asteroid_Field || dpm == DisplayMode::Celestial_Belt
-				? asteriod_point_to_ndc(selected_zone->bounding_box_km, grid_spacing_km, point.x, point.y)
-				: latlon_to_ndc(point.get_lat_lon_alt()[0], point.get_lat_lon_alt()[1]);
+				? asteriod_point_to_ndc(selected_zone->bounding_box_km, grid_spacing_km, point.coord.x, point.coord.y)
+				: latlon_to_ndc(latlonalt.latitude, latlonalt.longitude);
 			// transform to screen space consistent with rendering
-			auto pt = camera.applyToNdc(pndc.first, pndc.second);
+			auto pt = camera.applyToNdc(pndc.x, pndc.y);
 			px = pt.first;
 			py = pt.second;
 			const float dx = mx - px;
@@ -922,7 +922,7 @@ void ScoutRenderer::RenderAstroidFieldZone(const Planet* selected_zone, double g
 		// compute center ndc and pixel center
 		auto center_ndc = asteriod_point_to_ndc(box, grid_spacing_km, 0.0, 0.0);
 		// transform center by camera
-		auto center_t = camera.applyToNdc(center_ndc.first, center_ndc.second);
+		auto center_t = camera.applyToNdc(center_ndc.x, center_ndc.y);
 		float center_ndc_x_t = center_t.first;
 		float center_ndc_y_t = center_t.second;
 		float px = (center_ndc_x_t + 1.0f) * 0.5f * disp.x;
@@ -940,12 +940,11 @@ void ScoutRenderer::RenderAstroidFieldZone(const Planet* selected_zone, double g
 		auto outer_ndc_y_pair = asteriod_point_to_ndc(box, grid_spacing_km, 0.0, outer_km);
 
 		// transform ndc radii points by camera
-		auto center_ndc2_t = camera.applyToNdc(center_ndc2.first, center_ndc2.second);
-		auto inner_x_t = camera.applyToNdc(inner_ndc_x_pair.first, inner_ndc_x_pair.second);
-		auto inner_y_t = camera.applyToNdc(inner_ndc_y_pair.first, inner_ndc_y_pair.second);
-		auto outer_x_t = camera.applyToNdc(outer_ndc_x_pair.first, outer_ndc_x_pair.second);
-		auto outer_y_t = camera.applyToNdc(outer_ndc_y_pair.first, outer_ndc_y_pair.second);
-
+		auto center_ndc2_t = camera.applyToNdc(center_ndc2.x, center_ndc2.y);
+		auto inner_x_t = camera.applyToNdc(inner_ndc_x_pair.x, inner_ndc_x_pair.y);
+		auto inner_y_t = camera.applyToNdc(inner_ndc_y_pair.x, inner_ndc_y_pair.y);
+		auto outer_x_t = camera.applyToNdc(outer_ndc_x_pair.x, outer_ndc_x_pair.y);
+		auto outer_y_t = camera.applyToNdc(outer_ndc_y_pair.x, outer_ndc_y_pair.y);
 		auto center_ndc2_tx = center_ndc2_t.first;
 		auto center_ndc2_ty = center_ndc2_t.second;
 		auto inner_ndc_x_t = inner_x_t.first;
@@ -1092,16 +1091,16 @@ void ScoutRenderer::render_track(const DisplayMode dpm, const std::vector<DataPo
 	std::vector<float> pts;
 	pts.reserve(track.size() * 2);
 	for (const auto& p : track) {
-		std::pair<float, float> ndc;
+		Vector2 ndc;
 		if (dpm == DisplayMode::Asteroid_Field || dpm == DisplayMode::Celestial_Belt) {
-			ndc = asteriod_point_to_ndc(selected_zone->bounding_box_km, grid_spacing_km, p.x, p.y);
+			ndc = asteriod_point_to_ndc(selected_zone->bounding_box_km, grid_spacing_km, p.coord.x, p.coord.y);
 		} else {
 			const auto lla = p.get_lat_lon_alt();
-			ndc = latlon_to_ndc(lla[0], lla[1]);
+			ndc = latlon_to_ndc(lla.latitude, lla.longitude);
 		}
 		// Buffer raw NDC; GPU will apply camera pan/zoom
-		float tx = ndc.first;
-		float ty = ndc.second;
+		float tx = ndc.x;
+		float ty = ndc.y;
 		pts.push_back(tx);
 		pts.push_back(ty);
 	}

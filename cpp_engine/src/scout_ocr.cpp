@@ -13,12 +13,14 @@
 #include <fstream>
 #include <iostream>
 #include <optional>
+#include <memory>
 #include <regex>
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
 #include <utility>
 #include <vector>
+#include <cstdint>
 
 namespace {
 
@@ -29,8 +31,14 @@ namespace {
         int width{};
         int height{};
         std::vector<std::uint8_t> bgra;
-        std::vector<std::uint8_t> gray;
+        std::uint8_t gray(int x, int y) const {
+            return bgra[((y * width) + x) * 4 + 0] * 0.114f
+                + bgra[((y * width) + x) * 4 + 1] * 0.587f
+                + bgra[((y * width) + x) * 4 + 2] * 0.299f;
+        }
     };
+
+    // (no thread-local reuse here; per-`ScoutOcr` instance buffers are used)
 
     std::unordered_map<int, std::string> load_label_map(const std::filesystem::path& path) {
         std::ifstream in(path);
@@ -110,15 +118,22 @@ namespace {
         return rect;
     }
 
-    std::optional<CapturedFrame> capture_rect(const RECT& rect) {
+    bool capture_rect(const RECT& rect, void*& reusable_bitmap, void*& reusable_pixels, int& reusable_width, int& reusable_height, void*& reusable_mem_dc, void*& reusable_old_bitmap, int& out_width, int& out_height) {
         const int width = rect.right - rect.left;
         const int height = rect.bottom - rect.top;
         if (width <= 0 || height <= 0) {
-            return std::nullopt;
+            return false;
         }
 
         HDC screen_dc = GetDC(nullptr);
-        HDC mem_dc = CreateCompatibleDC(screen_dc);
+        HDC mem_dc;
+        if (reusable_mem_dc) {
+            mem_dc = reinterpret_cast<HDC>(reusable_mem_dc);
+        } else {
+            mem_dc = CreateCompatibleDC(screen_dc);
+            reusable_mem_dc = reinterpret_cast<void*>(mem_dc);
+            reusable_old_bitmap = nullptr;
+        }
 
         BITMAPINFO bmi{};
         bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
@@ -129,52 +144,79 @@ namespace {
         bmi.bmiHeader.biCompression = BI_RGB;
 
         void* pixels = nullptr;
-        HBITMAP bitmap = CreateDIBSection(screen_dc, &bmi, DIB_RGB_COLORS, &pixels, nullptr, 0);
-        HGDIOBJ old_bitmap = SelectObject(mem_dc, bitmap);
+        HBITMAP bitmap = nullptr;
 
-        BitBlt(mem_dc, 0, 0, width, height, screen_dc, rect.left, rect.top, SRCCOPY | CAPTUREBLT);
-
-        CapturedFrame frame;
-        frame.width = width;
-        frame.height = height;
-        frame.bgra.resize(static_cast<size_t>(width) * static_cast<size_t>(height) * 4);
-        std::memcpy(frame.bgra.data(), pixels, frame.bgra.size());
-        frame.gray.resize(static_cast<size_t>(width) * static_cast<size_t>(height));
-
-        for (int y = 0; y < height; ++y) {
-            for (int x = 0; x < width; ++x) {
-                const size_t offset = (static_cast<size_t>(y) * static_cast<size_t>(width) + static_cast<size_t>(x)) * 4;
-                const float b = static_cast<float>(frame.bgra[offset + 0]);
-                const float g = static_cast<float>(frame.bgra[offset + 1]);
-                const float r = static_cast<float>(frame.bgra[offset + 2]);
-                frame.gray[static_cast<size_t>(y) * static_cast<size_t>(width) + static_cast<size_t>(x)] = static_cast<std::uint8_t>(std::clamp((0.114f * b) + (0.587f * g) + (0.299f * r), 0.0f, 255.0f));
+        // If existing reusable bitmap matches size, reuse it. Otherwise recreate.
+        if (reusable_bitmap && reusable_width == width && reusable_height == height && reusable_pixels) {
+            bitmap = reinterpret_cast<HBITMAP>(reusable_bitmap);
+            pixels = reusable_pixels;
+            // bitmap already selected into mem_dc (from creation time); just blit into it.
+            BitBlt(mem_dc, 0, 0, width, height, screen_dc, rect.left, rect.top, SRCCOPY | CAPTUREBLT);
+        } else {
+            // Need to create or replace the reusable bitmap. If replacing, deselect old bitmap first.
+            if (reusable_bitmap) {
+                if (reusable_old_bitmap) {
+                    SelectObject(mem_dc, reinterpret_cast<HGDIOBJ>(reusable_old_bitmap));
+                }
+                DeleteObject(reinterpret_cast<HGDIOBJ>(reusable_bitmap));
+                reusable_bitmap = nullptr;
+                reusable_pixels = nullptr;
+                reusable_width = reusable_height = 0;
             }
+            bitmap = CreateDIBSection(screen_dc, &bmi, DIB_RGB_COLORS, &pixels, nullptr, 0);
+            if (!bitmap) {
+                ReleaseDC(nullptr, screen_dc);
+                return false;
+            }
+            // select the new bitmap into the persistent mem_dc and remember the old selection
+            HGDIOBJ old_bitmap = SelectObject(mem_dc, bitmap);
+            BitBlt(mem_dc, 0, 0, width, height, screen_dc, rect.left, rect.top, SRCCOPY | CAPTUREBLT);
+
+            // Adopt the created DIBSection as the reusable buffer.
+            reusable_bitmap = reinterpret_cast<void*>(bitmap);
+            reusable_pixels = pixels;
+            reusable_width = width;
+            reusable_height = height;
+            reusable_old_bitmap = reinterpret_cast<void*>(old_bitmap);
         }
 
-        SelectObject(mem_dc, old_bitmap);
-        DeleteObject(bitmap);
-        DeleteDC(mem_dc);
+        out_width = width;
+        out_height = height;
+
+        // Grayscale conversion moved to caller so this helper only fills the DIBSection.
+
+        // for (int y = 0; y < height; ++y) {
+        //     for (int x = 0; x < width; ++x) {
+        //         const size_t offset = (static_cast<size_t>(y) * static_cast<size_t>(width) + static_cast<size_t>(x)) * 4;
+        //         const float b = static_cast<float>(frame->bgra[offset + 0]);
+        //         const float g = static_cast<float>(frame->bgra[offset + 1]);
+        //         const float r = static_cast<float>(frame->bgra[offset + 2]);
+        //         frame->gray[static_cast<size_t>(y) * static_cast<size_t>(width) + static_cast<size_t>(x)] = static_cast<std::uint8_t>(std::clamp((0.114f * b) + (0.587f * g) + (0.299f * r), 0.0f, 255.0f));
+        //     }
+        // }
+
+        // Do not delete the persistent mem_dc here; it is owned by the caller and reused.
         ReleaseDC(nullptr, screen_dc);
-        return frame;
+        return true;
     }
 
-    std::optional<CapturedFrame> capture_frame() {
+    bool capture_frame(void*& reusable_bitmap, void*& reusable_pixels, int& reusable_width, int& reusable_height, void*& reusable_mem_dc, void*& reusable_old_bitmap, int& out_width, int& out_height) {
         const auto monitors = enumerate_monitors();
         if (monitors.empty()) {
-            return std::nullopt;
+            return false;
         }
 
         if (std::string(kCaptureMode) == "window") {
             const auto rect = get_window_rect_by_title(std::wstring(kWindowName, kWindowName + std::strlen(kWindowName)));
             if (!rect) {
-                return std::nullopt;
+                return false;
             }
-            return capture_rect(*rect);
+                return capture_rect(*rect, reusable_bitmap, reusable_pixels, reusable_width, reusable_height, reusable_mem_dc, reusable_old_bitmap, out_width, out_height);
         }
 
         const auto game_window_rect = get_window_rect_by_title(std::wstring(kWindowName, kWindowName + std::strlen(kWindowName)));
         if (!game_window_rect) {
-            return std::nullopt;
+            return false;
         }
 
         long long best_overlap = -1;
@@ -193,20 +235,23 @@ namespace {
         }
 
         if (best_overlap <= 0) {
-            return std::nullopt;
+            return false;
         }
 
-        return capture_rect(monitors[best_index]);
+        return capture_rect(monitors[best_index], reusable_bitmap, reusable_pixels, reusable_width, reusable_height, reusable_mem_dc, reusable_old_bitmap, out_width, out_height);
     }
 
-    std::vector<float> extract_characters_rtl(const CapturedFrame& frame) {
+    std::vector<float> extract_characters_rtl(const void* pixels_void, int width, int height) {
+        // This function now expects a grayscale buffer pointer. If callers pass BGRA,
+        // reinterpretation will still work but we compute grayscale earlier into a buffer.
+        const auto gray = reinterpret_cast<const std::uint8_t*>(pixels_void);
         const int start_y = 30;
         const int end_y = 44;
-        const int start_x = std::max(0, frame.width - 1000);
-        const int end_x = std::max(start_x, frame.width - 4);
+        const int start_x = std::max(0, width - 1000);
+        const int end_x = std::max(start_x, width - 4);
         const int text_width = end_x - start_x;
         const int text_height = end_y - start_y;
-        if (text_width <= 0 || text_height <= 0 || end_y > frame.height) {
+        if (text_width <= 0 || text_height <= 0 || end_y > height) {
             return {};
         }
 
@@ -225,12 +270,12 @@ namespace {
                     const int clamped_x = std::clamp(xx, 0, text_width - 1);
                     const int src_x = start_x + clamped_x;
                     const int src_y = start_y + y_start + yy;
-                    if (src_y < 0 || src_y >= frame.height) {
+                    if (src_y < 0 || src_y >= height) {
                         samples.push_back(0.0f);
                     }
                     else {
-                        const auto value = frame.gray[static_cast<size_t>(src_y) * static_cast<size_t>(frame.width) + static_cast<size_t>(src_x)];
-                        samples.push_back(static_cast<float>(value) / 255.0f);
+                        const size_t idx = (static_cast<size_t>(src_y) * static_cast<size_t>(width) + static_cast<size_t>(src_x));
+                        samples.push_back(static_cast<float>(gray[idx]) / 255.0f);
                     }
                 }
             }
@@ -294,6 +339,22 @@ ScoutOcr::~ScoutOcr() {
         onnx_session_ = nullptr;
     }
 #endif
+    if (reusable_bitmap_) {
+        // Ensure the bitmap is deselected from the persistent DC before deleting.
+        if (reusable_mem_dc_) {
+            HDC memdc = reinterpret_cast<HDC>(reusable_mem_dc_);
+            if (reusable_old_bitmap_) {
+                SelectObject(memdc, reinterpret_cast<HGDIOBJ>(reusable_old_bitmap_));
+            }
+            DeleteDC(memdc);
+            reusable_mem_dc_ = nullptr;
+        }
+        DeleteObject(reinterpret_cast<HGDIOBJ>(reusable_bitmap_));
+        reusable_bitmap_ = nullptr;
+        reusable_pixels_ = nullptr;
+        reusable_width_ = reusable_height_ = 0;
+        reusable_old_bitmap_ = nullptr;
+    }
 }
 
 
@@ -378,14 +439,45 @@ void ScoutOcr::stop() {
 }
 
 std::string ScoutOcr::get_coordinates_ocr_text() const {
-    const auto frame = capture_frame();
-    if (!frame) {
+    int width = 0;
+    int height = 0;
+    if (!capture_frame(reusable_bitmap_, reusable_pixels_, reusable_width_, reusable_height_, reusable_mem_dc_, reusable_old_bitmap_, width, height)) {
         return {};
     }
-    if (frame->width < 200 || frame->height < 100) {
+    if (width < 200 || height < 100) {
         return {};
     }
-    const auto input_values = extract_characters_rtl(*frame);
+        // Compute grayscale into per-instance buffer for fast sampling.
+        {
+            std::vector<std::uint8_t>& gray = reusable_gray_;
+            gray.resize(static_cast<size_t>(width) * static_cast<size_t>(height));
+            const std::uint8_t* src = reinterpret_cast<const std::uint8_t*>(reusable_pixels_);
+            std::uint8_t* dst = gray.data();
+            const size_t px_count = static_cast<size_t>(width) * static_cast<size_t>(height);
+            size_t i = 0;
+            // Unrolled loop for small speedup; integer approx for coefficients.
+            for (; i + 4 <= px_count; i += 4) {
+                for (int k = 0; k < 4; ++k) {
+                    const std::uint8_t b = src[0];
+                    const std::uint8_t g = src[1];
+                    const std::uint8_t r = src[2];
+                    const unsigned grayv = (29u * b + 150u * g + 77u * r + 128u) >> 8;
+                    dst[0] = static_cast<std::uint8_t>(grayv);
+                    dst++;
+                    src += 4;
+                }
+            }
+            for (; i < px_count; ++i) {
+                const std::uint8_t b = src[0];
+                const std::uint8_t g = src[1];
+                const std::uint8_t r = src[2];
+                const unsigned grayv = (29u * b + 150u * g + 77u * r + 128u) >> 8;
+                *dst++ = static_cast<std::uint8_t>(grayv);
+                src += 4;
+            }
+        }
+
+        const auto input_values = extract_characters_rtl(reusable_gray_.data(), width, height);
 
     const int64_t sample_count = static_cast<int64_t>(input_values.size() / (14 * 9));
     std::vector<int64_t> predicted_labels;

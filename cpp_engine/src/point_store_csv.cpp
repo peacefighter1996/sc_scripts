@@ -379,9 +379,9 @@ std::vector<DataPoint> load_points(const std::filesystem::path& csv_path) {
             point.id = std::stoi(trim(row[header_indices[0]]));
             point.uuid = uuid::from_string(trim(row[header_indices[1]]));
             point.server = trim(row[header_indices[2]]);
-            point.x = std::stod(trim(row[header_indices[3]]));
-            point.y = std::stod(trim(row[header_indices[4]]));
-            point.z = std::stod(trim(row[header_indices[5]]));
+            point.coord.x = std::stod(trim(row[header_indices[3]]));
+            point.coord.y = std::stod(trim(row[header_indices[4]]));
+            point.coord.z = std::stod(trim(row[header_indices[5]]));
             point.planet = trim(row[header_indices[6]]);
             point.material = trim(row[header_indices[7]]);
             // backward-compatible: quality fields expected at indices 8 and 9
@@ -443,9 +443,9 @@ bool append_point_csv(const std::filesystem::path& csv_path, const DataPoint& po
     out << point.id << ','
         << csv_escape(point.uuid.to_string()) << ','
         << csv_escape(point.server) << ','
-        << std::setprecision(15) << point.x << ','
-        << std::setprecision(15) << point.y << ','
-        << std::setprecision(15) << point.z << ','
+        << std::setprecision(15) << point.coord.x << ','
+        << std::setprecision(15) << point.coord.y << ','
+        << std::setprecision(15) << point.coord.z << ','
         << csv_escape(point.planet) << ','
         << csv_escape(point.material) << ','
         << std::setprecision(15) << point.quality_min << ','
@@ -479,9 +479,9 @@ bool write_points_csv(const std::filesystem::path& csv_path, const std::vector<D
         out << point.id << ','
             << csv_escape(point.uuid.to_string()) << ','
             << csv_escape(point.server) << ','
-            << std::setprecision(15) << point.x << ','
-            << std::setprecision(15) << point.y << ','
-            << std::setprecision(15) << point.z << ','
+            << std::setprecision(15) << point.coord.x << ','
+            << std::setprecision(15) << point.coord.y << ','
+            << std::setprecision(15) << point.coord.z << ','
             << csv_escape(point.planet) << ','
             << csv_escape(point.material) << ','
             << std::setprecision(15) << point.quality_min << ','

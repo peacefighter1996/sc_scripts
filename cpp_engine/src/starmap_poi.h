@@ -301,9 +301,9 @@ inline bool starmap_poi_to_datapoint(const StarmapPoi& poi, DataPoint& p) {
 	p.id = poi.item_id; // to be set by store
 	p.server = "All"; // not applicable
 	p.planet = poi.Planet;
-	p.x = poi.XCoord;
-	p.y = poi.YCoord;
-	p.z = poi.ZCoord;
+	p.coord.x = poi.XCoord;
+	p.coord.y = poi.YCoord;
+	p.coord.z = poi.ZCoord;
 	auto [type, subtype] = get_PoiType(poi);
 	p.poi_type = type;
 	p.subtype = subtype;

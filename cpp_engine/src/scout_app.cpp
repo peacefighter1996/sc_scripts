@@ -826,9 +826,9 @@ struct AppState {
 				z = result.z.value();
 
 				if (settings.auto_update_ocr_newpoint_enabled) {
-					new_data.x = result.x.value();
-					new_data.y = result.y.value();
-					new_data.z = result.z.value();
+					new_data.coord.x = result.x.value();
+					new_data.coord.y = result.y.value();
+					new_data.coord.z = result.z.value();
 				}
 
 				if (travel_log && travel_log_active) {
@@ -1248,9 +1248,9 @@ int run_scout_app() {
 
 				ImGui::Checkbox("Auto updates new point coordinates", &state.settings.auto_update_ocr_newpoint_enabled);
 
-				float input_x = static_cast<float>(state.new_data.x);
-				float input_y = static_cast<float>(state.new_data.y);
-				float input_z = static_cast<float>(state.new_data.z);
+				float input_x = static_cast<float>(state.new_data.coord.x);
+				float input_y = static_cast<float>(state.new_data.coord.y);
+				float input_z = static_cast<float>(state.new_data.coord.z);
 
 				if (!state.settings.auto_update_ocr_newpoint_enabled) {
 					ImGui::Text("Last OCR values: X=%.2f Y=%.2f Z=%.2f", state.x, state.y, state.z);
@@ -1293,9 +1293,9 @@ int run_scout_app() {
 				ImGui::InputFloat("X", &input_x);
 				ImGui::InputFloat("Y", &input_y);
 				ImGui::InputFloat("Z", &input_z);
-				state.new_data.x = input_x;
-				state.new_data.y = input_y;
-				state.new_data.z = input_z;
+				state.new_data.coord.x = input_x;
+				state.new_data.coord.y = input_y;
+				state.new_data.coord.z = input_z;
 				ImGui::InputInt("Quality Min", &state.new_data.quality_min);
 				ImGui::InputInt("Quality Max", &state.new_data.quality_max);
 
@@ -1303,9 +1303,9 @@ int run_scout_app() {
 					DataPoint new_point;
 					new_point.server = state.selected_server;
 					new_point.uuid = uuid::generate_uuid_v4();
-					new_point.x = state.new_data.x;
-					new_point.y = state.new_data.y;
-					new_point.z = state.new_data.z;
+					new_point.coord.x = state.new_data.coord.x;
+					new_point.coord.y = state.new_data.coord.y;
+					new_point.coord.z = state.new_data.coord.z;
 					new_point.planet = state.selected_planet;
 					new_point.material = state.new_data.material;
 					new_point.location = false;
@@ -1341,7 +1341,7 @@ int run_scout_app() {
 							// Ensure asteroid zone bounding boxes expand to include the new point when needed
 							if (state.store) {
 								if (auto sqlite_backend = dynamic_cast<SqliteStore*>(state.store.get())) {
-									if (sqlite_backend->ensure_zone_contains_point(new_point.planet, new_point.x, new_point.y, state.settings.grid_spacing_km)) {
+									if (sqlite_backend->ensure_zone_contains_point(new_point.planet, new_point.coord.x, new_point.coord.y, state.settings.grid_spacing_km)) {
 										state.reload_planet_catalog();
 
 									}
@@ -1363,9 +1363,9 @@ int run_scout_app() {
 					new_point.id = state.new_data.id;
 					new_point.server = state.selected_server;
 					new_point.uuid = uuid::generate_uuid_v4();
-					new_point.x = state.new_data.x;
-					new_point.y = state.new_data.y;
-					new_point.z = state.new_data.z;
+					new_point.coord.x = state.new_data.coord.x;
+					new_point.coord.y = state.new_data.coord.y;
+					new_point.coord.z = state.new_data.coord.z;
 					new_point.planet = state.selected_planet;
 					new_point.material = state.new_data.material;
 					new_point.location = false;
@@ -1396,7 +1396,7 @@ int run_scout_app() {
 								state.sync_service->notify_new_local_event(ev);
 							}
 							if (auto sqlite_backend = dynamic_cast<SqliteStore*>(state.store.get())) {
-								if (sqlite_backend->ensure_zone_contains_point(new_point.planet, new_point.x, new_point.y, state.settings.grid_spacing_km)) {
+								if (sqlite_backend->ensure_zone_contains_point(new_point.planet, new_point.coord.x, new_point.coord.y, state.settings.grid_spacing_km)) {
 									state.reload_planet_catalog();
 								}
 							}
@@ -1602,9 +1602,9 @@ if (ImGui::Button("Browse")) {
 					if (p.server.find(state.datatable_filters[2]) == std::string::npos) return false;
 				}
 				// 3,4,5: x,y,z
-				if (!state.datatable_filters[3].empty()) { if (std::to_string(p.x).find(state.datatable_filters[3]) == std::string::npos) return false; }
-				if (!state.datatable_filters[4].empty()) { if (std::to_string(p.y).find(state.datatable_filters[4]) == std::string::npos) return false; }
-				if (!state.datatable_filters[5].empty()) { if (std::to_string(p.z).find(state.datatable_filters[5]) == std::string::npos) return false; }
+				if (!state.datatable_filters[3].empty()) { if (std::to_string(p.coord.x).find(state.datatable_filters[3]) == std::string::npos) return false; }
+				if (!state.datatable_filters[4].empty()) { if (std::to_string(p.coord.y).find(state.datatable_filters[4]) == std::string::npos) return false; }
+				if (!state.datatable_filters[5].empty()) { if (std::to_string(p.coord.z).find(state.datatable_filters[5]) == std::string::npos) return false; }
 				// 6: planet
 				if (!state.datatable_filters[6].empty()) { if (p.planet.find(state.datatable_filters[6]) == std::string::npos) return false; }
 				// 7: poi_type
@@ -1648,9 +1648,9 @@ if (ImGui::Button("Browse")) {
 						if (c == "id") return asc ? a.id < b.id : a.id > b.id;
 						if (c == "time") return asc ? a.time_info < b.time_info : a.time_info > b.time_info;
 						if (c == "server") return asc ? a.server < b.server : a.server > b.server;
-						if (c == "x") return asc ? a.x < b.x : a.x > b.x;
-						if (c == "y") return asc ? a.y < b.y : a.y > b.y;
-						if (c == "z") return asc ? a.z < b.z : a.z > b.z;
+						if (c == "x") return asc ? a.coord.x < b.coord.x : a.coord.x > b.coord.x;
+						if (c == "y") return asc ? a.coord.y < b.coord.y : a.coord.y > b.coord.y;
+						if (c == "z") return asc ? a.coord.z < b.coord.z : a.coord.z > b.coord.z;
 						if (c == "planet") return asc ? a.planet < b.planet : a.planet > b.planet;
 						if (c == "material") return asc ? a.material < b.material : a.material > b.material;
 						if (c == "qmin") return asc ? a.quality_min < b.quality_min : a.quality_min > b.quality_min;
@@ -1879,9 +1879,9 @@ if (ImGui::Button("Browse")) {
 						if (c == "id") return asc ? a.id < b.id : a.id > b.id;
 						if (c == "time") return asc ? a.time_info < b.time_info : a.time_info > b.time_info;
 						if (c == "server") return asc ? a.server < b.server : a.server > b.server;
-						if (c == "x") return asc ? a.x < b.x : a.x > b.x;
-						if (c == "y") return asc ? a.y < b.y : a.y > b.y;
-						if (c == "z") return asc ? a.z < b.z : a.z > b.z;
+						if (c == "x") return asc ? a.coord.x < b.coord.x : a.coord.x > b.coord.x;
+						if (c == "y") return asc ? a.coord.y < b.coord.y : a.coord.y > b.coord.y;
+						if (c == "z") return asc ? a.coord.z < b.coord.z : a.coord.z > b.coord.z;
 						if (c == "planet") return asc ? a.planet < b.planet : a.planet > b.planet;
 						if (c == "material") return asc ? a.material < b.material : a.material > b.material;
 						if (c == "qmin") return asc ? a.quality_min < b.quality_min : a.quality_min > b.quality_min;
@@ -1929,11 +1929,11 @@ if (ImGui::Button("Browse")) {
 					// X
 					ImGui::TableSetColumnIndex(3);
 					{
-						double val = dp.x;
+						double val = dp.coord.x;
 						std::string lbl = std::string("##x") + std::to_string(idx);
 						ImGui::PushItemWidth(-FLT_MIN);
 						if (ImGui::InputDouble(lbl.c_str(), &val, 0.0, 0.0, "%.6f")) {
-							dp.x = val;
+							dp.coord.x = val;
 							data_dirty = true;
 							mark_modified(dp.id);
 						}
@@ -1943,11 +1943,11 @@ if (ImGui::Button("Browse")) {
 					// Y
 					ImGui::TableSetColumnIndex(4);
 					{
-						double val = dp.y;
+						double val = dp.coord.y;
 						std::string lbl = std::string("##y") + std::to_string(idx);
 						ImGui::PushItemWidth(-FLT_MIN);
 						if (ImGui::InputDouble(lbl.c_str(), &val, 0.0, 0.0, "%.6f")) {
-							dp.y = val;
+							dp.coord.y = val;
 							data_dirty = true;
 							mark_modified(dp.id);
 						}
@@ -1957,11 +1957,11 @@ if (ImGui::Button("Browse")) {
 					// Z
 					ImGui::TableSetColumnIndex(5);
 					{
-						double val = dp.z;
+						double val = dp.coord.z;
 						std::string lbl = std::string("##z") + std::to_string(idx);
 						ImGui::PushItemWidth(-FLT_MIN);
 						if (ImGui::InputDouble(lbl.c_str(), &val, 0.0, 0.0, "%.6f")) {
-							dp.z = val;
+							dp.coord.z = val;
 							data_dirty = true;
 							mark_modified(dp.id);
 						}
@@ -2637,8 +2637,8 @@ if (ImGui::Button("Browse")) {
 				if (state.selected_planet_obj != nullptr) {
 					if (state.display_mode == DisplayMode::Asteroid_Field || state.display_mode == DisplayMode::Celestial_Belt) {
 						// For asteroid fields, use the center of the field as the location marker
-						const double x = state.new_data.x;
-						const double y = state.new_data.y;
+						const double x = state.new_data.coord.x;
+						const double y = state.new_data.coord.y;
 						const bbox2d box = state.selected_planet_obj->bounding_box_km;
 						const double x_min = box.min_x;
 						const double x_max = box.max_x;
@@ -2656,7 +2656,7 @@ if (ImGui::Button("Browse")) {
 						
 					} else {
 						const auto lat_lon_alt = state.new_data.to_lat_lon_alt();
-						const auto [u, v] = latlon_to_uv(lat_lon_alt[0], lat_lon_alt[1]);
+						const auto [u, v] = latlon_to_uv(lat_lon_alt.latitude, lat_lon_alt.longitude);
 						const float px = (u * 2.0f) - 1.0f;
 						const float py = (v * 2.0f) - 1.0f;
 						renderer.render_marker(px, py, 1.0f, 1.0f, 0.0f, 0.9f, 6.0f, state.camera2d);

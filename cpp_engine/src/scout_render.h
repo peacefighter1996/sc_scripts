@@ -18,6 +18,30 @@ struct zone_label {
     std::string label;
 };
 
+inline Vector2 uv_to_ndc(const Vector2& uv) {
+    return { (uv.x * 2.0) - 1.0, (uv.y * 2.0) - 1.0 };
+}
+inline Vector2 ndc_to_uv(const Vector2& ndc) {
+    return { (ndc.x + 1.0) * 0.5, (ndc.y + 1.0) * 0.5 };
+}
+// Convert lat/lon to UV coordinates in [0,1] range. Latitude is expected in [-90,90], longitude in [-180,180].
+inline Vector2 uv_to_latlon(const Vector2& uv) {
+    return { (uv.y * 180.0) - 90.0, (uv.x * 360.0) - 180.0 };
+}
+// lat/lon to UV coordinates in [0,1] range. Latitude is expected in [-90,90], longitude in [-180,180].
+inline Vector2 latlon_to_uv(const Vector2& latlon) {
+	return { (latlon.y + 180.0) / 360.0, (latlon.x + 90.0) / 180.0 };
+}
+// Convert lat/lon to normalized device coordinates in [-1,1] range for rendering. Latitude is expected in [-90,90], longitude in [-180,180].
+inline Vector2 latlonalt_to_ndc(const LatLonAlt& latlon) {
+	return { (latlon.longitude) / 180.0, (latlon.latitude) / 90.0 };
+}
+inline Vector2 latlon_to_ndc(const double& lat, const double& lon) {
+    return { lon / 180.0, lat / 90.0 };
+}
+
+
+
 class ScoutRenderer {
 public:
     ScoutRenderer();
@@ -57,9 +81,9 @@ public:
 
 private:
     // Convert a point (either asteroid-field XY or lat/lon) to normalized device coords [-1,1]
-    std::pair<float, float> zone_point_to_ndc(const DisplayMode dpm, const Planet* selected_zone, double a, double b, double grid_spacing_km) const;
-    std::pair<float, float> asteriod_point_to_ndc(const bbox2d& box, double grid_spacing_km, double a, double b) const;
-    std::pair<float, float> latlon_to_ndc(double lat, double lon) const;
+    Vector2 zone_point_to_ndc(const DisplayMode dpm, const Planet* selected_zone, double a, double b, double grid_spacing_km) const;
+    Vector2 asteriod_point_to_ndc(const bbox2d& box, double grid_spacing_km, double a, double b) const;
+    //std::pair<float, float> latlon_to_ndc(double lat, double lon) const;
     // Render grid lines for asteroid fields
     void render_grid_for_zone(const DisplayMode dpm, const Planet* selected_zone, double grid_spacing_km, const Camera2D &camera = Camera2D());
     // Excel-style column label helper (A..Z, AA..ZZ, etc.)

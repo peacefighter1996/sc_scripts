@@ -10,6 +10,8 @@
 #include <atomic>
 #include <cstddef>
 
+// Do not include Windows headers in this public header; use opaque pointer for DIBSection ownership.
+
 #ifdef SCOUT_HAS_ONNXRUNTIME
 #include <onnxruntime_cxx_api.h>
 #endif
@@ -68,4 +70,14 @@ private:
     std::unordered_map<SubscriptionId, Callback> subscribers_;
     SubscriptionId next_sub_id_{1};
     SubscriptionId single_sub_id_{0};
+    // Reusable DIBSection ownership to avoid copying pixel data on each capture.
+    // Opaque handle to the reusable DIBSection and its pixel pointer.
+    mutable void* reusable_bitmap_{nullptr};
+    mutable void* reusable_pixels_{nullptr};
+    mutable int reusable_width_{0};
+    mutable int reusable_height_{0};
+    mutable std::vector<float> reusable_gray_displayinfo_;
+    // Reusable compatible DC and previous bitmap selected into it.
+    mutable void* reusable_mem_dc_{nullptr};
+    mutable void* reusable_old_bitmap_{nullptr};
 };

@@ -164,13 +164,60 @@ inline const char* poi_subtype_name(PoiSubType t) {
 
 bool poi_subtype_from_string(const std::string& s, PoiSubType& out);
 
+struct LatLonAlt {
+	double latitude;
+	double longitude;
+	double altitude;
+};
+
+struct Vector3 {
+	double x;
+	double y;
+	double z;
+};
+
+struct Vector2 {
+	double x;
+	double y;
+};
+
+inline Vector3 operator-(const Vector3& a, const Vector3& b) {
+	return { a.x - b.x, a.y - b.y, a.z - b.z };
+}
+inline Vector3 operator+(const Vector3& a, const Vector3& b) {
+	return { a.x + b.x, a.y + b.y, a.z + b.z };
+}
+
+inline Vector3 operator*(const Vector3& v, double scalar) {
+	return { v.x * scalar, v.y * scalar, v.z * scalar };
+}
+inline Vector3 operator*(double scalar, const Vector3& v) {
+	return v * scalar;
+}
+inline Vector3 operator/(const Vector3& v, double scalar) {
+	return { v.x / scalar, v.y / scalar, v.z / scalar };
+}
+inline Vector3 operator/(double scalar, const Vector3& v) {
+	return { scalar / v.x, scalar / v.y, scalar / v.z };
+}
+
+inline Vector2 operator-(const Vector2& a, const Vector2& b) {
+	return { a.x - b.x, a.y - b.y };
+}
+inline Vector2 operator+(const Vector2& a, const Vector2& b) {
+	return { a.x + b.x, a.y + b.y };
+}
+
+const Vector3 origin_vector3{ 0.0, 0.0, 0.0 };
+
+const LatLonAlt origin_latlonalt{ 0.0, 0.0, 0.0 };
+
+
 struct DataPoint {
 	uuid uuid;
 	int id{};
 	std::string server;
-	double x{};
-	double y{};
-	double z{};
+	Vector3 coord{ 0.0, 0.0, 0.0 };
 	std::string planet;
 	std::string material;
 	bool location{};
@@ -187,11 +234,11 @@ struct DataPoint {
 	// Whether this POI has a persistent quantum target (can QT to it from starmap)
 	bool qt_persistent{};
 
-	[[nodiscard]] std::vector<double> to_lat_lon_alt() const; // force recalculation, bypassing cache (useful if point coordinates have been modified after initial calculation)
-	[[nodiscard]] std::vector<double> get_lat_lon_alt() const;
+	const LatLonAlt to_lat_lon_alt() const; // force recalculation, bypassing cache (useful if point coordinates have been modified after initial calculation)
+	const LatLonAlt get_lat_lon_alt() const;
 
 private:
-	mutable std::vector<double> lat_lon_alt_cache_;
+	mutable LatLonAlt lat_lon_alt_cache_ = { 0.0, 0.0, 0.0 };
 };
 
 bool operator==(const DataPoint& a, const DataPoint& b);
@@ -203,9 +250,7 @@ inline void from_json(const nlohmann::json& j, DataPoint& p) {
 	p.uuid = uuid::from_string(j.value("uuid", ""));
 	p.id = j.value("id", 0);
 	p.server = j.value("server", "All");
-	p.x = j.value("x", 0.0);
-	p.y = j.value("y", 0.0);
-	p.z = j.value("z", 0.0);
+	p.coord = { j.value("x", 0.0), j.value("y", 0.0), j.value("z", 0.0) };
 	p.planet = j.value("planet", "");
 	p.material = j.value("material", "");
 	p.location = j.value("location", false);
@@ -223,9 +268,9 @@ inline void to_json(nlohmann::json& j, const DataPoint& p) {
 		{"id", p.id},
 		{"uuid", p.uuid.to_string()},
 		{"server", p.server},
-		{"x", p.x},
-		{"y", p.y},
-		{"z", p.z},
+		{"x", p.coord.x},
+		{"y", p.coord.y},
+		{"z", p.coord.z},
 		{"planet", p.planet},
 		{"material", p.material},
 		{"location", p.location},

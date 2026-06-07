@@ -75,9 +75,9 @@ std::string SqliteStore::data_point_to_json(const DataPoint& p) {
 	ss << "\"id\":" << p.id << ",";
 	ss << "\"guid\":\"" << esc(p.uuid.to_string()) << "\",";
 	ss << "\"server\":\"" << esc(p.server) << "\",";
-	ss << "\"x\":" << std::setprecision(15) << p.x << ",";
-	ss << "\"y\":" << std::setprecision(15) << p.y << ",";
-	ss << "\"z\":" << std::setprecision(15) << p.z << ",";
+	ss << "\"x\":" << std::setprecision(15) << p.coord.x << ",";
+	ss << "\"y\":" << std::setprecision(15) << p.coord.y << ",";
+	ss << "\"z\":" << std::setprecision(15) << p.coord.z << ",";
 	ss << "\"planet\":\"" << esc(p.planet) << "\",";
 	ss << "\"material\":\"" << esc(p.material) << "\",";
 	ss << "\"location\":" << (p.location ? 1 : 0) << ",";
@@ -481,9 +481,9 @@ std::vector<DataPoint> SqliteStore::load_points() {
 		p.id = sqlite3_column_int(stmt, 0);
 		const unsigned char* t0 = sqlite3_column_text(stmt, 1);
 		p.server = t0 ? reinterpret_cast<const char*>(t0) : std::string();
-		p.x = sqlite3_column_double(stmt, 2);
-		p.y = sqlite3_column_double(stmt, 3);
-		p.z = sqlite3_column_double(stmt, 4);
+		p.coord.x = sqlite3_column_double(stmt, 2);
+		p.coord.y = sqlite3_column_double(stmt, 3);
+		p.coord.z = sqlite3_column_double(stmt, 4);
 		const unsigned char* t5 = sqlite3_column_text(stmt, 5);
 		p.planet = t5 ? reinterpret_cast<const char*>(t5) : std::string();
 		const unsigned char* t6 = sqlite3_column_text(stmt, 6);
@@ -549,9 +549,9 @@ bool SqliteStore::append_point(DataPoint& p, uuid* out_change_id) {
 		return false;
 	}
 	sqlite3_bind_text(ins, 1, p.server.c_str(), -1, SQLITE_TRANSIENT);
-	sqlite3_bind_double(ins, 2, p.x);
-	sqlite3_bind_double(ins, 3, p.y);
-	sqlite3_bind_double(ins, 4, p.z);
+	sqlite3_bind_double(ins, 2, p.coord.x);
+	sqlite3_bind_double(ins, 3, p.coord.y);
+	sqlite3_bind_double(ins, 4, p.coord.z);
 	sqlite3_bind_text(ins, 5, p.planet.c_str(), -1, SQLITE_TRANSIENT);
 	sqlite3_bind_text(ins, 6, p.material.c_str(), -1, SQLITE_TRANSIENT);
 	sqlite3_bind_int(ins, 7, p.location ? 1 : 0);
@@ -815,9 +815,9 @@ std::vector<DataPoint> SqliteStore::load_points(const std::string& zone_name, co
 		p.id = sqlite3_column_int(stmt, 0);
 		const unsigned char* t0 = sqlite3_column_text(stmt, 1);
 		p.server = t0 ? reinterpret_cast<const char*>(t0) : std::string();
-		p.x = sqlite3_column_double(stmt, 2);
-		p.y = sqlite3_column_double(stmt, 3);
-		p.z = sqlite3_column_double(stmt, 4);
+		p.coord.x = sqlite3_column_double(stmt, 2);
+		p.coord.y = sqlite3_column_double(stmt, 3);
+		p.coord.z = sqlite3_column_double(stmt, 4);
 		const unsigned char* t5 = sqlite3_column_text(stmt, 5);
 		p.planet = t5 ? reinterpret_cast<const char*>(t5) : std::string();
 		const unsigned char* t6 = sqlite3_column_text(stmt, 6);
@@ -874,9 +874,9 @@ bool SqliteStore::overwrite_points(const std::vector<DataPoint>& points) {
 	for (const auto& p : points) {
 		sqlite3_bind_int(ins, 1, p.id);
 		sqlite3_bind_text(ins, 2, p.server.c_str(), -1, SQLITE_TRANSIENT);
-		sqlite3_bind_double(ins, 3, p.x);
-		sqlite3_bind_double(ins, 4, p.y);
-		sqlite3_bind_double(ins, 5, p.z);
+		sqlite3_bind_double(ins, 3, p.coord.x);
+		sqlite3_bind_double(ins, 4, p.coord.y);
+		sqlite3_bind_double(ins, 5, p.coord.z);
 		sqlite3_bind_text(ins, 6, p.planet.c_str(), -1, SQLITE_TRANSIENT);
 		sqlite3_bind_text(ins, 7, p.material.c_str(), -1, SQLITE_TRANSIENT);
 		sqlite3_bind_int(ins, 8, p.location ? 1 : 0);
@@ -996,9 +996,9 @@ DataPoint SqliteStore::get_datapoint(int recordid) {
 		p.id = sqlite3_column_int(stmt, 0);
 		const unsigned char* t0 = sqlite3_column_text(stmt, 1);
 		p.server = t0 ? reinterpret_cast<const char*>(t0) : std::string();
-		p.x = sqlite3_column_double(stmt, 2);
-		p.y = sqlite3_column_double(stmt, 3);
-		p.z = sqlite3_column_double(stmt, 4);
+		p.coord.x = sqlite3_column_double(stmt, 2);
+		p.coord.y = sqlite3_column_double(stmt, 3);
+		p.coord.z = sqlite3_column_double(stmt, 4);
 		const unsigned char* t5 = sqlite3_column_text(stmt, 5);
 		p.planet = t5 ? reinterpret_cast<const char*>(t5) : std::string();
 		const unsigned char* t6 = sqlite3_column_text(stmt, 6);

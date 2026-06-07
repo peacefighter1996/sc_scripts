@@ -111,7 +111,10 @@ static bool win32_save_file_dialog(std::wstring& out_path) {
 
 #include "travel_log.h"
 
+#include "camera.h"
+
 #include <unordered_map>
+#include <unordered_set>
 
 // Fallback defaults (original defaults may live elsewhere; provide minimal fallbacks to compile)
 static const std::vector<std::string> kDefaultPlanets = { "Default" };
@@ -223,6 +226,8 @@ struct AppSettings {
 
 	// Last used export file path (persisted to settings.ini)
 	std::string last_export_path;
+	// Last selected planet to restore on startup
+	std::string last_selected_planet;
 	std::string session_export_dir = "./data/exports/"; // directory to export session minerals (relative to repo root or absolute path)
 
 	// Sync/storage settings
@@ -311,6 +316,12 @@ struct AppState {
 	DataPoint new_data{};
 	std::unordered_map<std::string, GLuint> texture_cache;
 	std::optional<std::string> hovered_text;
+
+	// Map interaction/cameras
+	Camera2D camera2d;
+	Camera3D camera3d;
+	// Highlighted materials (names)
+	std::unordered_set<std::string> highlighted_materials;
 
 	bool data_form_active{ false };
 	bool planets_form_active{ false };
@@ -425,7 +436,14 @@ struct AppState {
 			for (const auto& name : kDefaultMaterials) materials.push_back(name);
 		}
 
-		update_selected_planet(planets.empty() ? kDefaultPlanets.front() : planets.front());
+		// Restore last selected planet from settings when possible
+		std::string initial_planet;
+		if (!settings.last_selected_planet.empty() && std::find(planets.begin(), planets.end(), settings.last_selected_planet) != planets.end()) {
+			initial_planet = settings.last_selected_planet;
+		} else {
+			initial_planet = planets.empty() ? kDefaultPlanets.front() : planets.front();
+		}
+		update_selected_planet(initial_planet);
 		update_grid_spacing();
 
 		// Initialize datatable helper structures
@@ -489,6 +507,10 @@ struct AppState {
 				set_display_mode(get_zone_default_display_mode(selected_planet_obj->zone_type));
 			}
 		}
+
+		// Persist last-selected planet immediately so restarts restore selection
+		settings.last_selected_planet = selected_planet;
+		save_settings();
 	}
 
 	void set_display_mode(DisplayMode new_mode) {
@@ -660,6 +682,7 @@ struct AppState {
 		out << "qt_disable_duration_s=" << settings.qt_disable_duration_s << '\n';
 		out << "tracking_min_core_distance_km=" << settings.tracking_min_core_distance_km << '\n';
 		out << "last_export_path=" << settings.last_export_path << '\n';
+		out << "last_selected_planet=" << settings.last_selected_planet << '\n';
 		out << "session_export_dir=" << settings.session_export_dir << '\n';
 		out << "auto_export_session_minerals=" << (settings.auto_export_session_minerals ? "1" : "0") << '\n';
 	}
@@ -735,6 +758,8 @@ struct AppState {
 				catch (...) {}
 			} else if (key == "last_export_path") {
 				settings.last_export_path = value;
+			} else if (key == "last_selected_planet") {
+				settings.last_selected_planet = value;
 			} else if (key == "session_export_dir") {
 				settings.session_export_dir = value;
 			} else if (key == "auto_export_session_minerals") {
@@ -801,9 +826,9 @@ struct AppState {
 				z = result.z.value();
 
 				if (settings.auto_update_ocr_newpoint_enabled) {
-					new_data.x = result.x.value();
-					new_data.y = result.y.value();
-					new_data.z = result.z.value();
+					new_data.coord.x = result.x.value();
+					new_data.coord.y = result.y.value();
+					new_data.coord.z = result.z.value();
 				}
 
 				if (travel_log && travel_log_active) {
@@ -1223,9 +1248,9 @@ int run_scout_app() {
 
 				ImGui::Checkbox("Auto updates new point coordinates", &state.settings.auto_update_ocr_newpoint_enabled);
 
-				float input_x = static_cast<float>(state.new_data.x);
-				float input_y = static_cast<float>(state.new_data.y);
-				float input_z = static_cast<float>(state.new_data.z);
+				float input_x = static_cast<float>(state.new_data.coord.x);
+				float input_y = static_cast<float>(state.new_data.coord.y);
+				float input_z = static_cast<float>(state.new_data.coord.z);
 
 				if (!state.settings.auto_update_ocr_newpoint_enabled) {
 					ImGui::Text("Last OCR values: X=%.2f Y=%.2f Z=%.2f", state.x, state.y, state.z);
@@ -1268,9 +1293,9 @@ int run_scout_app() {
 				ImGui::InputFloat("X", &input_x);
 				ImGui::InputFloat("Y", &input_y);
 				ImGui::InputFloat("Z", &input_z);
-				state.new_data.x = input_x;
-				state.new_data.y = input_y;
-				state.new_data.z = input_z;
+				state.new_data.coord.x = input_x;
+				state.new_data.coord.y = input_y;
+				state.new_data.coord.z = input_z;
 				ImGui::InputInt("Quality Min", &state.new_data.quality_min);
 				ImGui::InputInt("Quality Max", &state.new_data.quality_max);
 
@@ -1278,9 +1303,9 @@ int run_scout_app() {
 					DataPoint new_point;
 					new_point.server = state.selected_server;
 					new_point.uuid = uuid::generate_uuid_v4();
-					new_point.x = state.new_data.x;
-					new_point.y = state.new_data.y;
-					new_point.z = state.new_data.z;
+					new_point.coord.x = state.new_data.coord.x;
+					new_point.coord.y = state.new_data.coord.y;
+					new_point.coord.z = state.new_data.coord.z;
 					new_point.planet = state.selected_planet;
 					new_point.material = state.new_data.material;
 					new_point.location = false;
@@ -1316,7 +1341,7 @@ int run_scout_app() {
 							// Ensure asteroid zone bounding boxes expand to include the new point when needed
 							if (state.store) {
 								if (auto sqlite_backend = dynamic_cast<SqliteStore*>(state.store.get())) {
-									if (sqlite_backend->ensure_zone_contains_point(new_point.planet, new_point.x, new_point.y, state.settings.grid_spacing_km)) {
+									if (sqlite_backend->ensure_zone_contains_point(new_point.planet, new_point.coord.x, new_point.coord.y, state.settings.grid_spacing_km)) {
 										state.reload_planet_catalog();
 
 									}
@@ -1338,9 +1363,9 @@ int run_scout_app() {
 					new_point.id = state.new_data.id;
 					new_point.server = state.selected_server;
 					new_point.uuid = uuid::generate_uuid_v4();
-					new_point.x = state.new_data.x;
-					new_point.y = state.new_data.y;
-					new_point.z = state.new_data.z;
+					new_point.coord.x = state.new_data.coord.x;
+					new_point.coord.y = state.new_data.coord.y;
+					new_point.coord.z = state.new_data.coord.z;
 					new_point.planet = state.selected_planet;
 					new_point.material = state.new_data.material;
 					new_point.location = false;
@@ -1371,7 +1396,7 @@ int run_scout_app() {
 								state.sync_service->notify_new_local_event(ev);
 							}
 							if (auto sqlite_backend = dynamic_cast<SqliteStore*>(state.store.get())) {
-								if (sqlite_backend->ensure_zone_contains_point(new_point.planet, new_point.x, new_point.y, state.settings.grid_spacing_km)) {
+								if (sqlite_backend->ensure_zone_contains_point(new_point.planet, new_point.coord.x, new_point.coord.y, state.settings.grid_spacing_km)) {
 									state.reload_planet_catalog();
 								}
 							}
@@ -1577,9 +1602,9 @@ if (ImGui::Button("Browse")) {
 					if (p.server.find(state.datatable_filters[2]) == std::string::npos) return false;
 				}
 				// 3,4,5: x,y,z
-				if (!state.datatable_filters[3].empty()) { if (std::to_string(p.x).find(state.datatable_filters[3]) == std::string::npos) return false; }
-				if (!state.datatable_filters[4].empty()) { if (std::to_string(p.y).find(state.datatable_filters[4]) == std::string::npos) return false; }
-				if (!state.datatable_filters[5].empty()) { if (std::to_string(p.z).find(state.datatable_filters[5]) == std::string::npos) return false; }
+				if (!state.datatable_filters[3].empty()) { if (std::to_string(p.coord.x).find(state.datatable_filters[3]) == std::string::npos) return false; }
+				if (!state.datatable_filters[4].empty()) { if (std::to_string(p.coord.y).find(state.datatable_filters[4]) == std::string::npos) return false; }
+				if (!state.datatable_filters[5].empty()) { if (std::to_string(p.coord.z).find(state.datatable_filters[5]) == std::string::npos) return false; }
 				// 6: planet
 				if (!state.datatable_filters[6].empty()) { if (p.planet.find(state.datatable_filters[6]) == std::string::npos) return false; }
 				// 7: poi_type
@@ -1623,9 +1648,9 @@ if (ImGui::Button("Browse")) {
 						if (c == "id") return asc ? a.id < b.id : a.id > b.id;
 						if (c == "time") return asc ? a.time_info < b.time_info : a.time_info > b.time_info;
 						if (c == "server") return asc ? a.server < b.server : a.server > b.server;
-						if (c == "x") return asc ? a.x < b.x : a.x > b.x;
-						if (c == "y") return asc ? a.y < b.y : a.y > b.y;
-						if (c == "z") return asc ? a.z < b.z : a.z > b.z;
+						if (c == "x") return asc ? a.coord.x < b.coord.x : a.coord.x > b.coord.x;
+						if (c == "y") return asc ? a.coord.y < b.coord.y : a.coord.y > b.coord.y;
+						if (c == "z") return asc ? a.coord.z < b.coord.z : a.coord.z > b.coord.z;
 						if (c == "planet") return asc ? a.planet < b.planet : a.planet > b.planet;
 						if (c == "material") return asc ? a.material < b.material : a.material > b.material;
 						if (c == "qmin") return asc ? a.quality_min < b.quality_min : a.quality_min > b.quality_min;
@@ -1854,9 +1879,9 @@ if (ImGui::Button("Browse")) {
 						if (c == "id") return asc ? a.id < b.id : a.id > b.id;
 						if (c == "time") return asc ? a.time_info < b.time_info : a.time_info > b.time_info;
 						if (c == "server") return asc ? a.server < b.server : a.server > b.server;
-						if (c == "x") return asc ? a.x < b.x : a.x > b.x;
-						if (c == "y") return asc ? a.y < b.y : a.y > b.y;
-						if (c == "z") return asc ? a.z < b.z : a.z > b.z;
+						if (c == "x") return asc ? a.coord.x < b.coord.x : a.coord.x > b.coord.x;
+						if (c == "y") return asc ? a.coord.y < b.coord.y : a.coord.y > b.coord.y;
+						if (c == "z") return asc ? a.coord.z < b.coord.z : a.coord.z > b.coord.z;
 						if (c == "planet") return asc ? a.planet < b.planet : a.planet > b.planet;
 						if (c == "material") return asc ? a.material < b.material : a.material > b.material;
 						if (c == "qmin") return asc ? a.quality_min < b.quality_min : a.quality_min > b.quality_min;
@@ -1904,11 +1929,11 @@ if (ImGui::Button("Browse")) {
 					// X
 					ImGui::TableSetColumnIndex(3);
 					{
-						double val = dp.x;
+						double val = dp.coord.x;
 						std::string lbl = std::string("##x") + std::to_string(idx);
 						ImGui::PushItemWidth(-FLT_MIN);
 						if (ImGui::InputDouble(lbl.c_str(), &val, 0.0, 0.0, "%.6f")) {
-							dp.x = val;
+							dp.coord.x = val;
 							data_dirty = true;
 							mark_modified(dp.id);
 						}
@@ -1918,11 +1943,11 @@ if (ImGui::Button("Browse")) {
 					// Y
 					ImGui::TableSetColumnIndex(4);
 					{
-						double val = dp.y;
+						double val = dp.coord.y;
 						std::string lbl = std::string("##y") + std::to_string(idx);
 						ImGui::PushItemWidth(-FLT_MIN);
 						if (ImGui::InputDouble(lbl.c_str(), &val, 0.0, 0.0, "%.6f")) {
-							dp.y = val;
+							dp.coord.y = val;
 							data_dirty = true;
 							mark_modified(dp.id);
 						}
@@ -1932,11 +1957,11 @@ if (ImGui::Button("Browse")) {
 					// Z
 					ImGui::TableSetColumnIndex(5);
 					{
-						double val = dp.z;
+						double val = dp.coord.z;
 						std::string lbl = std::string("##z") + std::to_string(idx);
 						ImGui::PushItemWidth(-FLT_MIN);
 						if (ImGui::InputDouble(lbl.c_str(), &val, 0.0, 0.0, "%.6f")) {
-							dp.z = val;
+							dp.coord.z = val;
 							data_dirty = true;
 							mark_modified(dp.id);
 						}
@@ -2175,24 +2200,41 @@ if (ImGui::Button("Browse")) {
 			static bool planets_dirty = false;
 			static std::string planets_save_message;
 
+			static int new_planet_id = 0;
+			static char new_sys[64] = "";
+			static char new_name[128] = "";
+			static char new_img[128] = "";
+			static char new_zone[64] = "";
+			static bool new_has_asteroid_belt = false;
+			static double new_planet_radius = 0.0;
+			static double new_karman_line = 100.0;
+			static double new_belt_inner = 0.0;
+			static double new_belt_outer = 0.0;
+			static double new_belt_thickness = 0.0;
+			static int new_zone_type = zone_type_to_int(ZoneType::CelestialBody);
+			const char* zone_items_new[] = { zone_type_name(ZoneType::CelestialBody), zone_type_name(ZoneType::AsteroidField), zone_type_name(ZoneType::Solar) };
+
+			int spacers = new_has_asteroid_belt?8:7;
 			ImGui::Text("Edit planet catalog (changes are in-memory until you Save)");
 			ImGui::Separator();
 
 			ImGuiTableFlags table_flags = ImGuiTableFlags_Resizable | ImGuiTableFlags_Reorderable | ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerH | ImGuiTableFlags_ScrollY;
-			// added one more column for Zone Type selection
-			if (ImGui::BeginTable("PlanetsTable_v1", 7, table_flags, ImVec2(0, ImGui::GetContentRegionAvail().y - 80))) {
+			// added one more column for Zone Type selection and Belt editing
+			if (ImGui::BeginTable("PlanetsTable_v1", 8, table_flags, ImVec2(0, ImGui::GetContentRegionAvail().y - 165))) {
 				ImGui::TableSetupColumn("ID", ImGuiTableColumnFlags_WidthFixed, 50.0f);
 				ImGui::TableSetupColumn("System");
 				ImGui::TableSetupColumn("Planet");
 				ImGui::TableSetupColumn("Image Dir");
 				ImGui::TableSetupColumn("Zone ID");
 				ImGui::TableSetupColumn("Zone Type");
+				ImGui::TableSetupColumn("Belt");
 				ImGui::TableSetupColumn("Control", ImGuiTableColumnFlags_WidthFixed, 80.0f);
 				ImGui::TableSetupScrollFreeze(0, 1);
 				ImGui::TableHeadersRow();
 
 				std::vector<size_t> to_erase;
 				static std::unordered_map<size_t, std::array<int, 4>> bbox_edits;
+				static std::unordered_map<size_t, std::array<double, 5>> belt_edits; // planet_radius, karman_line, inner, outer, thickness
 				for (size_t i = 0; i < state.planet_catalog.size(); ++i) {
 					Planet& pl = state.planet_catalog[i];
 					ImGui::TableNextRow();
@@ -2264,8 +2306,27 @@ if (ImGui::Button("Browse")) {
 					}
 					ImGui::PopItemWidth();
 
-					// Controls (Delete + optional BBox editor for asteroid fields)
+					// Belt controls (checkbox + edit popup)
 					ImGui::TableSetColumnIndex(6);
+					// Checkbox for whether this zone has an asteroid belt
+					if (pl.zone_type == ZoneType::AsteroidField) {
+						ImGui::TextDisabled("Asteroid Field");
+					} else {
+						if (ImGui::Checkbox((std::string("##hasbelt") + std::to_string(i)).c_str(), &pl.has_asteroid_belt)) {
+							planets_dirty = true;
+						}
+						
+						ImGui::SameLine();
+						// Edit Planet button
+						std::string edit_belt_btn = std::string("Edit Planet##belt") + std::to_string(i);
+						if (ImGui::SmallButton(edit_belt_btn.c_str())) {
+							belt_edits[i] = { pl.planet_radius_km, pl.karman_line_km, pl.belt_inner_radius_km, pl.belt_outer_radius_km, pl.belt_thickness_km };
+							std::string popup_name = std::string("Edit Planet##beltpopup") + std::to_string(i);
+							ImGui::OpenPopup(popup_name.c_str());
+					}	
+					}
+					// Delete button moved to next column
+					ImGui::TableSetColumnIndex(7);
 					if (pl.zone_type == ZoneType::AsteroidField || pl.has_asteroid_belt) {
 						std::string bbox_btn = std::string("BBox##bbox") + std::to_string(i);
 						if (ImGui::SmallButton(bbox_btn.c_str())) {
@@ -2307,6 +2368,39 @@ if (ImGui::Button("Browse")) {
 						}
 						ImGui::EndPopup();
 					}
+
+					// Popup modal for editing belt params
+					std::string belt_popup = std::string("Edit Planet##beltpopup") + std::to_string(i);
+					if (ImGui::BeginPopupModal(belt_popup.c_str(), nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+						auto itb = belt_edits.find(i);
+						if (itb != belt_edits.end()) {
+							auto& bvals = itb->second;
+							ImGui::InputDouble((std::string("Planet Radius (km)##pr") + std::to_string(i)).c_str(), &bvals[0]);
+							ImGui::InputDouble((std::string("Karman Line (km)##kl") + std::to_string(i)).c_str(), &bvals[1]);
+							ImGui::InputDouble((std::string("Belt Inner (km)##bi") + std::to_string(i)).c_str(), &bvals[2]);
+							ImGui::InputDouble((std::string("Belt Outer (km)##bo") + std::to_string(i)).c_str(), &bvals[3]);
+							ImGui::InputDouble((std::string("Belt Thickness (km)##bt") + std::to_string(i)).c_str(), &bvals[4]);
+							if (ImGui::Button((std::string("Save##beltsave") + std::to_string(i)).c_str())) {
+								pl.planet_radius_km = bvals[0];
+								pl.karman_line_km = bvals[1];
+								pl.belt_inner_radius_km = bvals[2];
+								pl.belt_outer_radius_km = bvals[3];
+								pl.belt_thickness_km = bvals[4];
+								planets_dirty = true;
+								belt_edits.erase(itb);
+								ImGui::CloseCurrentPopup();
+							}
+							ImGui::SameLine();
+							if (ImGui::Button((std::string("Cancel##beltcancel") + std::to_string(i)).c_str())) {
+								belt_edits.erase(itb);
+								ImGui::CloseCurrentPopup();
+							}
+						} else {
+							ImGui::Text("No belt data available");
+							if (ImGui::Button("Close")) ImGui::CloseCurrentPopup();
+						}
+						ImGui::EndPopup();
+					}
 				}
 
 				if (!to_erase.empty()) {
@@ -2324,37 +2418,65 @@ if (ImGui::Button("Browse")) {
 
 			ImGui::Separator();
 			ImGui::Text("Add new planet:");
-			static int new_planet_id = 0;
-			static char new_sys[64] = "";
-			static char new_name[128] = "";
-			static char new_img[128] = "";
-			static char new_zone[64] = "";
+			
+			
 			if (new_planet_id == 0) {
 				int maxid = -1;
 				for (const auto& p : state.planet_catalog) maxid = max(maxid, p.id);
 				new_planet_id = maxid + 1;
 			}
-			ImGui::InputInt("ID##newplanet", &new_planet_id);
-			ImGui::InputText("System##newplanet", new_sys, IM_ARRAYSIZE(new_sys));
-			ImGui::InputText("Planet##newplanet", new_name, IM_ARRAYSIZE(new_name));
-			ImGui::InputText("Image Dir##newplanet", new_img, IM_ARRAYSIZE(new_img));
+			// ImGui::InputInt("ID##newplanet", &new_planet_id);
+			ImGui::PushItemWidth(100);
+			ImGui::InputText("System##newplanet", new_sys, IM_ARRAYSIZE(new_sys));ImGui::SameLine();
+			ImGui::PushItemWidth(100);
+			ImGui::InputText("Planet##newplanet", new_name, IM_ARRAYSIZE(new_name));ImGui::SameLine();
+			ImGui::PushItemWidth(100);
+			ImGui::Combo("Zone Type##newplanet", &new_zone_type, zone_items_new, IM_ARRAYSIZE(zone_items_new));ImGui::SameLine();
+			ImGui::PushItemWidth(100);
 			ImGui::InputText("Zone ID##newplanet", new_zone, IM_ARRAYSIZE(new_zone));
-			static int new_zone_type = zone_type_to_int(ZoneType::CelestialBody);
-			const char* zone_items_new[] = { zone_type_name(ZoneType::CelestialBody), zone_type_name(ZoneType::AsteroidField), zone_type_name(ZoneType::Solar) };
-			ImGui::Combo("Zone Type##newplanet", &new_zone_type, zone_items_new, IM_ARRAYSIZE(zone_items_new));
+			ImGui::PushItemWidth(300);
+			ImGui::InputText("Image Dir##newplanet", new_img, IM_ARRAYSIZE(new_img)); 
+			
 			static int new_min_x = -300;
 			static int new_max_x = 300;
 			static int new_min_y = -300;
 			static int new_max_y = 300;
-			if (static_cast<ZoneType>(new_zone_type) == ZoneType::AsteroidField) {
-				ImGui::InputInt("Min X (km)##new_minx", &new_min_x);
-				ImGui::InputInt("Max X (km)##new_maxx", &new_max_x);
-				ImGui::InputInt("Min Y (km)##new_miny", &new_min_y);
+			if (static_cast<ZoneType>(new_zone_type) == ZoneType::CelestialBody) {
+				ImGui::Checkbox("Has Asteroid Belt##newbelt", &new_has_asteroid_belt);
+			}
+			if (new_has_asteroid_belt || static_cast<ZoneType>(new_zone_type) == ZoneType::AsteroidField) {
+				ImGui::PushItemWidth(100);
+				ImGui::SameLine();ImGui::InputDouble("Planet Radius (km)##new_pr", &new_planet_radius);ImGui::SameLine();
+				ImGui::PushItemWidth(100);
+				ImGui::InputDouble("Karman Line (km)##new_kl", &new_karman_line);ImGui::SameLine();
+				ImGui::PushItemWidth(100);
+				ImGui::InputDouble("Belt Inner (km)##new_bi", &new_belt_inner);ImGui::SameLine();
+				ImGui::PushItemWidth(100);
+				ImGui::InputDouble("Belt Outer (km)##new_bo", &new_belt_outer);ImGui::SameLine();
+				ImGui::PushItemWidth(100);
+				ImGui::InputDouble("Belt Thickness (km)##new_bt", &new_belt_thickness);
+			}
+			if (static_cast<ZoneType>(new_zone_type) == ZoneType::AsteroidField || new_has_asteroid_belt) {
+				ImGui::Text("Bounding Box (km):"); ImGui::SameLine();
+				ImGui::PushItemWidth(100);
+				ImGui::InputInt("Min X (km)##new_minx", &new_min_x); ImGui::SameLine();
+				ImGui::PushItemWidth(100);
+				ImGui::InputInt("Max X (km)##new_maxx", &new_max_x); ImGui::SameLine();
+				ImGui::PushItemWidth(100);
+				ImGui::InputInt("Min Y (km)##new_miny", &new_min_y); ImGui::SameLine();
+				ImGui::PushItemWidth(100);
 				ImGui::InputInt("Max Y (km)##new_maxy", &new_max_y);
 			}
+
 			if (ImGui::Button("Add Planet")) {
 				Planet p{ new_planet_id, std::string(new_sys), std::string(new_name), std::string(new_img), std::string(new_zone) };
 				p.zone_type = static_cast<ZoneType>(new_zone_type);
+				p.has_asteroid_belt = new_has_asteroid_belt;
+				p.planet_radius_km = new_planet_radius;
+				p.karman_line_km = new_karman_line;
+				p.belt_inner_radius_km = new_belt_inner;
+				p.belt_outer_radius_km = new_belt_outer;
+				p.belt_thickness_km = new_belt_thickness;
 				if (p.zone_type == ZoneType::AsteroidField) {
 					p.bounding_box_km = { static_cast<double>(new_min_x), static_cast<double>(new_max_x), static_cast<double>(new_min_y), static_cast<double>(new_max_y) };
 				}
@@ -2365,6 +2487,8 @@ if (ImGui::Button("Browse")) {
 				new_sys[0] = '\0'; new_name[0] = '\0'; new_img[0] = '\0'; new_zone[0] = '\0';
 				new_zone_type = zone_type_to_int(ZoneType::CelestialBody);
 				new_min_x = -300; new_max_x = 300; new_min_y = -300; new_max_y = 300;
+				new_has_asteroid_belt = false;
+				new_planet_radius = 0.0; new_karman_line = 100.0; new_belt_inner = 0.0; new_belt_outer = 0.0; new_belt_thickness = 0.0;
 			}
 
 			ImGui::Separator();
@@ -2425,6 +2549,67 @@ if (ImGui::Button("Browse")) {
 			};
 		}
 
+		// Mouse-driven pan/zoom (only when ImGui is not capturing the mouse)
+		{
+			ImGuiIO& io = ImGui::GetIO();
+			static bool map_panning = false;
+			static std::pair<float,float> last_mouse_ndc = {0.0f, 0.0f};
+			// Zoom with mouse wheel centered at cursor
+			if (mouse_pos && !io.WantCaptureMouse && std::abs(io.MouseWheel) > 1e-6f) {
+				double wheel = io.MouseWheel; // positive = up
+				double factor = std::pow(1.25, wheel);
+				double oldZoom = state.camera2d.getZoom();
+				double newZoom = oldZoom * factor;
+				if (newZoom < 1.0) newZoom = 1.0;
+				if (newZoom > 8.0) newZoom = 8.0;
+				if (std::abs(newZoom - oldZoom) > 1e-9) {
+					// compute world point under cursor (pre-zoom)
+					auto pan = state.camera2d.getPan();
+					float sX = (*mouse_pos).first;
+					float sY = (*mouse_pos).second;
+					float wX = (sX - pan.first) / static_cast<float>(oldZoom) + pan.first;
+					float wY = (sY - pan.second) / static_cast<float>(oldZoom) + pan.second;
+					float denomX = 1.0f - static_cast<float>(newZoom);
+					if (std::abs(denomX) > 1e-6f) {
+						float newPanX = (sX - wX * static_cast<float>(newZoom)) / denomX;
+						float newPanY = (sY - wY * static_cast<float>(newZoom)) / denomX;
+						state.camera2d.setPan({ newPanX, newPanY });
+					}
+					state.camera2d.setZoom(newZoom);
+				}
+			}
+
+			// Pan via left-button drag (only when ImGui isn't capturing)
+			if (mouse_pos && !io.WantCaptureMouse) {
+				if (io.MouseDown[0]) {
+					if (!map_panning) {
+						map_panning = true;
+						last_mouse_ndc = *mouse_pos;
+					} else {
+						// compute world point under previous cursor position
+						auto pan = state.camera2d.getPan();
+						double zoom = state.camera2d.getZoom();
+						float s0x = last_mouse_ndc.first;
+						float s0y = last_mouse_ndc.second;
+						float w0x = (s0x - pan.first) / static_cast<float>(zoom) + pan.first;
+						float w0y = (s0y - pan.second) / static_cast<float>(zoom) + pan.second;
+						// desired new screen position is current cursor NDC
+						float s1x = (*mouse_pos).first;
+						float s1y = (*mouse_pos).second;
+						float denom = 1.0f - static_cast<float>(zoom);
+						if (std::abs(denom) > 1e-6f) {
+							float newPanX = (s1x - w0x * static_cast<float>(zoom)) / denom;
+							float newPanY = (s1y - w0y * static_cast<float>(zoom)) / denom;
+							state.camera2d.setPan({ newPanX, newPanY });
+						}
+						last_mouse_ndc = *mouse_pos;
+					}
+				} else {
+					map_panning = false;
+				}
+			}
+		}
+
 		state.hovered_text.reset();
 		if (texture != 0) {
 			const Planet* selected_zone = nullptr;
@@ -2435,12 +2620,12 @@ if (ImGui::Button("Browse")) {
 			}
 
 
-			state.hovered_text = renderer.render_map(texture, state.filtered_points, mouse_pos, state.material_catalog, selected_zone, state.display_mode, state.grid_spacing);
+			state.hovered_text = renderer.render_map(texture, state.filtered_points, mouse_pos, state.material_catalog, selected_zone, state.display_mode, state.grid_spacing, state.camera2d, &state.highlighted_materials);
 			// Render travel log overlay (if available) so users can see their tracked path
 			if (state.travel_log) {
 				const auto track = state.travel_log->get_tracked_points_copy();
 				if (!track.empty()) {
-					renderer.render_track(state.display_mode, track, selected_zone, state.grid_spacing);
+					renderer.render_track(state.display_mode, track, selected_zone, state.grid_spacing, state.camera2d);
 				}
 			}
 			const auto toggle_now = std::chrono::steady_clock::now();
@@ -2450,10 +2635,10 @@ if (ImGui::Button("Browse")) {
 			}
 			if (location_on) {
 				if (state.selected_planet_obj != nullptr) {
-					if (state.selected_planet_obj->zone_type == ZoneType::AsteroidField) {
+					if (state.display_mode == DisplayMode::Asteroid_Field || state.display_mode == DisplayMode::Celestial_Belt) {
 						// For asteroid fields, use the center of the field as the location marker
-						const double x = state.new_data.x;
-						const double y = state.new_data.y;
+						const double x = state.new_data.coord.x;
+						const double y = state.new_data.coord.y;
 						const bbox2d box = state.selected_planet_obj->bounding_box_km;
 						const double x_min = box.min_x;
 						const double x_max = box.max_x;
@@ -2466,19 +2651,56 @@ if (ImGui::Button("Browse")) {
 							v = (y - y_min) / (y_max - y_min);
 							const float px = (u * 2.0f) - 1.0f;
 							const float py = (v * 2.0f) - 1.0f;
-							renderer.render_marker(px, py, 1.0f, 1.0f, 0.0f, 0.9f, 6.0f);
+							renderer.render_marker(px, py, 1.0f, 1.0f, 0.0f, 0.9f, 6.0f, state.camera2d);
 						} 
 						
 					} else {
 						const auto lat_lon_alt = state.new_data.to_lat_lon_alt();
-						const auto [u, v] = latlon_to_uv(lat_lon_alt[0], lat_lon_alt[1]);
+						const auto [u, v] = latlon_to_uv(lat_lon_alt.latitude, lat_lon_alt.longitude);
 						const float px = (u * 2.0f) - 1.0f;
 						const float py = (v * 2.0f) - 1.0f;
-						renderer.render_marker(px, py, 1.0f, 1.0f, 0.0f, 0.9f, 6.0f);
+						renderer.render_marker(px, py, 1.0f, 1.0f, 0.0f, 0.9f, 6.0f, state.camera2d);
 					}
 				}
 			}
 		}
+
+		// Small legend / controls overlay (top-left)
+		//{
+		//	ImGui::SetNextWindowBgAlpha(0.55f);
+		//	ImGui::Begin("Map Legend", nullptr, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoTitleBar);
+		//	ImGui::Text("Zoom: %.2fx", state.camera2d.getZoom());
+		//	if (ImGui::Button("+")) state.camera2d.increaseZoomBy(0.25);
+		//	ImGui::SameLine();
+		//	if (ImGui::Button("-")) state.camera2d.increaseZoomBy(-0.25);
+		//	ImGui::SameLine();
+		//	if (ImGui::Button("Reset")) { state.camera2d.setZoom(1.0); state.camera2d.setPan({0.0f,0.0f}); }
+
+		//	ImGui::Separator();
+		//	ImGui::Text("Pan:");
+		//	if (ImGui::Button("Up")) state.camera2d.panBy(0.0f, 0.05f);
+		//	ImGui::SameLine(); if (ImGui::Button("Down")) state.camera2d.panBy(0.0f, -0.05f);
+		//	ImGui::SameLine(); if (ImGui::Button("Left")) state.camera2d.panBy(-0.05f, 0.0f);
+		//	ImGui::SameLine(); if (ImGui::Button("Right")) state.camera2d.panBy(0.05f, 0.0f);
+
+		//	ImGui::Separator();
+		//	ImGui::Text("Legend (materials)");
+		//	// Collect materials visible on map
+		//	std::unordered_map<std::string,int> counts;
+		//	for (const auto &p : state.filtered_points) {
+		//		counts[p.material]++;
+		//	}
+		//	for (const auto &m : state.material_catalog) {
+		//		const auto it = counts.find(m.name);
+		//		if (it == counts.end()) continue;
+		//		bool highlighted = state.highlighted_materials.count(m.name) > 0;
+		//		if (ImGui::Checkbox((m.name + " (" + std::to_string(it->second) + ")").c_str(), &highlighted)) {
+		//			if (highlighted) state.highlighted_materials.insert(m.name);
+		//			else state.highlighted_materials.erase(m.name);
+		//		}
+		//	}
+		//	ImGui::End();
+		//}
 
 		if (state.hovered_text) {
 			ImVec2 mouse = ImGui::GetMousePos();

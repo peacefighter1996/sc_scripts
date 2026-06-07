@@ -294,12 +294,12 @@ bool TravelLog::feed_measurement(double x, double y, double z, double timestamp_
             if (zone_type_ != ZoneType::CelestialBody || core_dist >= cfg_.min_core_distance_km) {
                 DataPoint p{};
                 p.id = next_id_++;
-                p.x = kf_x_[0]; p.y = kf_x_[1]; p.z = kf_x_[2];
+                p.coord.x = kf_x_[0]; p.coord.y = kf_x_[1]; p.coord.z = kf_x_[2];
                 p.time_info = iso_time_from_epoch_s(now_s);
                 tracked_points_.push_back(p);
                 start_time_s_ = now_s;
                 last_time_s_ = now_s;
-                last_x_ = p.x; last_y_ = p.y; last_z_ = p.z;
+                last_x_ = p.coord.x; last_y_ = p.coord.y; last_z_ = p.coord.z;
                 last_speed_mps_ = 0.0;
                 return true;
             }
@@ -338,9 +338,9 @@ bool TravelLog::feed_measurement(double x, double y, double z, double timestamp_
 
 	const DataPoint& last_point = tracked_points_.empty() ? DataPoint{} : tracked_points_.back();
 
-	const double last_dx = fx - last_point.x;
-	const double last_dy = fy - last_point.y;
-    const double last_dz = fz - last_point.z;
+	const double last_dx = fx - last_point.coord.x;
+	const double last_dy = fy - last_point.coord.y;
+    const double last_dz = fz - last_point.coord.z;
     
     const double dist_km_lastnode = std::sqrt(last_dx*last_dx + last_dy*last_dy + last_dz*last_dz);
 
@@ -375,7 +375,7 @@ bool TravelLog::feed_measurement(double x, double y, double z, double timestamp_
     if (dist_km_lastnode >= cfg_.distance_threshold_km) {
         DataPoint p{};
         p.id = next_id_++;
-        p.x = fx; p.y = fy; p.z = fz;
+        p.coord.x = fx; p.coord.y = fy; p.coord.z = fz;
         p.time_info = iso_time_from_epoch_s(now_s);
         tracked_points_.push_back(p);
 		last_point_ = &tracked_points_.back();
@@ -460,7 +460,7 @@ void TravelLog::persist_locked(const std::filesystem::path& full_path) {
     out << "  \"points\": [\n";
     for (size_t i = 0; i < tracked_points_.size(); ++i) {
         const auto& p = tracked_points_[i];
-        out << "    { \"x\": " << p.x << ", \"y\": " << p.y << ", \"z\": " << p.z << ", \"time\": \"" << p.time_info << "\" }";
+        out << "    { \"x\": " << p.coord.x << ", \"y\": " << p.coord.y << ", \"z\": " << p.coord.z << ", \"time\": \"" << p.time_info << "\" }";
         if (i + 1 < tracked_points_.size()) out << ",\n"; else out << "\n";
     }
     out << "  ]\n";
@@ -549,7 +549,7 @@ bool TravelLog::load_from_file_locked(const std::filesystem::path& full_path) {
 
         DataPoint p{};
         p.id = next_id_++;
-        p.x = x; p.y = y; p.z = z;
+        p.coord.x = x; p.coord.y = y; p.coord.z = z;
         p.time_info = timestr;
         p.server = server_;
         p.planet = zone_name_;
@@ -563,9 +563,9 @@ bool TravelLog::load_from_file_locked(const std::filesystem::path& full_path) {
         // set timing and last state from loaded data
         start_time_s_ = parse_iso_time_to_epoch_s(tracked_points_.front().time_info);
         last_time_s_ = parse_iso_time_to_epoch_s(tracked_points_.back().time_info);
-        last_x_ = tracked_points_.back().x;
-        last_y_ = tracked_points_.back().y;
-        last_z_ = tracked_points_.back().z;
+        last_x_ = tracked_points_.back().coord.x;
+        last_y_ = tracked_points_.back().coord.y;
+        last_z_ = tracked_points_.back().coord.z;
         last_speed_mps_ = 0.0;
     }
 

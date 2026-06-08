@@ -16,7 +16,6 @@ set(SCOUT_ENGINE_SOURCES
 	src/scout_core.cpp
 	src/scout_ocr.cpp
 	src/timer_metric.cpp
-	src/timer_display.cpp
     src/point_store_csv.cpp
     src/point_store_sqlite.cpp
     src/sync_service.cpp
@@ -37,7 +36,9 @@ endif()
 # Application executable now links the core library and contains UI-specific sources
 add_executable(scout_engine
 	src/scout_render.h
-	src/scout_render.cpp)
+	src/scout_render.cpp
+	src/timer_display.cpp
+	src/data_table.cpp)
 target_include_directories(scout_engine PRIVATE src)
 target_link_libraries(scout_engine PRIVATE scout_core_lib)
 

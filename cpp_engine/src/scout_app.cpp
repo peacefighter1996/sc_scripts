@@ -121,8 +121,7 @@ static const std::vector<std::string> kDefaultPlanets = { "Default" };
 static const std::vector<std::string> kDefaultMaterials = { "All" };
 static const std::vector<std::string> kDefaultServerIds = { "All" };
 static const std::unordered_map<std::string, std::string> kMaterialIds = {};
-static const int kMinQuality = 0;
-static const int kMaxQuality = 100;
+
 
 // Simple time helpers used for point timestamps
 static std::chrono::system_clock::time_point now_ymdhm() {
@@ -225,666 +224,547 @@ std::pair<float, float> latlon_to_uv(double lat, double lon) {
 	return { u, v };
 }
 
-struct AppSettings {
-	bool show_timings{ false };
-	bool auto_update_ocr_newpoint_enabled{ true };
-	bool ocr_feed_planet_update_enabled{ true };
-	bool auto_export_session_minerals{ true };
-
-	// Last used export file path (persisted to settings.ini)
-	std::string last_export_path;
-	// Last selected planet to restore on startup
-	std::string last_selected_planet;
-	std::string session_export_dir = "./data/exports/"; // directory to export session minerals (relative to repo root or absolute path)
-
-	// Sync/storage settings
-	bool sync_enabled{ false };
-	std::string sync_server_url;
-	std::string sync_node_id;
-	std::string storage_db_path; // relative to repo_root or absolute path to geoscout.db
-	int sync_max_outbox_size{ 10000 };
-	double grid_spacing_km{ 100.0 };
-	double planet_grid_spacing_degrees{ 22.5 }; // for celestial bodies, grid spacing in degrees (e.g., 22.5° = 16x16 grid); for asteroid fields, grid spacing is in kilometers.
-	// Tracking / Travel Log settings
-	// Default: do not auto-start the travel log - user must enable it manually
-	bool tracking_enabled_on_start{ false };
-	double tracking_distance_threshold_km{ 5.0 };
-	double tracking_max_speed_mps{ 1500.0 };
-	double tracking_max_accel_mps2{ 30.0 * 9.80665 };
-	double kalman_max_life_s{ 10.0 };
-	double qt_threshold{ 100000.0 };
-	double qt_disable_duration_s{ 3.0 };
-	double tracking_min_core_distance_km{ 100.0 };
-};
 
 
+AppState::AppState() : repo_root(detect_repo_root()),
+onnx_model_path(repo_root / "data" / "best_pareto_model.onnx"),
+label_map_path(repo_root / "data" / "label_map.json"),
+planets_dir(repo_root / "images" / "planets")
+{
 
-struct AppState {
-	AppSettings settings;
+	settings = load_settings(repo_root / "config" / "settings.ini");
+	app_start_time = std::chrono::system_clock::now();
 
-	std::chrono::system_clock::time_point app_start_time;
+	// Initialize TravelLog subsystem (kept separate from main data store)
+	TravelLog::Config tlcfg;
+	tlcfg.distance_threshold_km = settings.tracking_distance_threshold_km;
+	tlcfg.max_speed_mps = settings.tracking_max_speed_mps;
+	tlcfg.max_accel_mps2 = settings.tracking_max_accel_mps2;
+	tlcfg.kalman_max_life_s = settings.kalman_max_life_s;
+	tlcfg.qt_threshold = settings.qt_threshold;
+	tlcfg.qt_disable_duration_s = settings.qt_disable_duration_s;
+	tlcfg.min_core_distance_km = settings.tracking_min_core_distance_km;
+	travel_log.configure(tlcfg);
+	// Do not auto-start here; we'll auto-start later after planet/selection initialization if explicitly configured
 
-	std::filesystem::path repo_root;
-	std::filesystem::path onnx_model_path;
-	std::filesystem::path label_map_path;
-	std::filesystem::path planets_dir;
+	// Defer loading of catalogs until after the point store is initialized so we can prefer sqlite-backed tables.
 
-	DisplayMode display_mode;
-
-	std::vector<DataPoint> points;
-	// Points used specifically for the datatable view (after column filters and sorting)
-	std::vector<DataPoint> datatablepoints;
-	std::vector<DataPoint> filtered_points;
-	std::vector<std::string> server_ids;
-	std::vector<std::string> planets;
-	std::vector<std::string> systems;
-	std::vector<std::string> system_planets;
-	std::vector<std::string> materials;
-	// Per-column filter strings for datatable header row (index corresponds to table column index)
-	std::vector<std::string> datatable_filters;
-	// Sort state for datatable: column key and order (0=none,1=asc,2=desc)
-	std::string datatable_sort_column;
-	int datatable_sort_order{0};
-	std::vector<std::string> resource_filter_materials;
-	std::vector<Planet> planet_catalog;
-	std::vector<Resource> material_catalog;
-	std::unique_ptr<IStore> store;
-	std::unique_ptr<ISyncService> sync_service;
-	ScoutOcr::SubscriptionId ocr_subscription_id;
-
-	double x;
-	double y;
-	double z;
-	double grid_spacing{ 100.0 };
-
-	std::string selected_system;
-	std::string selected_planet;
-	Planet* selected_planet_obj;
-	std::string last_detected_region;
-	std::string selected_material;
-	std::string popup_selected_item;
-	// Text used to filter resources in the UI (typed by the user)
-	std::string resource_filter_text;
-	// Text used to filter resources when selecting for a new record
-	std::string resource_record_filter_text;
-
-	// Text used to filter servers in the Server selector popup
-	std::string server_filter_text;
-
-	// Text used to filter planets in the Zone selector popup
-	std::string planet_filter_text;
-
-	// Most-recently-used resources for quick selection when adding a new point
-	std::vector<std::string> recent_resources;
-	std::string selected_server;
-	std::optional<std::string> last_detected_rock;
-	int quality_min{ kMinQuality };
-	int quality_max{ kMaxQuality };
-	DataPoint new_data{};
-	std::string loaded_texture;
-	GLuint loaded_texture_id{ 0 };
-	//std::unordered_map<std::string, GLuint> texture_cache;
-	std::optional<std::string> hovered_text;
-
-	// Map interaction/cameras
-	// Camera2D camera2d;
-	// Camera3D camera3d;
-	// Highlighted materials (names)
-	std::unordered_set<std::string> highlighted_materials;
-
-	bool data_form_active{ false };
-	bool planets_form_active{ false };
-
-	// Travel Log (separate from the main data system)
-	std::unique_ptr<TravelLog> travel_log;
-	bool travel_log_active{ false };
-	bool travel_log_disabled_due_to_qt{ false };
-
-	// OCR results pushed from worker thread are stored here for main-thread processing
-	std::mutex ocr_mutex;
-	std::vector<OcrResult> ocr_results;
-
-	AppState()
-		: repo_root(detect_repo_root()),
-		onnx_model_path(repo_root / "data" / "best_pareto_model.onnx"),
-		label_map_path(repo_root / "data" / "label_map.json"),
-		planets_dir(repo_root / "images" / "planets") {
-
-		settings = load_settings(repo_root / "config" / "settings.ini");
-		app_start_time = std::chrono::system_clock::now();
-
-		// Initialize TravelLog subsystem (kept separate from main data store)
-		travel_log = std::make_unique<TravelLog>();
-		TravelLog::Config tlcfg;
-		tlcfg.distance_threshold_km = settings.tracking_distance_threshold_km;
-		tlcfg.max_speed_mps = settings.tracking_max_speed_mps;
-		tlcfg.max_accel_mps2 = settings.tracking_max_accel_mps2;
-		tlcfg.kalman_max_life_s = settings.kalman_max_life_s;
-		tlcfg.qt_threshold = settings.qt_threshold;
-		tlcfg.qt_disable_duration_s = settings.qt_disable_duration_s;
-		tlcfg.min_core_distance_km = settings.tracking_min_core_distance_km;
-		travel_log->configure(tlcfg);
-		// Do not auto-start here; we'll auto-start later after planet/selection initialization if explicitly configured
-
-		// Defer loading of catalogs until after the point store is initialized so we can prefer sqlite-backed tables.
-
-		// Initialize point store: prefer SQLite if configured and available, otherwise CSV adapter
-		std::string db_path_str = settings.storage_db_path;
-		if (db_path_str.empty()) {
-			db_path_str = (repo_root / "data" / "geoscout.db").string();
-			settings.storage_db_path = db_path_str;
-		} else {
-			std::filesystem::path p(db_path_str);
-			if (!p.is_absolute()) {
-				db_path_str = (repo_root / p).string();
-			}
+	// Initialize point store: prefer SQLite if configured and available, otherwise CSV adapter
+	std::string db_path_str = settings.storage_db_path;
+	if (db_path_str.empty()) {
+		db_path_str = (repo_root / "data" / "geoscout.db").string();
+		settings.storage_db_path = db_path_str;
+	} else {
+		std::filesystem::path p(db_path_str);
+		if (!p.is_absolute()) {
+			db_path_str = (repo_root / p).string();
 		}
+	}
 
-		auto sqlite_store = std::make_unique<SqliteStore>(db_path_str, settings.sync_node_id);
-		if (sqlite_store->init()) {
-			store = std::move(sqlite_store);
-		} else {
-			// store = std::make_unique<CsvPointStore>(csv_path.string());
+	auto sqlite_store = std::make_unique<SqliteStore>(db_path_str, settings.sync_node_id);
+	if (sqlite_store->init()) {
+		store = std::move(sqlite_store);
+	} else {
+		// store = std::make_unique<CsvPointStore>(csv_path.string());
+	}
+
+	// Load catalogs from chosen backend (prefer sqlite if available)
+	auto sqlite_backend = store.get();
+	if (sqlite_backend) {
+		server_ids = sqlite_backend->load_server_ids();
+		if (server_ids.empty()) server_ids = load_server_ids_csv(std::filesystem::path(repo_root / "data" / "server_ids.csv"), kDefaultServerIds);
+
+		planet_catalog = sqlite_backend->load_planets();
+		if (planet_catalog.empty()) planet_catalog = load_planet_catalog(std::filesystem::path(repo_root / "data" / "planets.csv"), kDefaultPlanets);
+
+		material_catalog = sqlite_backend->load_resources();
+		if (material_catalog.empty()) material_catalog = load_material_catalog(std::filesystem::path(repo_root / "data" / "resources.csv"), kDefaultMaterials, kMaterialIds);
+	} else {
+		server_ids = load_server_ids_csv(std::filesystem::path(repo_root / "data" / "server_ids.csv"), kDefaultServerIds);
+		planet_catalog = load_planet_catalog(std::filesystem::path(repo_root / "data" / "planets.csv"), kDefaultPlanets);
+		material_catalog = load_material_catalog(std::filesystem::path(repo_root / "data" / "resources.csv"), kDefaultMaterials, kMaterialIds);
+	}
+
+	// Populate derived lists
+	planets.clear();
+	for (const auto& planet : planet_catalog) planets.push_back(planet.name);
+	systems = get_unique_systems(planet_catalog);
+	if (systems.empty()) systems.push_back("All");
+	selected_system = systems.front();
+
+	if (selected_system == "All") {
+		system_planets = planets;
+	} else {
+		system_planets.clear();
+		for (const auto& p : planet_catalog) if (p.system == selected_system) system_planets.push_back(p.name);
+	}
+
+	materials.clear();
+	resource_filter_materials.clear();
+	for (const auto& material : material_catalog) {
+		materials.push_back(material.name);
+		if (material.type == ResourceType::Mineral || material.type == ResourceType::Plant || material.name == "All") {
+			resource_filter_materials.push_back(material.name);
 		}
+	}
 
-		// Load catalogs from chosen backend (prefer sqlite if available)
-		auto sqlite_backend = store.get();
+	std::sort(materials.begin(), materials.end(), [](const std::string& a, const std::string& b) {
+		if (a == "All") return true;
+		if (b == "All") return false;
+		return a < b;
+		});
+	std::sort(resource_filter_materials.begin(), resource_filter_materials.end(), [](const std::string& a, const std::string& b) {
+		if (a == "All") return true;
+		if (b == "All") return false;
+		return a < b;
+		});
+
+	if (planets.empty()) {
+		for (const auto& key : kDefaultPlanets) planets.push_back(key);
+	}
+	if (materials.empty()) {
+		for (const auto& name : kDefaultMaterials) materials.push_back(name);
+	}
+
+	// Restore last selected planet from settings when possible
+	std::string initial_planet;
+	if (!settings.last_selected_planet.empty() && std::find(planets.begin(), planets.end(), settings.last_selected_planet) != planets.end()) {
+		initial_planet = settings.last_selected_planet;
+	} else {
+		initial_planet = planets.empty() ? kDefaultPlanets.front() : planets.front();
+	}
+	update_selected_planet(initial_planet);
+	update_grid_spacing();
+
+	// Initialize datatable helper structures
+	data_table.init();
+
+	// Provide TravelLog with repository path and optional store for metadata recording
+	travel_log.set_repo_root(repo_root);
+
+	selected_material = materials.empty() ? kDefaultMaterials.front() : materials.front();
+	selected_server = server_ids.empty() ? kDefaultServerIds.front() : server_ids.front();
+	new_data.server = selected_server;
+	new_data.planet = selected_planet;
+	new_data.material = selected_material;
+	new_data.quality_min = 0;
+	new_data.quality_max = kMaxQuality;
+
+	// Start sync service if enabled
+	if (settings.sync_enabled && !settings.sync_server_url.empty()) {
+		const std::string node_id = settings.sync_node_id.empty() ? "local-node" : settings.sync_node_id;
+		sync_service = std::make_unique<SyncService>(settings.sync_server_url, node_id);
+		// When sync pushes full updates, update in-memory points and re-filter
+		sync_service->set_on_points_updated([this](const std::vector<DataPoint>& pts) {
+			this->points = pts;
+			this->filter_points();
+			});
+		sync_service->start();
+	}
+}
+
+
+AppState::~AppState() {
+	if (ocr_subscription_id) {
+		// Unsubscribe from OCR results to avoid callbacks after destruction
+		// (Assumes we have access to the OCR instance here; if not, consider a more robust subscription management strategy)
+		// ocr_instance.unsubscribe(ocr_subscription_id);
+	}
+	if (loaded_texture_id != 0) {
+		glDeleteTextures(1, &loaded_texture_id);
+	}
+}
+
+void AppState::update_selected_planet(const std::string& new_planet) {
+	selected_planet = new_planet;
+	auto it = std::find_if(planet_catalog.begin(), planet_catalog.end(), [this](const Planet& p) {
+		return p.name == selected_planet;
+		});
+	if (it != planet_catalog.end()) {
+		selected_planet_obj = &(*it);
+	} else {
+		selected_planet_obj = nullptr;
+	}
+	update_grid_spacing();
+	filter_points();
+
+	// Update display mode based on zone preference or default for the zone type
+	if (selected_planet_obj) {
+		if (selected_planet_obj->last_display_mode > 0) {
+			set_display_mode(static_cast<DisplayMode>(selected_planet_obj->last_display_mode));
+		} else {
+			set_display_mode(get_zone_default_display_mode(selected_planet_obj->zone_type));
+		}
+	}
+
+	// Persist last-selected planet immediately so restarts restore selection
+	settings.last_selected_planet = selected_planet;
+	save_settings();
+}
+
+void AppState::set_display_mode(DisplayMode new_mode) {
+	// update in-memory state
+	display_mode = new_mode;
+	// persist preference if backend supports it and zone has asteroid belt
+	if (store && selected_planet_obj) {
+		auto sqlite_backend = dynamic_cast<SqliteStore*>(store.get());
+		if (sqlite_backend && selected_planet_obj->has_asteroid_belt) {
+			sqlite_backend->set_zone_last_display_mode(selected_planet_obj->id, static_cast<int>(new_mode));
+		}
+	}
+}
+
+std::vector<std::string> AppState::get_unique_systems(const std::vector<Planet>& planet_catalog) {
+	std::vector<std::string> systems = {};
+	std::vector<std::string> nsystems = {};
+	systems.push_back("All");
+
+	for (const auto& planet : planet_catalog) {
+		if (std::find(nsystems.begin(), nsystems.end(), planet.system) == nsystems.end()) {
+			nsystems.push_back(planet.system);
+		}
+	}
+	std::sort(nsystems.begin(), nsystems.end());
+	systems.insert(systems.end(), nsystems.begin(), nsystems.end());
+
+	return systems;
+}
+
+void AppState::update_grid_spacing() {
+	auto it = std::find_if(planet_catalog.begin(), planet_catalog.end(), [this](const Planet& p) {
+		return p.name == selected_planet;
+		});
+	if (it != planet_catalog.end()) {
+		if (it->zone_type == ZoneType::AsteroidField) {
+			grid_spacing = settings.grid_spacing_km;
+		} else {
+			grid_spacing = settings.planet_grid_spacing_degrees; // default for non-asteroid zones
+		}
+	}
+}
+
+void AppState::reload_planet_data() {
+	if (store) {
+		points = store->load_points();
+	} else {
+		points = load_points(std::filesystem::path(repo_root / "data" / "geoscout.csv"));
+	}
+	int max_id = 0;
+	for (const auto& point : points) {
+		max_id = max(max_id, point.id);
+	}
+	new_data.id = max_id + 1;
+}
+
+void AppState::reload_planet_catalog() {
+	if (store) {
+		auto sqlite_backend = dynamic_cast<SqliteStore*>(store.get());
 		if (sqlite_backend) {
-			server_ids = sqlite_backend->load_server_ids();
-			if (server_ids.empty()) server_ids = load_server_ids_csv(std::filesystem::path(repo_root / "data" / "server_ids.csv"), kDefaultServerIds);
-
 			planet_catalog = sqlite_backend->load_planets();
-			if (planet_catalog.empty()) planet_catalog = load_planet_catalog(std::filesystem::path(repo_root / "data" / "planets.csv"), kDefaultPlanets);
-
-			material_catalog = sqlite_backend->load_resources();
-			if (material_catalog.empty()) material_catalog = load_material_catalog(std::filesystem::path(repo_root / "data" / "resources.csv"), kDefaultMaterials, kMaterialIds);
 		} else {
-			server_ids = load_server_ids_csv(std::filesystem::path(repo_root / "data" / "server_ids.csv"), kDefaultServerIds);
 			planet_catalog = load_planet_catalog(std::filesystem::path(repo_root / "data" / "planets.csv"), kDefaultPlanets);
-			material_catalog = load_material_catalog(std::filesystem::path(repo_root / "data" / "resources.csv"), kDefaultMaterials, kMaterialIds);
 		}
+	} else {
+		planet_catalog = load_planet_catalog(std::filesystem::path(repo_root / "data" / "planets.csv"), kDefaultPlanets);
+	}
+	planets.clear();
+	for (const auto& p : planet_catalog) {
+		planets.push_back(p.name);
+	}
+	systems = get_unique_systems(planet_catalog);
 
-		// Populate derived lists
-		planets.clear();
-		for (const auto& planet : planet_catalog) planets.push_back(planet.name);
-		systems = get_unique_systems(planet_catalog);
-		if (systems.empty()) systems.push_back("All");
+	// Rebuild system_planets for the current selection
+	if (selected_system == "All") {
+		system_planets = planets;
+	} else {
+		system_planets.clear();
+		for (const auto& planet : planet_catalog) {
+			if (planet.system == selected_system) {
+				system_planets.push_back(planet.name);
+			}
+		}
+	}
+
+	// Ensure selected values remain valid
+	if (systems.empty()) systems.push_back("All");
+	if (std::find(systems.begin(), systems.end(), selected_system) == systems.end()) {
 		selected_system = systems.front();
+	}
+	if (planets.empty()) {
+		for (const auto& key : kDefaultPlanets) planets.push_back(key);
+	}
+	if (std::find(planets.begin(), planets.end(), selected_planet) == planets.end()) {
+		update_selected_planet(planets.front());
+	}
+}
 
-		if (selected_system == "All") {
-			system_planets = planets;
-		} else {
-			system_planets.clear();
-			for (const auto& p : planet_catalog) if (p.system == selected_system) system_planets.push_back(p.name);
+void AppState::filter_points() {
+	filtered_points.clear();
+	for (const auto& point : points) {
+		const bool material_match = point.material == selected_material || selected_material == "All";
+		const bool planet_match = point.planet == selected_planet;
+		const bool server_match = point.server == selected_server || selected_server == "All";
+		if (planet_match && (material_match && server_match || point.poi_type == PoiType::Location)) {
+			filtered_points.push_back(point);
 		}
+	}
+}
+GLuint AppState::get_texture_for_selected_planet() {
+	if (loaded_texture == selected_planet && loaded_texture_id != 0) {
+		return loaded_texture_id;
+	}
+	if (loaded_texture_id != 0) {
+		glDeleteTextures(1, &loaded_texture_id);
+		loaded_texture_id = 0;
+	}
 
-		materials.clear();
-		resource_filter_materials.clear();
-		for (const auto& material : material_catalog) {
-			materials.push_back(material.name);
-			if (material.type == ResourceType::Mineral || material.type == ResourceType::Plant || material.name == "All") {
-				resource_filter_materials.push_back(material.name);
-			}
-		}
+	// selected to image dir for planet in planets.csv, if not found fallback to looking for image named after planet key directly in planets dir
 
-		std::sort(materials.begin(), materials.end(), [](const std::string& a, const std::string& b) {
-			if (a == "All") return true;
-			if (b == "All") return false;
-			return a < b;
-			});
-		std::sort(resource_filter_materials.begin(), resource_filter_materials.end(), [](const std::string& a, const std::string& b) {
-			if (a == "All") return true;
-			if (b == "All") return false;
-			return a < b;
-			});
-
-		if (planets.empty()) {
-			for (const auto& key : kDefaultPlanets) planets.push_back(key);
-		}
-		if (materials.empty()) {
-			for (const auto& name : kDefaultMaterials) materials.push_back(name);
-		}
-
-		// Restore last selected planet from settings when possible
-		std::string initial_planet;
-		if (!settings.last_selected_planet.empty() && std::find(planets.begin(), planets.end(), settings.last_selected_planet) != planets.end()) {
-			initial_planet = settings.last_selected_planet;
-		} else {
-			initial_planet = planets.empty() ? kDefaultPlanets.front() : planets.front();
-		}
-		update_selected_planet(initial_planet);
-		update_grid_spacing();
-
-		// Initialize datatable helper structures
-		datatable_filters.resize(15);
-		datatable_sort_column = "id";
-		datatable_sort_order = 1; // default sort by id ascending
-
-		// Provide TravelLog with repository path and optional store for metadata recording
-		if (travel_log) {
-			travel_log->set_repo_root(repo_root);
-		}
-
-
-		selected_material = materials.empty() ? kDefaultMaterials.front() : materials.front();
-		selected_server = server_ids.empty() ? kDefaultServerIds.front() : server_ids.front();
-		new_data.server = selected_server;
-		new_data.planet = selected_planet;
-		new_data.material = selected_material;
-		new_data.quality_min = 0;
-		new_data.quality_max = kMaxQuality;
-
-		// Start sync service if enabled
-		if (settings.sync_enabled && !settings.sync_server_url.empty()) {
-			const std::string node_id = settings.sync_node_id.empty() ? "local-node" : settings.sync_node_id;
-			sync_service = std::make_unique<SyncService>(settings.sync_server_url, node_id);
-			// When sync pushes full updates, update in-memory points and re-filter
-			sync_service->set_on_points_updated([this](const std::vector<DataPoint>& pts) {
-				this->points = pts;
-				this->filter_points();
-				});
-			sync_service->start();
+	std::string image_dir_name = selected_planet;
+	for (const auto& planet : planet_catalog) {
+		if (planet.name == selected_planet && !planet.image_dir.empty()) {
+			image_dir_name = planet.image_dir;
+			break;
 		}
 	}
 
-	~AppState() {
-		if (loaded_texture_id != 0) {
-			glDeleteTextures(1, &loaded_texture_id);
-		}
+
+	std::filesystem::path texture_path = planets_dir / image_dir_name / "planet.jpg";
+	const auto dir_it = std::find_if(planet_catalog.begin(), planet_catalog.end(), [this](const Planet& p) {
+		return p.name == selected_planet;
+		});
+	if (dir_it != planet_catalog.end() && !dir_it->image_dir.empty()) {
+		texture_path = planets_dir / dir_it->image_dir / "planet.jpg";
 	}
 
-	void update_selected_planet(const std::string& new_planet) {
-		selected_planet = new_planet;
-		auto it = std::find_if(planet_catalog.begin(), planet_catalog.end(), [this](const Planet& p) {
-			return p.name == selected_planet;
-			});
-		if (it != planet_catalog.end()) {
-			selected_planet_obj = &(*it);
-		} else {
-			selected_planet_obj = nullptr;
-		}
-		update_grid_spacing();
-		filter_points();
-
-		// Update display mode based on zone preference or default for the zone type
-		if (selected_planet_obj) {
-			if (selected_planet_obj->last_display_mode > 0) {
-				set_display_mode(static_cast<DisplayMode>(selected_planet_obj->last_display_mode));
-			} else {
-				set_display_mode(get_zone_default_display_mode(selected_planet_obj->zone_type));
-			}
-		}
-
-		// Persist last-selected planet immediately so restarts restore selection
-		settings.last_selected_planet = selected_planet;
-		save_settings();
+	GLuint texture = load_texture_file(texture_path);
+	if (texture == 0) {
+		texture = load_texture_file(planets_dir / (selected_planet + ".jpg"));
 	}
-
-	void set_display_mode(DisplayMode new_mode) {
-		// update in-memory state
-		display_mode = new_mode;
-		// persist preference if backend supports it and zone has asteroid belt
-		if (store && selected_planet_obj) {
-			auto sqlite_backend = dynamic_cast<SqliteStore*>(store.get());
-			if (sqlite_backend && selected_planet_obj->has_asteroid_belt) {
-				sqlite_backend->set_zone_last_display_mode(selected_planet_obj->id, static_cast<int>(new_mode));
-			}
-		}
+	if (texture == 0) {
+		texture = load_texture_file(repo_root / "images" / "planets" / "skybox" / "default.jpg");
 	}
+	loaded_texture_id = texture;
+	loaded_texture = selected_planet;
+	return texture;
+}
 
-	std::vector<std::string> get_unique_systems(const std::vector<Planet>& planet_catalog) {
-		std::vector<std::string> systems = {};
-		std::vector<std::string> nsystems = {};
-		systems.push_back("All");
+void AppState::export_session_minerals() {
+	// get start of day timestamp for filename
+	uint64_t start_of_day_ts = static_cast<int64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(app_start_time.time_since_epoch()).count());
+	std::vector<PoiType> mineral_types = { PoiType::Mineral };
+	std::vector<DataPoint> minerals = store->load_points("", "", mineral_types, start_of_day_ts, 0);
 
-		for (const auto& planet : planet_catalog) {
-			if (std::find(nsystems.begin(), nsystems.end(), planet.system) == nsystems.end()) {
-				nsystems.push_back(planet.system);
-			}
-		}
-		std::sort(nsystems.begin(), nsystems.end());
-		systems.insert(systems.end(), nsystems.begin(), nsystems.end());
-
-		return systems;
+	if (minerals.empty()) {
+		std::cout << "No minerals detected during this session, skipping export.\n";
+		return;
 	}
-
-	void update_grid_spacing() {
-		auto it = std::find_if(planet_catalog.begin(), planet_catalog.end(), [this](const Planet& p) {
-			return p.name == selected_planet;
-			});
-		if (it != planet_catalog.end()) {
-			if (it->zone_type == ZoneType::AsteroidField) {
-				grid_spacing = settings.grid_spacing_km;
-			} else {
-				grid_spacing = settings.planet_grid_spacing_degrees; // default for non-asteroid zones
-			}
-		}
+	// make absolute path to export file in session folder with unique name
+	if (!std::filesystem::exists(settings.session_export_dir)) {
+		std::filesystem::create_directories(settings.session_export_dir);
 	}
+	std::filesystem::path export_path_dir = settings.session_export_dir;
+	std::string timestamp_str = ("session_minerals_" + format_iso_date(app_start_time) + "_" + uuid::generate_uuid_v4().to_string() + ".json");
+	std::filesystem::path export_path = (export_path_dir / timestamp_str);
 
-	void reload_planet_data() {
-		if (store) {
-			points = store->load_points();
-		} else {
-			points = load_points(std::filesystem::path(repo_root / "data" / "geoscout.csv"));
-		}
-		int max_id = 0;
-		for (const auto& point : points) {
-			max_id = max(max_id, point.id);
-		}
-		new_data.id = max_id + 1;
+	// write minerals to export file as JSON
+	JsonExchangeDatapoint json_exporter;
+	if (json_exporter.export_json_datapoints(export_path, minerals)) {
+		std::cout << "Exported session minerals to " << export_path << "\n";
+	} else {
+		std::cerr << "Failed to export session minerals to " << export_path << "\n";
 	}
+}
 
-	void reload_planet_catalog() {
-		if (store) {
-			auto sqlite_backend = dynamic_cast<SqliteStore*>(store.get());
-			if (sqlite_backend) {
-				planet_catalog = sqlite_backend->load_planets();
-			} else {
-				planet_catalog = load_planet_catalog(std::filesystem::path(repo_root / "data" / "planets.csv"), kDefaultPlanets);
-			}
-		} else {
-			planet_catalog = load_planet_catalog(std::filesystem::path(repo_root / "data" / "planets.csv"), kDefaultPlanets);
-		}
-		planets.clear();
-		for (const auto& p : planet_catalog) {
-			planets.push_back(p.name);
-		}
-		systems = get_unique_systems(planet_catalog);
-
-		// Rebuild system_planets for the current selection
-		if (selected_system == "All") {
-			system_planets = planets;
-		} else {
-			system_planets.clear();
-			for (const auto& planet : planet_catalog) {
-				if (planet.system == selected_system) {
-					system_planets.push_back(planet.name);
-				}
-			}
-		}
-
-		// Ensure selected values remain valid
-		if (systems.empty()) systems.push_back("All");
-		if (std::find(systems.begin(), systems.end(), selected_system) == systems.end()) {
-			selected_system = systems.front();
-		}
-		if (planets.empty()) {
-			for (const auto& key : kDefaultPlanets) planets.push_back(key);
-		}
-		if (std::find(planets.begin(), planets.end(), selected_planet) == planets.end()) {
-			update_selected_planet( planets.front());
-		}
+void AppState::finalize() {
+	if (settings.auto_export_session_minerals) {
+		export_session_minerals();
 	}
+	save_settings();
+}
+void AppState::update_new_data_from_ocr(const OcrResult& result) {
+	std::lock_guard<std::mutex> lk(ocr_mutex);
+	ocr_results.push_back(result);
+}
 
-	void filter_points() {
-		filtered_points.clear();
-		for (const auto& point : points) {
-			const bool material_match = point.material == selected_material || selected_material == "All";
-			const bool planet_match = point.planet == selected_planet;
-			const bool server_match = point.server == selected_server || selected_server == "All";
-			if (planet_match && (material_match && server_match || point.poi_type == PoiType::Location)) {
-				filtered_points.push_back(point);
-			}
-		}
-	}
-
-	GLuint get_texture_for_selected_planet() {
-		if (loaded_texture == selected_planet && loaded_texture_id != 0) {
-			return loaded_texture_id;
-		}
-		if (loaded_texture_id != 0) {
-			glDeleteTextures(1, &loaded_texture_id);
-			loaded_texture_id = 0;
-		}
-
-		// selected to image dir for planet in planets.csv, if not found fallback to looking for image named after planet key directly in planets dir
-
-		std::string image_dir_name = selected_planet;
-		for (const auto& planet : planet_catalog) {
-			if (planet.name == selected_planet && !planet.image_dir.empty()) {
-				image_dir_name = planet.image_dir;
-				break;
-			}
-		}
-
-
-		std::filesystem::path texture_path = planets_dir / image_dir_name / "planet.jpg";
-		const auto dir_it = std::find_if(planet_catalog.begin(), planet_catalog.end(), [this](const Planet& p) {
-			return p.name == selected_planet;
-			});
-		if (dir_it != planet_catalog.end() && !dir_it->image_dir.empty()) {
-			texture_path = planets_dir / dir_it->image_dir / "planet.jpg";
-		}
-
-		GLuint texture = load_texture_file(texture_path);
-		if (texture == 0) {
-			texture = load_texture_file(planets_dir / (selected_planet + ".jpg"));
-		}
-		if (texture == 0) {
-			texture = load_texture_file(repo_root / "images" / "planets" / "skybox" / "default.jpg");
-		}
-		loaded_texture_id = texture;
-		loaded_texture = selected_planet;
-		return texture;
-	}
-
-	void save_settings() {
-		std::ofstream out(repo_root / "config" / "settings.ini");
-		if (!out.is_open()) {
-			return;
-		}
-		out << "show_timings=" << (settings.show_timings ? "1" : "0") << '\n';
-		out << "ocr_feed_newpoint_enabled=" << (settings.auto_update_ocr_newpoint_enabled ? "1" : "0") << '\n';
-		out << "ocr_feed_planet_update_enabled=" << (settings.ocr_feed_planet_update_enabled ? "1" : "0") << '\n';
-		out << "sync_enabled=" << (settings.sync_enabled ? "1" : "0") << '\n';
-		out << "sync_server_url=" << settings.sync_server_url << '\n';
-		out << "sync_node_id=" << settings.sync_node_id << '\n';
-		out << "storage_db_path=" << settings.storage_db_path << '\n';
-		out << "sync_max_outbox_size=" << settings.sync_max_outbox_size << '\n';
-		out << "grid_spacing_km=" << settings.grid_spacing_km << '\n';
-		out << "planet_grid_spacing_degrees=" << settings.planet_grid_spacing_degrees << '\n'; // legacy key
-		// Travel Log settings
-		out << "tracking_enabled_on_start=" << (settings.tracking_enabled_on_start ? "1" : "0") << '\n';
-		out << "tracking_distance_threshold_km=" << settings.tracking_distance_threshold_km << '\n';
-		out << "tracking_max_speed_mps=" << settings.tracking_max_speed_mps << '\n';
-		out << "tracking_max_accel_mps2=" << settings.tracking_max_accel_mps2 << '\n';
-		out << "kalman_max_life_s=" << settings.kalman_max_life_s << '\n';
-		out << "qt_threshold=" << settings.qt_threshold << '\n';
-		out << "qt_disable_duration_s=" << settings.qt_disable_duration_s << '\n';
-		out << "tracking_min_core_distance_km=" << settings.tracking_min_core_distance_km << '\n';
-		out << "last_export_path=" << settings.last_export_path << '\n';
-		out << "last_selected_planet=" << settings.last_selected_planet << '\n';
-		out << "session_export_dir=" << settings.session_export_dir << '\n';
-		out << "auto_export_session_minerals=" << (settings.auto_export_session_minerals ? "1" : "0") << '\n';
-	}
-
-	AppSettings load_settings(const std::filesystem::path& path) {
-		AppSettings settings;
-		std::ifstream in(path);
-		if (!in.is_open()) {
-			return settings;
-		}
-
-		std::string line;
-		while (std::getline(in, line)) {
-			const auto trimmed = trim(line);
-			if (trimmed.empty() || trimmed[0] == '#') {
-				continue;
-			}
-
-			const auto delimiter_pos = trimmed.find('=');
-			if (delimiter_pos == std::string::npos) {
-				continue;
-			}
-
-			const auto key = trim(trimmed.substr(0, delimiter_pos));
-			const auto value = trim(trimmed.substr(delimiter_pos + 1));
-
-			if (key == "show_timings") {
-				settings.show_timings = (value == "1");
-			} else if (key == "ocr_feed_newpoint_enabled") {
-				settings.auto_update_ocr_newpoint_enabled = (value == "1");
-			} else if (key == "ocr_feed_planet_update_enabled") {
-				settings.ocr_feed_planet_update_enabled = (value == "1");
-			} else if (key == "sync.enabled" || key == "sync_enabled") {
-				settings.sync_enabled = (value == "1" || value == "true");
-			} else if (key == "sync.server_url" || key == "sync_server_url") {
-				settings.sync_server_url = value;
-			} else if (key == "sync.node_id" || key == "sync_node_id") {
-				settings.sync_node_id = value;
-			} else if (key == "storage.db_path" || key == "storage_db_path") {
-				settings.storage_db_path = value;
-			} else if (key == "sync.max_outbox_size" || key == "sync_max_outbox_size") {
-				try { settings.sync_max_outbox_size = std::stoi(value); }
-				catch (...) {}
-			} else if (key == "grid_spacing_km" || key == "grid_spacing") {
-				try { settings.grid_spacing_km = std::stod(value); }
-				catch (...) {}
-			} else if (key == "planet_grid_spacing_degrees") {
-				try { settings.planet_grid_spacing_degrees = std::stod(value); }
-				catch (...) {
-				}
-			} else if (key == "tracking_enabled_on_start") {
-				settings.tracking_enabled_on_start = (value == "1" || value == "true");
-			} else if (key == "tracking_distance_threshold_km") {
-				try { settings.tracking_distance_threshold_km = std::stod(value); }
-				catch (...) {}
-			} else if (key == "tracking_max_speed_mps") {
-				try { settings.tracking_max_speed_mps = std::stod(value); }
-				catch (...) {}
-			} else if (key == "tracking_max_accel_mps2") {
-				try { settings.tracking_max_accel_mps2 = std::stod(value); }
-				catch (...) {}
-			} else if (key == "kalman_max_life_s") {
-				try { settings.kalman_max_life_s = std::stod(value); }
-				catch (...) {}
-			} else if (key == "qt_threshold") {
-				try { settings.qt_threshold = std::stod(value); }
-				catch (...) {}
-			} else if (key == "qt_disable_duration_s") {
-				try { settings.qt_disable_duration_s = std::stod(value); }
-				catch (...) {}
-			} else if (key == "tracking_min_core_distance_km") {
-				try { settings.tracking_min_core_distance_km = std::stod(value); }
-				catch (...) {}
-			} else if (key == "last_export_path") {
-				settings.last_export_path = value;
-			} else if (key == "last_selected_planet") {
-				settings.last_selected_planet = value;
-			} else if (key == "session_export_dir") {
-				settings.session_export_dir = value;
-			} else if (key == "auto_export_session_minerals") {
-				settings.auto_export_session_minerals = (value == "1" || value == "true");
-			}
-		}
-
-		return settings;
-
-	}
-	void export_session_minerals() {
-		// get start of day timestamp for filename
-		uint64_t start_of_day_ts = static_cast<int64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(app_start_time.time_since_epoch()).count());
-		std::vector<PoiType> mineral_types = { PoiType::Mineral };
-		std::vector<DataPoint> minerals = store->load_points("", "", mineral_types, start_of_day_ts, 0);
-
-		if (minerals.empty()) {
-			std::cout << "No minerals detected during this session, skipping export.\n";
-			return;
-		}
-		// make absolute path to export file in session folder with unique name
-		if (!std::filesystem::exists(settings.session_export_dir)) {
-			std::filesystem::create_directories(settings.session_export_dir);
-		}
-		std::filesystem::path export_path_dir = settings.session_export_dir;
-		std::string timestamp_str = ("session_minerals_" + format_iso_date(app_start_time) + "_" + uuid::generate_uuid_v4().to_string() + ".json");
-		std::filesystem::path export_path = (export_path_dir / timestamp_str);
-
-		// write minerals to export file as JSON
-		JsonExchangeDatapoint json_exporter;
-		if (json_exporter.export_json_datapoints(export_path, minerals)) {
-			std::cout << "Exported session minerals to " << export_path << "\n";
-		} else {
-			std::cerr << "Failed to export session minerals to " << export_path << "\n";
-		}
-	}
-
-	void finalize() {
-		if (settings.auto_export_session_minerals) {
-			export_session_minerals();
-		}
-		save_settings();
-	}
-
-	std::vector<double> process_ocr_results() {
-		std::vector<OcrResult> results_to_process;
-		{
-			std::lock_guard<std::mutex> lk(ocr_mutex);
-			results_to_process.swap(ocr_results);
-		}
-
-		if (results_to_process.empty()) {
-			return {};
-		}
-		std::vector<double> ocr_values;
-
-		for (const auto& result : results_to_process) {
-			if (result.x.has_value()
-				&& result.y.has_value()
-				&& result.z.has_value()) {
-
-				x = result.x.value();
-				y = result.y.value();
-				z = result.z.value();
-
-				if (settings.auto_update_ocr_newpoint_enabled) {
-					new_data.coord.x = result.x.value();
-					new_data.coord.y = result.y.value();
-					new_data.coord.z = result.z.value();
-				}
-
-				if (travel_log && travel_log_active) {
-					const double ts_s = static_cast<double>(std::chrono::duration_cast<std::chrono::duration<double>>(std::chrono::system_clock::now().time_since_epoch()).count());
-					bool added = travel_log->feed_measurement(x, y, z, ts_s);
-					if (travel_log->is_locked_due_to_qt()) {
-						travel_log_active = false;
-						travel_log_disabled_due_to_qt = true;
-					}
-				}
-
-			}
-
-			//if (result.rock.has_value()) {
-			//    if 
-			//    new_data.material = result.rock.value();
-			//}
-
-			if (settings.ocr_feed_planet_update_enabled) {
-				if (result.locationmarker.has_value()) {
-					for (const auto& planet : planet_catalog) {
-						if (planet.zone_id.empty()) {
-							continue;
-						}
-						if (result.locationmarker.value().find(planet.zone_id) != std::string::npos) {
-							// only update if different
-							if (planet.name != selected_planet) {
-								update_selected_planet(planet.name);
-								filter_points();
-							}
-							break;
-						}
-					}
-				}
-			}
-			ocr_values.push_back(result.task_time_ms);
-		}
-		return ocr_values;
-	}
-
-	void update_new_data_from_ocr(const OcrResult& result) {
+std::vector<double> AppState::process_ocr_results() {
+	std::vector<OcrResult> results_to_process;
+	{
 		std::lock_guard<std::mutex> lk(ocr_mutex);
-		ocr_results.push_back(result);
+		results_to_process.swap(ocr_results);
 	}
-};
+
+	if (results_to_process.empty()) {
+		return {};
+	}
+	std::vector<double> ocr_values;
+
+	for (const auto& result : results_to_process) {
+		if (result.x.has_value()
+			&& result.y.has_value()
+			&& result.z.has_value()) {
+
+			x = result.x.value();
+			y = result.y.value();
+			z = result.z.value();
+
+			if (settings.auto_update_ocr_newpoint_enabled) {
+				new_data.coord.x = result.x.value();
+				new_data.coord.y = result.y.value();
+				new_data.coord.z = result.z.value();
+			}
+
+			if (travel_log_active) {
+				const double ts_s = static_cast<double>(std::chrono::duration_cast<std::chrono::duration<double>>(std::chrono::system_clock::now().time_since_epoch()).count());
+				bool added = travel_log.feed_measurement(x, y, z, ts_s);
+				if (travel_log.is_locked_due_to_qt()) {
+					travel_log_active = false;
+					travel_log_disabled_due_to_qt = true;
+				}
+			}
+
+		}
+
+		//if (result.rock.has_value()) {
+		//    if 
+		//    new_data.material = result.rock.value();
+		//}
+
+		if (settings.ocr_feed_planet_update_enabled) {
+			if (result.locationmarker.has_value()) {
+				for (const auto& planet : planet_catalog) {
+					if (planet.zone_id.empty()) {
+						continue;
+					}
+					if (result.locationmarker.value().find(planet.zone_id) != std::string::npos) {
+						// only update if different
+						if (planet.name != selected_planet) {
+							update_selected_planet(planet.name);
+							filter_points();
+						}
+						break;
+					}
+				}
+			}
+		}
+		ocr_values.push_back(result.task_time_ms);
+	}
+	return ocr_values;
+}
+
+void AppState::save_settings() {
+	std::ofstream out(repo_root / "config" / "settings.ini");
+	if (!out.is_open()) {
+		return;
+	}
+	out << "show_timings=" << (settings.show_timings ? "1" : "0") << '\n';
+	out << "ocr_feed_newpoint_enabled=" << (settings.auto_update_ocr_newpoint_enabled ? "1" : "0") << '\n';
+	out << "ocr_feed_planet_update_enabled=" << (settings.ocr_feed_planet_update_enabled ? "1" : "0") << '\n';
+	out << "sync_enabled=" << (settings.sync_enabled ? "1" : "0") << '\n';
+	out << "sync_server_url=" << settings.sync_server_url << '\n';
+	out << "sync_node_id=" << settings.sync_node_id << '\n';
+	out << "storage_db_path=" << settings.storage_db_path << '\n';
+	out << "sync_max_outbox_size=" << settings.sync_max_outbox_size << '\n';
+	out << "grid_spacing_km=" << settings.grid_spacing_km << '\n';
+	out << "planet_grid_spacing_degrees=" << settings.planet_grid_spacing_degrees << '\n'; // legacy key
+	// Travel Log settings
+	out << "tracking_enabled_on_start=" << (settings.tracking_enabled_on_start ? "1" : "0") << '\n';
+	out << "tracking_distance_threshold_km=" << settings.tracking_distance_threshold_km << '\n';
+	out << "tracking_max_speed_mps=" << settings.tracking_max_speed_mps << '\n';
+	out << "tracking_max_accel_mps2=" << settings.tracking_max_accel_mps2 << '\n';
+	out << "kalman_max_life_s=" << settings.kalman_max_life_s << '\n';
+	out << "qt_threshold=" << settings.qt_threshold << '\n';
+	out << "qt_disable_duration_s=" << settings.qt_disable_duration_s << '\n';
+	out << "tracking_min_core_distance_km=" << settings.tracking_min_core_distance_km << '\n';
+	out << "last_export_path=" << settings.last_export_path << '\n';
+	out << "last_selected_planet=" << settings.last_selected_planet << '\n';
+	out << "session_export_dir=" << settings.session_export_dir << '\n';
+	out << "auto_export_session_minerals=" << (settings.auto_export_session_minerals ? "1" : "0") << '\n';
+}
+
+AppSettings AppState::load_settings(const std::filesystem::path& path) {
+	AppSettings settings;
+	std::ifstream in(path);
+	if (!in.is_open()) {
+		return settings;
+	}
+
+	std::string line;
+	while (std::getline(in, line)) {
+		const auto trimmed = trim(line);
+		if (trimmed.empty() || trimmed[0] == '#') {
+			continue;
+		}
+
+		const auto delimiter_pos = trimmed.find('=');
+		if (delimiter_pos == std::string::npos) {
+			continue;
+		}
+
+		const auto key = trim(trimmed.substr(0, delimiter_pos));
+		const auto value = trim(trimmed.substr(delimiter_pos + 1));
+
+		if (key == "show_timings") {
+			settings.show_timings = (value == "1");
+		} else if (key == "ocr_feed_newpoint_enabled") {
+			settings.auto_update_ocr_newpoint_enabled = (value == "1");
+		} else if (key == "ocr_feed_planet_update_enabled") {
+			settings.ocr_feed_planet_update_enabled = (value == "1");
+		} else if (key == "sync.enabled" || key == "sync_enabled") {
+			settings.sync_enabled = (value == "1" || value == "true");
+		} else if (key == "sync.server_url" || key == "sync_server_url") {
+			settings.sync_server_url = value;
+		} else if (key == "sync.node_id" || key == "sync_node_id") {
+			settings.sync_node_id = value;
+		} else if (key == "storage.db_path" || key == "storage_db_path") {
+			settings.storage_db_path = value;
+		} else if (key == "sync.max_outbox_size" || key == "sync_max_outbox_size") {
+			try { settings.sync_max_outbox_size = std::stoi(value); }
+			catch (...) {}
+		} else if (key == "grid_spacing_km" || key == "grid_spacing") {
+			try { settings.grid_spacing_km = std::stod(value); }
+			catch (...) {}
+		} else if (key == "planet_grid_spacing_degrees") {
+			try { settings.planet_grid_spacing_degrees = std::stod(value); }
+			catch (...) {
+			}
+		} else if (key == "tracking_enabled_on_start") {
+			settings.tracking_enabled_on_start = (value == "1" || value == "true");
+		} else if (key == "tracking_distance_threshold_km") {
+			try { settings.tracking_distance_threshold_km = std::stod(value); }
+			catch (...) {}
+		} else if (key == "tracking_max_speed_mps") {
+			try { settings.tracking_max_speed_mps = std::stod(value); }
+			catch (...) {}
+		} else if (key == "tracking_max_accel_mps2") {
+			try { settings.tracking_max_accel_mps2 = std::stod(value); }
+			catch (...) {}
+		} else if (key == "kalman_max_life_s") {
+			try { settings.kalman_max_life_s = std::stod(value); }
+			catch (...) {}
+		} else if (key == "qt_threshold") {
+			try { settings.qt_threshold = std::stod(value); }
+			catch (...) {}
+		} else if (key == "qt_disable_duration_s") {
+			try { settings.qt_disable_duration_s = std::stod(value); }
+			catch (...) {}
+		} else if (key == "tracking_min_core_distance_km") {
+			try { settings.tracking_min_core_distance_km = std::stod(value); }
+			catch (...) {}
+		} else if (key == "last_export_path") {
+			settings.last_export_path = value;
+		} else if (key == "last_selected_planet") {
+			settings.last_selected_planet = value;
+		} else if (key == "session_export_dir") {
+			settings.session_export_dir = value;
+		} else if (key == "auto_export_session_minerals") {
+			settings.auto_export_session_minerals = (value == "1" || value == "true");
+		}
+	}
+
+	return settings;
+
+}
 
 static std::string to_lower(std::string s) {
 	std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
@@ -927,7 +807,7 @@ bool combo_string(const char* label, const std::vector<std::string>& items, std:
 
 int run_scout_app() {
 	GdiplusSession gdiplus_session;
-    auto app_start_time = std::chrono::system_clock::now();
+	auto app_start_time = std::chrono::system_clock::now();
 
 
 	if (!glfwInit()) {
@@ -1081,31 +961,27 @@ int run_scout_app() {
 
 				if (state.travel_log_active) {
 					if (ImGui::Button("Stop Travel Log")) {
-						if (state.travel_log) state.travel_log->stop();
+						state.travel_log.stop();
 						state.travel_log_active = false;
 					}
 					ImGui::SameLine();
 					if (ImGui::Button("Restart Travel Log")) {
-						if (state.travel_log) {
 							// Persist current log then restart
-							state.travel_log->stop();
-						} else {
-							state.travel_log = std::make_unique<TravelLog>();
-						}
-						// (re)configure to current settings
-						{
-							TravelLog::Config tlcfg;
-							tlcfg.distance_threshold_km = state.settings.tracking_distance_threshold_km;
-							tlcfg.max_speed_mps = state.settings.tracking_max_speed_mps;
-							tlcfg.max_accel_mps2 = state.settings.tracking_max_accel_mps2;
-							tlcfg.kalman_max_life_s = state.settings.kalman_max_life_s;
-							tlcfg.qt_threshold = state.settings.qt_threshold;
-							tlcfg.qt_disable_duration_s = state.settings.qt_disable_duration_s;
-							tlcfg.min_core_distance_km = state.settings.tracking_min_core_distance_km;
-							state.travel_log->configure(tlcfg);
-						}
+						state.travel_log.stop();
+
+					// (re)configure to current settings
+						TravelLog::Config tlcfg;
+						tlcfg.distance_threshold_km = state.settings.tracking_distance_threshold_km;
+						tlcfg.max_speed_mps = state.settings.tracking_max_speed_mps;
+						tlcfg.max_accel_mps2 = state.settings.tracking_max_accel_mps2;
+						tlcfg.kalman_max_life_s = state.settings.kalman_max_life_s;
+						tlcfg.qt_threshold = state.settings.qt_threshold;
+						tlcfg.qt_disable_duration_s = state.settings.qt_disable_duration_s;
+						tlcfg.min_core_distance_km = state.settings.tracking_min_core_distance_km;
+						state.travel_log.configure(tlcfg);
+
 						// Ensure repo/store are set and start with current selected zone
-						state.travel_log->set_repo_root(state.repo_root);
+						state.travel_log.set_repo_root(state.repo_root);
 						ZoneType zt = ZoneType::CelestialBody;
 						double cx = 0.0, cy = 0.0, cz = 0.0;
 						for (const auto& p : state.planet_catalog) {
@@ -1115,26 +991,25 @@ int run_scout_app() {
 								break;
 							}
 						}
-						state.travel_log->start(state.selected_planet, zt, state.selected_server);
+						state.travel_log.start(state.selected_planet, zt, state.selected_server);
 						state.travel_log_active = true;
 						state.travel_log_disabled_due_to_qt = false;
 					}
 				} else {
 					if (ImGui::Button("Start Travel Log")) {
-						if (!state.travel_log) {
-							state.travel_log = std::make_unique<TravelLog>();
-							TravelLog::Config tlcfg;
-							tlcfg.distance_threshold_km = state.settings.tracking_distance_threshold_km;
-							tlcfg.max_speed_mps = state.settings.tracking_max_speed_mps;
-							tlcfg.max_accel_mps2 = state.settings.tracking_max_accel_mps2;
-							tlcfg.kalman_max_life_s = state.settings.kalman_max_life_s;
-							tlcfg.qt_threshold = state.settings.qt_threshold;
-							tlcfg.qt_disable_duration_s = state.settings.qt_disable_duration_s;
-							tlcfg.min_core_distance_km = state.settings.tracking_min_core_distance_km;
-							state.travel_log->configure(tlcfg);
-						}
+
+						TravelLog::Config tlcfg;
+						tlcfg.distance_threshold_km = state.settings.tracking_distance_threshold_km;
+						tlcfg.max_speed_mps = state.settings.tracking_max_speed_mps;
+						tlcfg.max_accel_mps2 = state.settings.tracking_max_accel_mps2;
+						tlcfg.kalman_max_life_s = state.settings.kalman_max_life_s;
+						tlcfg.qt_threshold = state.settings.qt_threshold;
+						tlcfg.qt_disable_duration_s = state.settings.qt_disable_duration_s;
+						tlcfg.min_core_distance_km = state.settings.tracking_min_core_distance_km;
+						state.travel_log.configure(tlcfg);
+
 						// Ensure repo/store are set and start with current selected zone
-						state.travel_log->set_repo_root(state.repo_root);
+						state.travel_log.set_repo_root(state.repo_root);
 						// find zone info for selected planet
 						ZoneType zt = ZoneType::CelestialBody;
 						for (const auto& p : state.planet_catalog) {
@@ -1143,7 +1018,7 @@ int run_scout_app() {
 								break;
 							}
 						}
-						state.travel_log->start(state.selected_planet, zt, state.selected_server);
+						state.travel_log.start(state.selected_planet, zt, state.selected_server);
 						state.travel_log_active = true;
 						state.travel_log_disabled_due_to_qt = false;
 					}
@@ -1153,7 +1028,7 @@ int run_scout_app() {
 
 					ImGui::SameLine();
 					if (ImGui::Button("Restart Travel Log")) {
-						state.travel_log->restart();
+						state.travel_log.restart();
 						state.travel_log_active = true;
 						state.travel_log_disabled_due_to_qt = false;
 					}
@@ -1427,10 +1302,10 @@ int run_scout_app() {
 
 			if (ImGui::BeginTabItem("Transfer")) {
 				static bool export_init = false;
-				static char export_buf[1024] = {0};
+				static char export_buf[1024] = { 0 };
 				static std::string export_status;
 
-if (ImGui::Button("Browse")) {
+				if (ImGui::Button("Browse")) {
 #ifdef _WIN32
 					std::wstring outp;
 					if (win32_save_file_dialog(outp)) {
@@ -1452,7 +1327,7 @@ if (ImGui::Button("Browse")) {
 				}
 
 				ImGui::InputText("Export File", export_buf, sizeof(export_buf));
-				
+
 				if (ImGui::Button("Export All Points")) {
 					if (!state.store) {
 						export_status = "No store backend available.";
@@ -1487,14 +1362,14 @@ if (ImGui::Button("Browse")) {
 						}
 					}
 				}
-				
+
 				if (ImGui::Button("Export All Mineral Points")) {
 					if (!state.store) {
 						export_status = "No store backend available.";
 					} else {
 						std::filesystem::path p(export_buf);
 						JsonExchangeDatapoint je(state.store.get());
-						auto pts = state.store->load_points("ALL","ALL",std::vector<PoiType>{PoiType::Mineral});
+						auto pts = state.store->load_points("ALL", "ALL", std::vector<PoiType>{PoiType::Mineral});
 						int rc = je.export_json_datapoints(p, pts);
 						if (rc == 0) {
 							state.settings.last_export_path = p.string();
@@ -1511,7 +1386,7 @@ if (ImGui::Button("Browse")) {
 					} else {
 						std::filesystem::path p(export_buf);
 						JsonExchangeDatapoint je(state.store.get());
-						auto pts = state.store->load_points(state.selected_planet,state.selected_server,std::vector<PoiType>{PoiType::Mineral});
+						auto pts = state.store->load_points(state.selected_planet, state.selected_server, std::vector<PoiType>{PoiType::Mineral});
 						int rc = je.export_json_datapoints(p, pts);
 						if (rc == 0) {
 							state.settings.last_export_path = p.string();
@@ -1529,8 +1404,8 @@ if (ImGui::Button("Browse")) {
 					if (result.imported_count > 0) {
 						state.reload_planet_data();
 						state.filter_points();
-						export_status = std::string("Import successful from: ") + 
-						p.string() + '|' + std::to_string(result.imported_count) + " points imported. " + std::to_string(result.skipped_count) + " duplicates skipped.";
+						export_status = std::string("Import successful from: ") +
+							p.string() + '|' + std::to_string(result.imported_count) + " points imported. " + std::to_string(result.skipped_count) + " duplicates skipped.";
 						state.settings.last_export_path = p.string();
 					} else {
 						export_status = std::string("Failed to import from: ") +
@@ -1561,7 +1436,7 @@ if (ImGui::Button("Browse")) {
 					std::string starmap_db_path = (state.repo_root / "data" / "geoscout.db").string();
 					bool retFlag = false;
 
-					if(write_starmap_json(starmap_json_path)) {
+					if (write_starmap_json(starmap_json_path)) {
 						dbimport_starmap(starmap_db_path, starmap_json_path, retFlag);
 					}
 
@@ -1576,651 +1451,8 @@ if (ImGui::Button("Browse")) {
 		ImGui::End();
 
 		if (state.data_form_active) {
-
-			ImGui::Begin("Datatable", &state.data_form_active);
-			// Editable table for DataPoint entries
-			static bool data_dirty = false;
-			static std::string save_message;
-
-			ImGui::Text("Edit existing points (changes are in-memory until you Save)");
-			ImGui::Separator();
-
-			// Paging controls for large point sets
-			static int page_size = 100;
-			static int page_index = 0;
-			// Track per-record changes: pair<op, recordid> where op is "modify" or "delete"
-			static std::vector<std::pair<std::string, int>> change_list;
-			// Prepare datatablepoints by applying header filters and sorting
-			if (state.datatable_filters.size() < 15) state.datatable_filters.resize(15);
-			// Cache and only rebuild datatable index map when filters, sort, or data change
-			static std::vector<size_t> datatable_index_map;
-			static std::vector<std::string> prev_filters;
-			static std::string prev_sort_col;
-			static int prev_sort_order = -1;
-			static size_t prev_points_size = 0;
-			static bool prev_data_dirty = true;
-			
-			// detect changes
-			if (prev_filters.size() != state.datatable_filters.size()) prev_filters.resize(state.datatable_filters.size());
-			bool filters_changed = false;
-			for (size_t i = 0; i < state.datatable_filters.size(); ++i) {
-				if (prev_filters[i] != state.datatable_filters[i]) { filters_changed = true; break; }
-			}
-			bool sort_changed = (prev_sort_col != state.datatable_sort_column) || (prev_sort_order != state.datatable_sort_order);
-			bool points_changed = (prev_points_size != state.points.size()); //|| (data_dirty != prev_data_dirty);
-
-			if (filters_changed || sort_changed || points_changed) {
-				datatable_index_map.clear();
-				datatable_index_map.reserve(state.points.size());
-
-				auto matches = [&](const DataPoint& p) {
-				// Column 0: id
-					if (!state.datatable_filters[0].empty()) {
-						if (std::to_string(p.id).find(state.datatable_filters[0]) == std::string::npos) return false;
-					}
-					// 1: time_info
-					if (!state.datatable_filters[1].empty()) {
-						if (p.time_info.find(state.datatable_filters[1]) == std::string::npos) return false;
-					}
-					// 2: server
-					if (!state.datatable_filters[2].empty()) {
-						if (p.server.find(state.datatable_filters[2]) == std::string::npos) return false;
-					}
-					// 3,4,5: x,y,z
-					if (!state.datatable_filters[3].empty()) { if (std::to_string(p.coord.x).find(state.datatable_filters[3]) == std::string::npos) return false; }
-					if (!state.datatable_filters[4].empty()) { if (std::to_string(p.coord.y).find(state.datatable_filters[4]) == std::string::npos) return false; }
-					if (!state.datatable_filters[5].empty()) { if (std::to_string(p.coord.z).find(state.datatable_filters[5]) == std::string::npos) return false; }
-					// 6: planet
-					if (!state.datatable_filters[6].empty()) {
-						if (p.planet.find(state.datatable_filters[6]) == std::string::npos) return false;
-					}
-					// 7: poi_type
-					if (!state.datatable_filters[7].empty()) { if (std::string(poi_type_name(p.poi_type)).find(state.datatable_filters[7]) == std::string::npos) return false; }
-					// 8: subtype
-					if (!state.datatable_filters[8].empty()) { if (std::string(poi_subtype_name(p.subtype)).find(state.datatable_filters[8]) == std::string::npos) return false; }
-					// 9: material
-					if (!state.datatable_filters[9].empty()) { if (p.material.find(state.datatable_filters[9]) == std::string::npos) return false; }
-					// 10,11: qmin/qmax
-					if (!state.datatable_filters[10].empty()) { if (std::to_string(p.quality_min).find(state.datatable_filters[10]) == std::string::npos) return false; }
-					if (!state.datatable_filters[11].empty()) { if (std::to_string(p.quality_max).find(state.datatable_filters[11]) == std::string::npos) return false; }
-					// 12: note
-					if (!state.datatable_filters[12].empty()) { if (p.note.find(state.datatable_filters[12]) == std::string::npos) return false; }
-					// 13: qt_persistent
-					if (!state.datatable_filters[13].empty()) { if (std::string(p.qt_persistent ? "1" : "0").find(state.datatable_filters[13]) == std::string::npos) return false; }
-					return true;
-					};
-
-
-				for (size_t i = 0; i < state.points.size(); ++i) {
-					if (matches(state.points[i])) datatable_index_map.push_back(i);
-				}
-
-				// Sorting index map based on selected column
-				if (!state.datatable_sort_column.empty() && state.datatable_sort_order != 0) {
-					bool asc = (state.datatable_sort_order == 1);
-					const std::string &c = state.datatable_sort_column;
-					std::stable_sort(datatable_index_map.begin(), datatable_index_map.end(), [&](size_t ai, size_t bi) {
-						const DataPoint &a = state.points[ai];
-						const DataPoint &b = state.points[bi];
-						if (c == "id") return asc ? a.id < b.id : a.id > b.id;
-						if (c == "time") return asc ? a.time_info < b.time_info : a.time_info > b.time_info;
-						if (c == "server") return asc ? a.server < b.server : a.server > b.server;
-						if (c == "x") return asc ? a.coord.x < b.coord.x : a.coord.x > b.coord.x;
-						if (c == "y") return asc ? a.coord.y < b.coord.y : a.coord.y > b.coord.y;
-						if (c == "z") return asc ? a.coord.z < b.coord.z : a.coord.z > b.coord.z;
-						if (c == "planet") return asc ? a.planet < b.planet : a.planet > b.planet;
-						if (c == "material") return asc ? a.material < b.material : a.material > b.material;
-						if (c == "qmin") return asc ? a.quality_min < b.quality_min : a.quality_min > b.quality_min;
-						if (c == "qmax") return asc ? a.quality_max < b.quality_max : a.quality_max > b.quality_max;
-						return asc ? a.id < b.id : a.id > b.id;
-					});
-				} else {
-					// default sort by id ascending
-					std::stable_sort(datatable_index_map.begin(), datatable_index_map.end(), [&](size_t ai, size_t bi){ return state.points[ai].id < state.points[bi].id; });
-				}
-
-				// update cached state
-				prev_filters = state.datatable_filters;
-				prev_sort_col = state.datatable_sort_column;
-				prev_sort_order = state.datatable_sort_order;
-				prev_points_size = state.points.size();
-				prev_data_dirty = data_dirty;
-			}
-
-			size_t total_items = datatable_index_map.size();
-			size_t total_pages = page_size > 0 ? (total_items + static_cast<size_t>(page_size) - 1) / static_cast<size_t>(page_size) : 1;
-			if (page_size <= 0) page_size = 1;
-
-			ImGui::PushID("datatable_paging");
-			ImGui::Text("Page size:"); ImGui::SameLine();
-			if (ImGui::InputInt("##page_size", &page_size)) {
-				if (page_size <= 0) page_size = 1;
-				total_pages = (total_items + static_cast<size_t>(page_size) - 1) / static_cast<size_t>(page_size);
-				if (page_index >= static_cast<int>(total_pages) && total_pages > 0) page_index = static_cast<int>(total_pages) - 1;
-			}
-			ImGui::SameLine();
-			if (ImGui::Button("Prev")) {
-				if (page_index > 0) --page_index;
-			}
-			ImGui::SameLine();
-			if (ImGui::Button("Next")) {
-				if (page_index < static_cast<int>(std::max<size_t>(1, total_pages)) - 1) ++page_index;
-			}
-			ImGui::SameLine();
-			// Page jump input (1-based)
-			int page_input = page_index + 1;
-			ImGui::PushItemWidth(80);
-			if (ImGui::InputInt("##page_input", &page_input)) {
-				if (page_input < 1) page_input = 1;
-				if (total_pages > 0 && static_cast<size_t>(page_input) > total_pages) page_input = static_cast<int>(total_pages);
-				page_index = page_input - 1;
-			}
-			ImGui::PopItemWidth();
-			ImGui::SameLine();
-			ImGui::Text("/ %zu", total_pages == 0 ? 1 : total_pages);
-			ImGui::PopID();
-
-			// helper lambdas for marking changes
-			auto mark_modified = [&](int id) {
-				if (id <= 0) return;
-				for (const auto &c : change_list) {
-					if (c.second == id && c.first == "delete") return; // deleted takes precedence
-				}
-				for (const auto &c : change_list) {
-					if (c.second == id && c.first == "modify") return; // already marked
-				}
-				change_list.emplace_back("modify", id);
-			};
-			auto mark_deleted = [&](int id) {
-				if (id <= 0) return;
-				// remove any pending modify entries for this id
-				change_list.erase(std::remove_if(change_list.begin(), change_list.end(), [&](const std::pair<std::string,int>& p) { return p.second == id && p.first == "modify"; }), change_list.end());
-				for (const auto &c : change_list) {
-					if (c.second == id && c.first == "delete") return; // already marked
-				}
-				change_list.emplace_back("delete", id);
-			};
-
-			ImGuiTableFlags table_flags = ImGuiTableFlags_Resizable | ImGuiTableFlags_Reorderable | ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerH | ImGuiTableFlags_ScrollY;
-			// Use a distinct table ID to avoid legacy table-layout mismatches across builds
-			if (ImGui::BeginTable("DataPointsTable_v3", 15, table_flags, ImVec2(0, ImGui::GetContentRegionAvail().y - 30))) {
-				ImGui::TableSetupColumn("ID", ImGuiTableColumnFlags_WidthFixed, 30.0f); // 0
-				ImGui::TableSetupColumn("Record Time", ImGuiTableColumnFlags_WidthFixed, 100.0f); // 1
-				ImGui::TableSetupColumn("Server"); // 2
-				ImGui::TableSetupColumn("X"); // 3
-				ImGui::TableSetupColumn("Y"); // 4
-				ImGui::TableSetupColumn("Z"); // 5
-				ImGui::TableSetupColumn("Zone"); // 6
-				ImGui::TableSetupColumn("POI Type", ImGuiTableColumnFlags_WidthFixed, 100.0f); // 7
-				ImGui::TableSetupColumn("Subtype", ImGuiTableColumnFlags_WidthFixed, 160.0f); // 8
-				ImGui::TableSetupColumn("Resource"); // 9
-				ImGui::TableSetupColumn("QMin"); // 10
-				ImGui::TableSetupColumn("QMax"); // 11
-				ImGui::TableSetupColumn("Note"); // 12
-				ImGui::TableSetupColumn("QT Persist", ImGuiTableColumnFlags_WidthFixed, 80.0f); // 13
-				ImGui::TableSetupColumn("Control", ImGuiTableColumnFlags_WidthFixed, 80.0f); //14
-				ImGui::TableSetupScrollFreeze(0, 2);
-				ImGui::TableHeadersRow();
-
-				// Second header row: filter inputs and clickable sort buttons
-				// Style the filter row to visually separate it from data rows and make inputs compact
-				ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.12f, 0.12f, 0.12f, 1.0f));
-				ImGui::PushStyleColor(ImGuiCol_FrameBg, ImVec4(0.10f, 0.10f, 0.10f, 1.0f));
-				ImGui::TableNextRow();
-				for (int col = 0; col < 15; ++col) {
-					ImGui::TableSetColumnIndex(col);
-					// Determine display name and key
-					if (col == 14) continue;
-					const char* disp = "";
-					std::string key;
-					switch (col) {
-						case 0: disp = "ID"; key = "id"; break;
-						case 1: disp = "Record Time"; key = "time"; break;
-						case 2: disp = "Server"; key = "server"; break;
-						case 3: disp = "X"; key = "x"; break;
-						case 4: disp = "Y"; key = "y"; break;
-						case 5: disp = "Z"; key = "z"; break;
-						case 6: disp = "Zone"; key = "zone"; break;
-						case 7: disp = "POI Type"; key = "poi_type"; break;
-						case 8: disp = "Subtype"; key = "subtype"; break;
-						case 9: disp = "Resource"; key = "material"; break;
-						case 10: disp = "QMin"; key = "qmin"; break;
-						case 11: disp = "QMax"; key = "qmax"; break;
-						case 12: disp = "Note"; key = "note"; break;
-						case 13: disp = "QT"; key = "qt"; break;
-						case 14: disp = "Control"; key = "control"; break;
-					}
-					// show sort symbol if active (use ASCII arrows for compatibility)
-					std::string btn_label = disp;
-					if (state.datatable_sort_column == key) {
-						if (state.datatable_sort_order == 1) btn_label += " ^";
-						else if (state.datatable_sort_order == 2) btn_label += " v";
-					}
-					std::string btn_id = btn_label + std::string("##hdr") + std::to_string(col);
-					// color active sort button green
-					bool sort_key_changed = false;
-					bool sort_to_none = false;
-					if (state.datatable_sort_column == key && state.datatable_sort_order != 0) ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.0f, 0.6f, 0.0f, 1.0f));
-					if (ImGui::Button(btn_id.c_str())) {
-						if (state.datatable_sort_column == key) {
-							// cycle none -> asc -> desc -> none
-							state.datatable_sort_order = (state.datatable_sort_order + 1) % 3;
-							if (state.datatable_sort_order == 0) { 
-								state.datatable_sort_column.clear(); 
-								sort_to_none = true;
-							}
-						} else {
-							sort_key_changed = true;
-							state.datatable_sort_column = key;
-							state.datatable_sort_order = 1;
-						}
-					}
-					if ((state.datatable_sort_column == key && !sort_key_changed && state.datatable_sort_order != 0) || sort_to_none) {
-						ImGui::PopStyleColor();
-					}
-					// filter input below button
-					// Compact per-column widths for filter inputs
-					int iw = 100;
-					switch (col) {
-						case 0: iw = 60; break; // ID
-						case 1: iw = 160; break; // Record Time
-						case 2: iw = 100; break; // Server
-						case 3: case 4: case 5: iw = 80; break; // X,Y,Z
-						case 6: iw = 120; break; // Planet
-						case 7: case 8: iw = 100; break; // POI Type, Subtype
-						case 9: iw = 120; break; // Resource
-						case 10: case 11: iw = 80; break; // QMin/QMax
-						case 12: iw = 160; break; // Note
-						case 13: iw = 80; break; // QT
-						case 14: iw = 80; break; // Control
-						default: iw = 100; break;
-					}
-					ImGui::PushItemWidth(static_cast<float>(iw));
-					std::string f_lbl = std::string("##filter") + std::to_string(col);
-					// For POI Type, Subtype and Resource use dropdowns
-					if (col == 1) {
-					}
-					else if (col == 7) {
-						auto names = poi_type_names();
-						std::vector<const char*> cstrs;
-						cstrs.reserve(names.size() + 1);
-						cstrs.push_back("Any");
-						for (const auto &s : names) cstrs.push_back(s.c_str());
-						int sel = 0; // 0 == Any
-						if (state.datatable_filters.size() > 7 && !state.datatable_filters[7].empty()) {
-							for (size_t si = 0; si < names.size(); ++si) if (names[si] == state.datatable_filters[7]) { sel = static_cast<int>(si + 1); break; }
-						}
-						if (ImGui::Combo(f_lbl.c_str(), &sel, cstrs.data(), static_cast<int>(cstrs.size()))) {
-							if (sel == 0) state.datatable_filters[7].clear(); else state.datatable_filters[7] = names[sel - 1];
-						}
-					} else if (col == 8) {
-						std::vector<const char*> cstrs;
-						cstrs.reserve(poi_impl::poi_subtype_count + 1);
-						cstrs.push_back("Any");
-						for (size_t si = 0; si < poi_impl::poi_subtype_count; ++si) cstrs.push_back(poi_impl::poi_subtype_names_arr[si]);
-						int sel = 0;
-						if (state.datatable_filters.size() > 8 && !state.datatable_filters[8].empty()) {
-							for (size_t si = 0; si < poi_impl::poi_subtype_count; ++si) if (state.datatable_filters[8] == poi_impl::poi_subtype_names_arr[si]) { sel = static_cast<int>(si + 1); break; }
-						}
-						if (ImGui::Combo(f_lbl.c_str(), &sel, cstrs.data(), static_cast<int>(cstrs.size()))) {
-							if (sel == 0) state.datatable_filters[8].clear(); else state.datatable_filters[8] = poi_impl::poi_subtype_names_arr[sel - 1];
-						}
-					} else if (col == 9) {
-						std::vector<const char*> cstrs;
-						cstrs.reserve(state.materials.size() + 1);
-						cstrs.push_back("Any");
-						for (const auto &s : state.materials) cstrs.push_back(s.c_str());
-						int sel = 0;
-						if (state.datatable_filters.size() > 9 && !state.datatable_filters[9].empty()) {
-							for (size_t si = 0; si < state.materials.size(); ++si) if (state.datatable_filters[9] == state.materials[si]) { sel = static_cast<int>(si + 1); break; }
-						}
-						if (ImGui::Combo(f_lbl.c_str(), &sel, cstrs.data(), static_cast<int>(cstrs.size()))) {
-							if (sel == 0) state.datatable_filters[9].clear(); else state.datatable_filters[9] = state.materials[sel - 1];
-						}
-					} else {
-						char fbuf[128] = {0};
-						if (state.datatable_filters.size() > static_cast<size_t>(col)) {
-							strncpy(fbuf, state.datatable_filters[col].c_str(), sizeof(fbuf) - 1);
-						}
-						if (ImGui::InputText(f_lbl.c_str(), fbuf, sizeof(fbuf))) {
-							state.datatable_filters[col] = fbuf;
-						}
-					}
-					ImGui::PopItemWidth();
-				}
-				ImGui::PopStyleColor(2);
-
-				std::vector<size_t> to_erase;
-
-				// Rebuild index map after potential filter changes in header inputs
-				//datatable_index_map.clear();
-				//for (size_t i = 0; i < state.points.size(); ++i) {
-				//	if (matches(state.points[i])) datatable_index_map.push_back(i);
-				//}
-				//if (!state.datatable_sort_column.empty() && state.datatable_sort_order != 0) {
-				//	bool asc = (state.datatable_sort_order == 1);
-				//	const std::string &c = state.datatable_sort_column;
-				//	std::stable_sort(datatable_index_map.begin(), datatable_index_map.end(), [&](size_t ai, size_t bi) {
-				//		const DataPoint &a = state.points[ai];
-				//		const DataPoint &b = state.points[bi];
-				//		if (c == "id") return asc ? a.id < b.id : a.id > b.id;
-				//		if (c == "time") return asc ? a.time_info < b.time_info : a.time_info > b.time_info;
-				//		if (c == "server") return asc ? a.server < b.server : a.server > b.server;
-				//		if (c == "x") return asc ? a.coord.x < b.coord.x : a.coord.x > b.coord.x;
-				//		if (c == "y") return asc ? a.coord.y < b.coord.y : a.coord.y > b.coord.y;
-				//		if (c == "z") return asc ? a.coord.z < b.coord.z : a.coord.z > b.coord.z;
-				//		if (c == "planet") return asc ? a.planet < b.planet : a.planet > b.planet;
-				//		if (c == "material") return asc ? a.material < b.material : a.material > b.material;
-				//		if (c == "qmin") return asc ? a.quality_min < b.quality_min : a.quality_min > b.quality_min;
-				//		if (c == "qmax") return asc ? a.quality_max < b.quality_max : a.quality_max > b.quality_max;
-				//		return asc ? a.id < b.id : a.id > b.id;
-				//	});
-				//} else {
-				//	std::stable_sort(datatable_index_map.begin(), datatable_index_map.end(), [&](size_t ai, size_t bi){ return state.points[ai].id < state.points[bi].id; });
-				//}
-				// Compute visible range based on current page (use datatable index map)
-				size_t start = static_cast<size_t>(page_index) * static_cast<size_t>(page_size);
-				if (start >= datatable_index_map.size()) start = 0;
-				size_t end_idx = ((start + static_cast<size_t>(page_size)) < datatable_index_map.size()) ? (start + static_cast<size_t>(page_size)) : datatable_index_map.size();
-				for (size_t local = start; local < end_idx; ++local) {
-					size_t idx = datatable_index_map[local];
-					DataPoint& dp = state.points[idx];
-					ImGui::TableNextRow();
-
-					// ID (read-only)
-					ImGui::TableSetColumnIndex(0);
-					ImGui::TextDisabled("%d", dp.id);
-
-					// Record Time (read-only, formatted from time_info)
-					ImGui::TableSetColumnIndex(1);
-					if (dp.time_info.empty()) {
-						ImGui::TextDisabled("N/A");
-					} else {
-						ImGui::Text("%s", dp.time_info.c_str());
-					}
-
-					// Server
-					ImGui::TableSetColumnIndex(2);
-					{
-						char buf[16] = { 0 };
-						strncpy(buf, dp.server.c_str(), sizeof(buf) - 1);
-						std::string lbl = std::string("##server") + std::to_string(idx);
-						ImGui::PushItemWidth(-FLT_MIN);
-						if (ImGui::InputText(lbl.c_str(), buf, IM_ARRAYSIZE(buf))) {
-							dp.server = buf;
-							data_dirty = true;
-							mark_modified(dp.id);
-						}
-						ImGui::PopItemWidth();
-					}
-					// X
-					ImGui::TableSetColumnIndex(3);
-					{
-						double val = dp.coord.x;
-						std::string lbl = std::string("##x") + std::to_string(idx);
-						ImGui::PushItemWidth(-FLT_MIN);
-						if (ImGui::InputDouble(lbl.c_str(), &val, 0.0, 0.0, "%.6f")) {
-							dp.coord.x = val;
-							data_dirty = true;
-							mark_modified(dp.id);
-						}
-						ImGui::PopItemWidth();
-					}
-
-					// Y
-					ImGui::TableSetColumnIndex(4);
-					{
-						double val = dp.coord.y;
-						std::string lbl = std::string("##y") + std::to_string(idx);
-						ImGui::PushItemWidth(-FLT_MIN);
-						if (ImGui::InputDouble(lbl.c_str(), &val, 0.0, 0.0, "%.6f")) {
-							dp.coord.y = val;
-							data_dirty = true;
-							mark_modified(dp.id);
-						}
-						ImGui::PopItemWidth();
-					}
-
-					// Z
-					ImGui::TableSetColumnIndex(5);
-					{
-						double val = dp.coord.z;
-						std::string lbl = std::string("##z") + std::to_string(idx);
-						ImGui::PushItemWidth(-FLT_MIN);
-						if (ImGui::InputDouble(lbl.c_str(), &val, 0.0, 0.0, "%.6f")) {
-							dp.coord.z = val;
-							data_dirty = true;
-							mark_modified(dp.id);
-						}
-						ImGui::PopItemWidth();
-					}
-
-					// Planet (combo)
-					ImGui::TableSetColumnIndex(6);
-					{
-						std::string lbl = std::string("##planet") + std::to_string(idx);
-						auto it = std::find(state.planets.begin(), state.planets.end(), dp.planet);
-						int cur = it != state.planets.end() ? static_cast<int>(std::distance(state.planets.begin(), it)) : 0;
-						std::vector<const char*> cstrs;
-						cstrs.reserve(state.planets.size());
-						for (const auto& s : state.planets) cstrs.push_back(s.c_str());
-						ImGui::PushItemWidth(-FLT_MIN);
-						if (ImGui::Combo(lbl.c_str(), &cur, cstrs.data(), static_cast<int>(cstrs.size()))) {
-							dp.planet = state.planets[static_cast<size_t>(cur)];
-							data_dirty = true;
-							mark_modified(dp.id);
-						}
-						ImGui::PopItemWidth();
-					}
-					// POI Type (enum-backed combo)
-					ImGui::TableSetColumnIndex(7);
-					{
-						std::string lbl = std::string("##poi_type") + std::to_string(idx);
-						int cur = static_cast<int>(dp.poi_type);
-						auto names = poi_type_names();
-						std::vector<const char*> cstrs;
-						cstrs.reserve(names.size());
-						for (const auto& s : names) cstrs.push_back(s.c_str());
-						ImGui::PushItemWidth(-FLT_MIN);
-						if (ImGui::Combo(lbl.c_str(), &cur, cstrs.data(), static_cast<int>(cstrs.size()))) {
-							dp.poi_type = static_cast<PoiType>(cur);
-							data_dirty = true;
-							mark_modified(dp.id);
-						}
-						ImGui::PopItemWidth();
-					}
-
-					// Subtype (enum-backed combo)
-					ImGui::TableSetColumnIndex(8);
-					{
-						std::string lbl = std::string("##subtype") + std::to_string(idx);
-						int cur = static_cast<int>(dp.subtype);
-						std::vector<const char*> cstrs;
-						cstrs.reserve(poi_impl::poi_subtype_count);
-						for (size_t si = 0; si < poi_impl::poi_subtype_count; ++si) cstrs.push_back(poi_impl::poi_subtype_names_arr[si]);
-						ImGui::PushItemWidth(-FLT_MIN);
-						if (ImGui::Combo(lbl.c_str(), &cur, cstrs.data(), static_cast<int>(cstrs.size()))) {
-							dp.subtype = static_cast<PoiSubType>(cur);
-							data_dirty = true;
-							mark_modified(dp.id);
-						}
-						ImGui::PopItemWidth();
-					}
-
-					// Resource (combo)
-					ImGui::TableSetColumnIndex(9);
-					{
-						std::string lbl = std::string("##material") + std::to_string(idx);
-						auto it = std::find(state.materials.begin(), state.materials.end(), dp.material);
-						int cur = it != state.materials.end() ? static_cast<int>(std::distance(state.materials.begin(), it)) : 0;
-						std::vector<const char*> cstrs;
-						cstrs.reserve(state.materials.size());
-						for (const auto& s : state.materials) cstrs.push_back(s.c_str());
-						ImGui::PushItemWidth(-FLT_MIN);
-						if (ImGui::Combo(lbl.c_str(), &cur, cstrs.data(), static_cast<int>(cstrs.size()))) {
-							dp.material = state.materials[static_cast<size_t>(cur)];
-							data_dirty = true;
-							mark_modified(dp.id);
-						}
-						ImGui::PopItemWidth();
-					}
-
-
-					// QMin
-					ImGui::TableSetColumnIndex(10);
-					{
-						int val = int(dp.quality_min);
-						std::string lbl = std::string("##qmin") + std::to_string(idx);
-						ImGui::PushItemWidth(-FLT_MIN);
-						if (ImGui::InputInt(lbl.c_str(), &val, 0, 0)) {
-							dp.quality_min = val;
-							data_dirty = true;
-							mark_modified(dp.id);
-						}
-						ImGui::PopItemWidth();
-					}
-
-					// QMax
-					ImGui::TableSetColumnIndex(11);
-					{
-						int val = int(dp.quality_max);
-						std::string lbl = std::string("##qmax") + std::to_string(idx);
-						ImGui::PushItemWidth(-FLT_MIN);
-						if (ImGui::InputInt(lbl.c_str(), &val, 0, 0)) {
-							dp.quality_max = val;
-							data_dirty = true;
-							mark_modified(dp.id);
-						}
-						ImGui::PopItemWidth();
-					}
-
-					// Note
-					ImGui::TableSetColumnIndex(12);
-					{
-						char buf[256] = { 0 };
-						strncpy(buf, dp.note.c_str(), sizeof(buf) - 1);
-						std::string lbl = std::string("##note") + std::to_string(idx);
-						ImGui::PushItemWidth(-FLT_MIN);
-						if (ImGui::InputText(lbl.c_str(), buf, IM_ARRAYSIZE(buf))) {
-							dp.note = buf;
-							data_dirty = true;
-							mark_modified(dp.id);
-						}
-						ImGui::PopItemWidth();
-					}
-
-					// QT persistent checkbox
-					ImGui::TableSetColumnIndex(13);
-					{
-						std::string lbl = std::string("##qt_persistent") + std::to_string(idx);
-						bool val = dp.qt_persistent;
-						if (ImGui::Checkbox(lbl.c_str(), &val)) {
-							dp.qt_persistent = val;
-							data_dirty = true;
-							mark_modified(dp.id);
-						}
-					}
-
-					// Controls (Delete)
-					ImGui::TableSetColumnIndex(14);
-					{
-						std::string del_lbl = std::string("Delete##del") + std::to_string(idx);
-						if (ImGui::SmallButton(del_lbl.c_str())) {
-							mark_deleted(dp.id);
-							to_erase.push_back(idx);
-						}
-					}
-				}
-
-				// erase rows in reverse order
-				if (!to_erase.empty()) {
-					std::sort(to_erase.rbegin(), to_erase.rend());
-					for (size_t idx : to_erase) {
-						if (idx < state.points.size()) {
-							state.points.erase(state.points.begin() + static_cast<std::ptrdiff_t>(idx));
-							data_dirty = true;
-						}
-					}
-
-					// Rebuild datatable index map after removals
-					//datatable_index_map.clear();
-					//for (size_t i = 0; i < state.points.size(); ++i) {
-					//	if (matches(state.points[i])) datatable_index_map.push_back(i);
-					//}
-				}
-
-				// After potential removals, ensure the current page index is valid
-				total_items = datatable_index_map.size();
-				total_pages = page_size > 0 ? (total_items + static_cast<size_t>(page_size) - 1) / static_cast<size_t>(page_size) : 1;
-				if (total_pages == 0) {
-					page_index = 0;
-				} else if (page_index >= static_cast<int>(total_pages)) {
-					page_index = static_cast<int>(total_pages) - 1;
-				}
-
-				ImGui::EndTable();
-			}
-
-			ImGui::Separator();
-			bool save_enabled = !change_list.empty();
-			if (!save_enabled) ImGui::BeginDisabled();
-			if (ImGui::Button("Save Changes")) {			
-				bool ok = true;
-				if (state.store) {
-					// If we have a store and a change list, apply incremental changes where possible
-					if (!change_list.empty()) {
-						// Try to apply per-change operations against SqliteStore when available
-						for (const auto &c : change_list) {
-							const std::string &op = c.first;
-							int rid = c.second;
-							if (op == "delete") {
-								if (!state.store->delete_point_by_id(rid)) {
-									ok = false;
-								}
-							} else if (op == "modify") {
-								// locate datapoint in memory
-								auto it = std::find_if(state.points.begin(), state.points.end(), [&](const DataPoint &p) { return p.id == rid; });
-								if (it != state.points.end()) {
-									int res = state.store->uuid_insert_or_update(*it, nullptr);
-									if (res == 0) ok = false;
-								} else {
-									// record not present locally anymore; nothing to update
-								}
-							}
-						} 
-					}
-					// } else {
-					// 	// no per-record changes tracked -> fallback to full overwrite
-					// 	ok = state.store->overwrite_points(state.points);
-					// }
-				} else {
-					ok = write_points_csv((state.repo_root / "data" / "geoscout.csv"), state.points);
-				}
-
-				if (ok) {
-					save_message = "Saved successfully";
-					// Clear tracked changes and reload
-					change_list.clear();
-					state.reload_planet_data();
-					state.filter_points();
-					data_dirty = false;
-				} else {
-					save_message = "Save failed";
-				}
-			}
-			if (!save_enabled) ImGui::EndDisabled();
-			ImGui::SameLine();
-			if (ImGui::Button("Reload Data")) {
-				state.reload_planet_data();
-				state.filter_points();
-				save_message = "Reloaded";
-				data_dirty = false;
-			}
-			ImGui::SameLine();
-			ImGui::Text("%s", save_message.c_str());
-			ImGui::End();
+			state.data_table.render(state);
 		}
-
 
 		if (state.planets_form_active) {
 			ImGui::Begin("Planets Editor", &state.planets_form_active);
@@ -2241,7 +1473,7 @@ if (ImGui::Button("Browse")) {
 			static int new_zone_type = zone_type_to_int(ZoneType::CelestialBody);
 			const char* zone_items_new[] = { zone_type_name(ZoneType::CelestialBody), zone_type_name(ZoneType::AsteroidField), zone_type_name(ZoneType::Solar) };
 
-			int spacers = new_has_asteroid_belt?8:7;
+			int spacers = new_has_asteroid_belt ? 8 : 7;
 			ImGui::Text("Edit planet catalog (changes are in-memory until you Save)");
 			ImGui::Separator();
 
@@ -2342,7 +1574,7 @@ if (ImGui::Button("Browse")) {
 						if (ImGui::Checkbox((std::string("##hasbelt") + std::to_string(i)).c_str(), &pl.has_asteroid_belt)) {
 							planets_dirty = true;
 						}
-						
+
 						ImGui::SameLine();
 						// Edit Planet button
 						std::string edit_belt_btn = std::string("Edit Planet##belt") + std::to_string(i);
@@ -2350,7 +1582,7 @@ if (ImGui::Button("Browse")) {
 							belt_edits[i] = { pl.planet_radius_km, pl.karman_line_km, pl.belt_inner_radius_km, pl.belt_outer_radius_km, pl.belt_thickness_km };
 							std::string popup_name = std::string("Edit Planet##beltpopup") + std::to_string(i);
 							ImGui::OpenPopup(popup_name.c_str());
-					}	
+						}
 					}
 					// Delete button moved to next column
 					ImGui::TableSetColumnIndex(7);
@@ -2445,8 +1677,8 @@ if (ImGui::Button("Browse")) {
 
 			ImGui::Separator();
 			ImGui::Text("Add new planet:");
-			
-			
+
+
 			if (new_planet_id == 0) {
 				int maxid = -1;
 				for (const auto& p : state.planet_catalog) maxid = max(maxid, p.id);
@@ -2462,8 +1694,8 @@ if (ImGui::Button("Browse")) {
 			ImGui::PushItemWidth(100);
 			ImGui::InputText("Zone ID##newplanet", new_zone, IM_ARRAYSIZE(new_zone));
 			ImGui::PushItemWidth(300);
-			ImGui::InputText("Image Dir##newplanet", new_img, IM_ARRAYSIZE(new_img)); 
-			
+			ImGui::InputText("Image Dir##newplanet", new_img, IM_ARRAYSIZE(new_img));
+
 			static int new_min_x = -300;
 			static int new_max_x = 300;
 			static int new_min_y = -300;
@@ -2580,7 +1812,7 @@ if (ImGui::Button("Browse")) {
 		{
 			ImGuiIO& io = ImGui::GetIO();
 			static bool map_panning = false;
-			static std::pair<float,float> last_mouse_ndc = {0.0f, 0.0f};
+			static std::pair<float, float> last_mouse_ndc = { 0.0f, 0.0f };
 			// Zoom with mouse wheel centered at cursor
 			if (mouse_pos && !io.WantCaptureMouse && std::abs(io.MouseWheel) > 1e-6f) {
 				double wheel = io.MouseWheel; // positive = up
@@ -2647,13 +1879,12 @@ if (ImGui::Button("Browse")) {
 			}
 
 
-			state.hovered_text = renderer.render_map(texture, state.filtered_points, mouse_pos, state.material_catalog, selected_zone, state.display_mode, state.grid_spacing, &state.highlighted_materials);
+			state.hovered_text = renderer.render_map(texture, state.filtered_points, mouse_pos, state.material_catalog, selected_zone, state.display_mode, state.grid_spacing);
 			// Render travel log overlay (if available) so users can see their tracked path
-			if (state.travel_log) {
-				const auto track = state.travel_log->get_tracked_points_copy();
-				if (!track.empty()) {
-					renderer.render_track(state.display_mode, track, selected_zone, state.grid_spacing);
-				}
+
+			const auto track = state.travel_log.get_tracked_points_copy();
+			if (!track.empty()) {
+				renderer.render_track(state.display_mode, track, selected_zone, state.grid_spacing);
 			}
 			const auto toggle_now = std::chrono::steady_clock::now();
 			if (std::chrono::duration<double>(toggle_now - last_toggle).count() > 0.25) {
@@ -2679,8 +1910,8 @@ if (ImGui::Button("Browse")) {
 							const float px = (u * 2.0f) - 1.0f;
 							const float py = (v * 2.0f) - 1.0f;
 							renderer.render_marker(px, py, 1.0f, 1.0f, 0.0f, 0.9f, 6.0f);
-						} 
-						
+						}
+
 					} else {
 						const auto lat_lon_alt = state.new_data.to_lat_lon_alt();
 						const auto [u, v] = latlon_to_uv(lat_lon_alt.latitude, lat_lon_alt.longitude);
@@ -2850,7 +2081,7 @@ if (ImGui::Button("Browse")) {
 
 
 	state.finalize();
-	
+
 
 	ocr_timer.join();
 

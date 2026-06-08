@@ -1,7 +1,6 @@
 #pragma once
 
 #include "scout_core.h"
-#include "scout_app.h"
 
 #include <optional>
 #include <string>
@@ -89,8 +88,7 @@ public:
                                           const std::vector<Resource> &material_catalog,
                                           const Planet *selected_zone = nullptr,
                                           const DisplayMode display_mode = DisplayMode::Default,
-                                          double grid_spacing_km = 100.0,
-                                          const std::unordered_set<std::string>* highlighted_materials = nullptr);
+                                          double grid_spacing_km = 100.0);
 
     void RenderAstroidFieldZone(const Planet* selected_zone, double grid_spacing_km);
 

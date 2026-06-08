@@ -714,8 +714,7 @@ std::optional<std::string> ScoutRenderer::render_map(GLuint texture,
 	const std::vector<Resource>& material_catalog,
 	const Planet* selected_zone,
 	const DisplayMode dpm,
-	double grid_spacing_km,
-	const std::unordered_set<std::string>* highlighted_materials) {
+	double grid_spacing_km) {
 
 	auto pan = camera2d.getPan();
 	double zoom = camera2d.getZoom();
@@ -765,10 +764,10 @@ std::optional<std::string> ScoutRenderer::render_map(GLuint texture,
 				? asteroid_point_to_ndc(selected_zone->bounding_box_km, grid_spacing_km, point.coord.x, point.coord.y)
 				: latlon_to_ndc(latlonalt.latitude, latlonalt.longitude);
 			// If highlighted set provided and this point's material is highlighted, adjust colour/alpha
-			if (highlighted_materials && highlighted_materials->count(point.material) == 0 && !highlighted_materials->empty()) {
-				// dim non-highlighted points
-				colour.overide(colour.r * 0.25f + 0.75f * 0.25f, colour.g * 0.25f + 0.75f * 0.25f, colour.b * 0.25f + 0.75f * 0.25f, 0.35f);
-			}
+			//if (highlighted_materials && highlighted_materials->count(point.material) == 0 && !highlighted_materials->empty()) {
+			//	// dim non-highlighted points
+			//	colour.overide(colour.r * 0.25f + 0.75f * 0.25f, colour.g * 0.25f + 0.75f * 0.25f, colour.b * 0.25f + 0.75f * 0.25f, 0.35f);
+			//}
 
 			FillPointBuffer(ndc.x, ndc.y, buf, border_buf, displayed_points * 6, colour, point);
 			displayed_points++;

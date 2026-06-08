@@ -25,21 +25,11 @@ void DataTable::init() {
 	change_list.clear();
 	data_dirty = false;
 	save_message.clear();
-	cell_control_name_cache.clear();
-	cell_control_name_owned.clear();
+	// no per-cell label caches when using PushID
 }
 
 const int asc{ 1 };
 const int desc{ 2 };
-
-char* DataTable::make_label(const std::string& s) {
-	size_t n = s.size() + 1;
-	std::unique_ptr<char[]> buf(new char[n]);
-	memcpy(buf.get(), s.c_str(), n);
-	char* ptr = buf.get();
-	cell_control_name_owned.push_back(std::move(buf));
-	return ptr;
-}
 
 // Helper: match a datapoint against current filters
 static bool matches_filters(const DataPoint& p, const std::vector<std::string>& filters, const std::vector<const char *>& materials) {
@@ -368,6 +358,7 @@ void DataTable::render(AppState& state) {
 			size_t idx = datatable_index_map[local];
 			DataPoint& dp = state.points[idx];
 			ImGui::TableNextRow();
+			ImGui::PushID(static_cast<int>(dp.id));
 
 			// ID (read-only)
 			ImGui::TableSetColumnIndex(0);
@@ -386,28 +377,21 @@ void DataTable::render(AppState& state) {
 			{
 				char buf[16] = { 0 };
 				strncpy(buf, dp.server.c_str(), sizeof(buf) - 1);
-				if (control_element_id == cell_control_name_cache.size()) {
-					char* ptr = make_label(std::string("##server") + std::to_string(idx));
-					cell_control_name_cache.push_back(ptr);
-				}
 				ImGui::PushItemWidth(-FLT_MIN);
-				if (ImGui::InputText(cell_control_name_cache[control_element_id++], buf, IM_ARRAYSIZE(buf))) {
+				if (ImGui::InputText("server", buf, IM_ARRAYSIZE(buf))) {
 					dp.server = buf;
 					data_dirty = true;
 					mark_modified(dp.id);
 				}
 				ImGui::PopItemWidth();
 			}
+
 			// X
 			ImGui::TableSetColumnIndex(3);
 			{
 				double val = dp.coord.x;
-				if (control_element_id == cell_control_name_cache.size()) {
-					char* ptr = make_label(std::string("##x") + std::to_string(idx));
-					cell_control_name_cache.push_back(ptr);
-				}
 				ImGui::PushItemWidth(-FLT_MIN);
-				if (ImGui::InputDouble(cell_control_name_cache[control_element_id++], &val, 0.0, 0.0, "%.6f")) {
+				if (ImGui::InputDouble("x", &val, 0.0, 0.0, "%.6f")) {
 					dp.coord.x = val;
 					data_dirty = true;
 					mark_modified(dp.id);
@@ -419,12 +403,8 @@ void DataTable::render(AppState& state) {
 			ImGui::TableSetColumnIndex(4);
 			{
 				double val = dp.coord.y;
-				if (control_element_id == cell_control_name_cache.size()) {
-					char* ptr = make_label(std::string("##y") + std::to_string(idx));
-					cell_control_name_cache.push_back(ptr);
-				}
 				ImGui::PushItemWidth(-FLT_MIN);
-				if (ImGui::InputDouble(cell_control_name_cache[control_element_id++], &val, 0.0, 0.0, "%.6f")) {
+				if (ImGui::InputDouble("y", &val, 0.0, 0.0, "%.6f")) {
 					dp.coord.y = val;
 					data_dirty = true;
 					mark_modified(dp.id);
@@ -436,12 +416,8 @@ void DataTable::render(AppState& state) {
 			ImGui::TableSetColumnIndex(5);
 			{
 				double val = dp.coord.z;
-				if (control_element_id == cell_control_name_cache.size()) {
-					char* ptr = make_label(std::string("##z") + std::to_string(idx));
-					cell_control_name_cache.push_back(ptr);
-				}
 				ImGui::PushItemWidth(-FLT_MIN);
-				if (ImGui::InputDouble(cell_control_name_cache[control_element_id++], &val, 0.0, 0.0, "%.6f")) {
+				if (ImGui::InputDouble("z", &val, 0.0, 0.0, "%.6f")) {
 					dp.coord.z = val;
 					data_dirty = true;
 					mark_modified(dp.id);
@@ -452,33 +428,23 @@ void DataTable::render(AppState& state) {
 			// Planet (combo)
 			ImGui::TableSetColumnIndex(6);
 			{
-				if (control_element_id == cell_control_name_cache.size()) {
-					char* ptr = make_label(std::string("##planet") + std::to_string(idx));
-					cell_control_name_cache.push_back(ptr);
-				}
-				
 				auto it = std::find(planets.begin(), planets.end(), dp.planet);
 				int cur = it != planets.end() ? static_cast<int>(std::distance(planets.begin(), it)) : 0;
-				
 				ImGui::PushItemWidth(-FLT_MIN);
-				if (ImGui::Combo(cell_control_name_cache[control_element_id++], &cur, planets.data(), static_cast<int>(planets.size()))) {
+				if (ImGui::Combo("planet", &cur, planets.data(), static_cast<int>(planets.size()))) {
 					dp.planet = planets[static_cast<size_t>(cur)];
 					data_dirty = true;
 					mark_modified(dp.id);
 				}
 				ImGui::PopItemWidth();
 			}
+
 			// POI Type (enum-backed combo)
 			ImGui::TableSetColumnIndex(7);
 			{
-				if (control_element_id == cell_control_name_cache.size()) {
-					char* ptr = make_label(std::string("##poi_type") + std::to_string(idx));
-					cell_control_name_cache.push_back(ptr);
-				}
-				
 				int cur = static_cast<int>(dp.poi_type);
 				ImGui::PushItemWidth(-FLT_MIN);
-				if (ImGui::Combo(cell_control_name_cache[control_element_id++], &cur, poi_types.data(), static_cast<int>(poi_types.size()))) {
+				if (ImGui::Combo("poi_type", &cur, poi_types.data(), static_cast<int>(poi_types.size()))) {
 					dp.poi_type = static_cast<PoiType>(cur);
 					data_dirty = true;
 					mark_modified(dp.id);
@@ -489,14 +455,9 @@ void DataTable::render(AppState& state) {
 			// Subtype (enum-backed combo)
 			ImGui::TableSetColumnIndex(8);
 			{
-				if (control_element_id == cell_control_name_cache.size()) {
-					char* ptr = make_label(std::string("##subtype") + std::to_string(idx));
-					cell_control_name_cache.push_back(ptr);
-				}
-
 				int cur = static_cast<int>(dp.subtype);
 				ImGui::PushItemWidth(-FLT_MIN);
-				if (ImGui::Combo(cell_control_name_cache[control_element_id++], &cur, poi_subtypes.data(), static_cast<int>(poi_subtypes.size()))) {
+				if (ImGui::Combo("subtype", &cur, poi_subtypes.data(), static_cast<int>(poi_subtypes.size()))) {
 					dp.subtype = static_cast<PoiSubType>(cur);
 					data_dirty = true;
 					mark_modified(dp.id);
@@ -507,14 +468,10 @@ void DataTable::render(AppState& state) {
 			// Resource (combo)
 			ImGui::TableSetColumnIndex(9);
 			{
-				if (control_element_id == cell_control_name_cache.size()) {
-					char* ptr = make_label(std::string("##material") + std::to_string(idx));
-					cell_control_name_cache.push_back(ptr);
-				}
 				auto it = std::find(state.materials.begin(), state.materials.end(), dp.material);
 				int cur = it != state.materials.end() ? static_cast<int>(std::distance(state.materials.begin(), it)) : 0;
 				ImGui::PushItemWidth(-FLT_MIN);
-				if (ImGui::Combo(cell_control_name_cache[control_element_id++], &cur, materials.data(), static_cast<int>(materials.size()))) {
+				if (ImGui::Combo("material", &cur, materials.data(), static_cast<int>(materials.size()))) {
 					dp.material = state.materials[static_cast<size_t>(cur)];
 					data_dirty = true;
 					mark_modified(dp.id);
@@ -522,17 +479,12 @@ void DataTable::render(AppState& state) {
 				ImGui::PopItemWidth();
 			}
 
-
 			// QMin
 			ImGui::TableSetColumnIndex(10);
 			{
 				int val = int(dp.quality_min);
-				if (control_element_id == cell_control_name_cache.size()) {
-					char* ptr = make_label(std::string("##qmin") + std::to_string(idx));
-					cell_control_name_cache.push_back(ptr);
-				}
 				ImGui::PushItemWidth(-FLT_MIN);
-				if (ImGui::InputInt(cell_control_name_cache[control_element_id++], &val, 0, 0)) {
+				if (ImGui::InputInt("qmin", &val, 0, 0)) {
 					dp.quality_min = val;
 					data_dirty = true;
 					mark_modified(dp.id);
@@ -544,12 +496,8 @@ void DataTable::render(AppState& state) {
 			ImGui::TableSetColumnIndex(11);
 			{
 				int val = int(dp.quality_max);
-				if (control_element_id == cell_control_name_cache.size()) {
-					char* ptr = make_label(std::string("##qmax") + std::to_string(idx));
-					cell_control_name_cache.push_back(ptr);
-				}
 				ImGui::PushItemWidth(-FLT_MIN);
-				if (ImGui::InputInt(cell_control_name_cache[control_element_id++], &val, 0, 0)) {
+				if (ImGui::InputInt("qmax", &val, 0, 0)) {
 					dp.quality_max = val;
 					data_dirty = true;
 					mark_modified(dp.id);
@@ -562,12 +510,8 @@ void DataTable::render(AppState& state) {
 			{
 				char buf[256] = { 0 };
 				strncpy(buf, dp.note.c_str(), sizeof(buf) - 1);
-				if (control_element_id == cell_control_name_cache.size()) {
-					char* ptr = make_label(std::string("##note") + std::to_string(idx));
-					cell_control_name_cache.push_back(ptr);
-				}
 				ImGui::PushItemWidth(-FLT_MIN);
-				if (ImGui::InputText(cell_control_name_cache[control_element_id++], buf, IM_ARRAYSIZE(buf))) {
+				if (ImGui::InputText("note", buf, IM_ARRAYSIZE(buf))) {
 					dp.note = buf;
 					data_dirty = true;
 					mark_modified(dp.id);
@@ -578,12 +522,8 @@ void DataTable::render(AppState& state) {
 			// QT persistent checkbox
 			ImGui::TableSetColumnIndex(13);
 			{
-				if (control_element_id == cell_control_name_cache.size()) {
-					char* ptr = make_label(std::string("##qt_persistent") + std::to_string(idx));
-					cell_control_name_cache.push_back(ptr);
-				}
 				bool val = dp.qt_persistent;
-				if (ImGui::Checkbox(cell_control_name_cache[control_element_id++], &val)) {
+				if (ImGui::Checkbox("##qt_persistent", &val)) {
 					dp.qt_persistent = val;
 					data_dirty = true;
 					mark_modified(dp.id);
@@ -593,15 +533,13 @@ void DataTable::render(AppState& state) {
 			// Controls (Delete)
 			ImGui::TableSetColumnIndex(14);
 			{
-				if (control_element_id == cell_control_name_cache.size()) {
-					char* ptr = make_label(std::string("Delete##del") + std::to_string(idx));
-					cell_control_name_cache.push_back(ptr);
-				}
-				if (ImGui::SmallButton(cell_control_name_cache[control_element_id++])) {
+				if (ImGui::SmallButton("Delete")) {
 					mark_deleted(dp.id);
 					to_erase.push_back(idx);
 				}
 			}
+
+			ImGui::PopID();
 		}
 
 		// erase rows in reverse order
@@ -629,11 +567,7 @@ void DataTable::render(AppState& state) {
 		} else if (page_index >= static_cast<int>(total_pages)) {
 			page_index = static_cast<int>(total_pages) - 1;
 		}
-		// release cached control names if we have significantly fewer points now (e.g. after filtering) to avoid unbounded growth
-		if (cell_control_name_cache.size() > control_element_id) {
-			cell_control_name_cache.resize(control_element_id);
-			cell_control_name_owned.resize(control_element_id);
-		}
+		// no per-cell label cache to trim when using PushID per-row
 
 		ImGui::EndTable();
 	}

@@ -3,7 +3,6 @@
 #include <string>
 #include <utility>
 #include <cstddef>
-#include <memory>
 #include "scout_core.h"
 
 struct AppState; // forward
@@ -46,10 +45,5 @@ private:
     std::vector<const char*> materials;
     std::vector<const char*> servers;
     std::vector<const char*> planets;
-    // Cache of label pointers (owned via cell_control_name_owned)
-    std::vector<char*> cell_control_name_cache;
-    std::vector<std::unique_ptr<char[]>> cell_control_name_owned;
-
-    // Allocate and own a C-string label; returns pointer stored in owned vector
-    char* make_label(const std::string& s);
+    // No per-cell label cache when using ImGui PushID per-row
 };

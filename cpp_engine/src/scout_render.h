@@ -41,6 +41,38 @@ inline Vector2 latlon_to_ndc(const double& lat, const double& lon) {
 }
 
 
+struct rgba {
+	float r, g, b, a;
+	const void overide(float r_, float g_, float b_, float a_) {
+		r = r_; g = g_; b = b_; a = a_;
+	};
+	const void overide(float r_, float g_, float b_) {
+		r = r_; g = g_; b = b_;
+	};
+	const void overide(const rgba& c) {
+		r = c.r; g = c.g; b = c.b; a = c.a;
+	};
+	const float luminance() const {
+		return 0.2126f * r + 0.7152f * g + 0.0722f * b;
+	};
+};
+
+inline rgba make_rgba(uint8_t r, uint8_t g, uint8_t b, uint8_t a) {
+	return { r / 255.0f, g / 255.0f, b / 255.0f, a / 255.0f };
+}
+
+
+//rgb(183, 65, 14)
+static rgba wreck = make_rgba(183, 65, 14, 255);
+//rgb(150, 90, 50)
+static rgba cave = make_rgba(150, 90, 50, 255);
+
+//rgb(203, 58, 51)
+static rgba onyx_facility = make_rgba(212, 58, 51, 255);
+//rgb(128, 128, 128)
+static rgba qtless_location = make_rgba(128, 128, 128, 255);
+
+
 
 class ScoutRenderer {
 public:
@@ -58,42 +90,45 @@ public:
                                           const Planet *selected_zone = nullptr,
                                           const DisplayMode display_mode = DisplayMode::Default,
                                           double grid_spacing_km = 100.0,
-                                          const Camera2D &camera = Camera2D(),
                                           const std::unordered_set<std::string>* highlighted_materials = nullptr);
 
-    void RenderAstroidFieldZone(const Planet* selected_zone, double grid_spacing_km, const Camera2D &camera = Camera2D());
+    void RenderAstroidFieldZone(const Planet* selected_zone, double grid_spacing_km);
 
-    void RenderBackground(GLuint texture, const Camera2D &camera = Camera2D());
+    void RenderBackground(GLuint texture);
     // Render the planet disk positioned and scaled according to the selected zone's bounding box.
-    void RenderPlanet(GLuint texture, const Planet* selected_zone, double radius_planet_km, double grid_spacing_km, const Camera2D &camera = Camera2D());
+    void RenderPlanet(GLuint texture, const Planet* selected_zone, double radius_planet_km, double grid_spacing_km);
 
 
     // Render a travel track (connected line strip) in NDC using the supplied DataPoint list.
     void render_track(const DisplayMode dpm, 
                       const std::vector<DataPoint>& track,
                       const Planet* selected_zone = nullptr,
-                      double grid_spacing_km = 100.0,
-                      const Camera2D &camera = Camera2D());
+                      double grid_spacing_km = 100.0);
+
+    Camera2D camera2d;
+    Camera3D camera3d;
 
     // Render a single marker at normalized device coords (x,y in [-1,1]).
     // (Declaration with Camera2D is provided later near uniform fields.)
-    void render_marker(float x, float y, float r, float g, float b, float a, float size = 5.0f, const Camera2D &camera = Camera2D());
+    void render_marker(float x, float y, float r, float g, float b, float a, float size = 5.0f);
 
 private:
     // Convert a point (either asteroid-field XY or lat/lon) to normalized device coords [-1,1]
     Vector2 zone_point_to_ndc(const DisplayMode dpm, const Planet* selected_zone, double a, double b, double grid_spacing_km) const;
-    Vector2 asteriod_point_to_ndc(const bbox2d& box, double grid_spacing_km, double a, double b) const;
+    Vector2 asteroid_point_to_ndc(const bbox2d& box, double grid_spacing_km, double a, double b) const;
     //std::pair<float, float> latlon_to_ndc(double lat, double lon) const;
     // Render grid lines for asteroid fields
-    void render_grid_for_zone(const DisplayMode dpm, const Planet* selected_zone, double grid_spacing_km, const Camera2D &camera = Camera2D());
+    void render_grid_for_zone(const DisplayMode dpm, const Planet* selected_zone, double grid_spacing_km);
     // Excel-style column label helper (A..Z, AA..ZZ, etc.)
     std::string excel_column_label(int index);
     // Compute sector label for a point in the selected zone (e.g. "B12")
     std::string sector_label_for_point(const DisplayMode dpm, const Planet* selected_zone, double a, double b, double grid_spacing_km);
     // Render cached sector labels for a rectangular grid defined by start, cols, rows.
-    void render_sector_labels_grid(const DisplayMode dpm, const Planet* selected_zone, double start_x, double start_y, int cols, int rows, double grid_spacing_x_km, double grid_spacing_y_km, bool coords_are_latlon = false, const Camera2D &camera = Camera2D());
+    void render_sector_labels_grid(const DisplayMode dpm, const Planet* selected_zone, double start_x, double start_y, int cols, int rows, double grid_spacing_x_km, double grid_spacing_y_km, bool coords_are_latlon = false);
     GLuint compile_shader(GLenum type, const char* src);
     GLuint link_program(GLuint vs, GLuint fs);
+
+    void RenderPointsWithBorder(std::vector<float>& border_buf, std::vector<float>& buf);
 
     GLuint quad_vao_ = 0;
     GLuint quad_vbo_ = 0;
@@ -126,7 +161,7 @@ private:
     GLint points_zoom_loc_ = -1;
     GLint marker_pan_ndc_loc_ = -1;
     GLint marker_zoom_loc_ = -1;
-        void RenderPointsWithBorder(std::vector<float> &border_buf, const std::vector<DataPoint> &points, std::vector<float> &buf, const Camera2D &camera);
+        
     // Quad/planet pan & zoom uniform locations
     GLint quad_pan_ndc_loc_ = -1;
     GLint quad_uv_pan_loc_ = -1;

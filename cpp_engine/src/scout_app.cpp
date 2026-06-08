@@ -211,6 +211,13 @@ GLuint load_texture_file(const std::filesystem::path& path) {
 	glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, width, height, 0, 0x80E1, GL_UNSIGNED_BYTE, pixels.data());
 	return texture;
 }
+int delete_texture(GLuint texture) {
+	if (texture) {
+		glDeleteTextures(1, &texture);
+		return 0;
+	}
+	return -1;
+}
 
 std::pair<float, float> latlon_to_uv(double lat, double lon) {
 	const auto u = static_cast<float>((lon + 180.0) / 360.0);
@@ -314,12 +321,14 @@ struct AppState {
 	int quality_min{ kMinQuality };
 	int quality_max{ kMaxQuality };
 	DataPoint new_data{};
-	std::unordered_map<std::string, GLuint> texture_cache;
+	std::string loaded_texture;
+	GLuint loaded_texture_id{ 0 };
+	//std::unordered_map<std::string, GLuint> texture_cache;
 	std::optional<std::string> hovered_text;
 
 	// Map interaction/cameras
-	Camera2D camera2d;
-	Camera3D camera3d;
+	// Camera2D camera2d;
+	// Camera3D camera3d;
 	// Highlighted materials (names)
 	std::unordered_set<std::string> highlighted_materials;
 
@@ -479,10 +488,8 @@ struct AppState {
 	}
 
 	~AppState() {
-		for (const auto& [_, texture] : texture_cache) {
-			if (texture != 0) {
-				glDeleteTextures(1, &texture);
-			}
+		if (loaded_texture_id != 0) {
+			glDeleteTextures(1, &loaded_texture_id);
 		}
 	}
 
@@ -622,9 +629,12 @@ struct AppState {
 	}
 
 	GLuint get_texture_for_selected_planet() {
-		auto it = texture_cache.find(selected_planet);
-		if (it != texture_cache.end()) {
-			return it->second;
+		if (loaded_texture == selected_planet && loaded_texture_id != 0) {
+			return loaded_texture_id;
+		}
+		if (loaded_texture_id != 0) {
+			glDeleteTextures(1, &loaded_texture_id);
+			loaded_texture_id = 0;
 		}
 
 		// selected to image dir for planet in planets.csv, if not found fallback to looking for image named after planet key directly in planets dir
@@ -653,7 +663,8 @@ struct AppState {
 		if (texture == 0) {
 			texture = load_texture_file(repo_root / "images" / "planets" / "skybox" / "default.jpg");
 		}
-		texture_cache[selected_planet] = texture;
+		loaded_texture_id = texture;
+		loaded_texture = selected_planet;
 		return texture;
 	}
 
@@ -1588,40 +1599,7 @@ if (ImGui::Button("Browse")) {
 			static int prev_sort_order = -1;
 			static size_t prev_points_size = 0;
 			static bool prev_data_dirty = true;
-			auto matches = [&](const DataPoint &p) {
-				// Column 0: id
-				if (!state.datatable_filters[0].empty()) {
-					if (std::to_string(p.id).find(state.datatable_filters[0]) == std::string::npos) return false;
-				}
-				// 1: time_info
-				if (!state.datatable_filters[1].empty()) {
-					if (p.time_info.find(state.datatable_filters[1]) == std::string::npos) return false;
-				}
-				// 2: server
-				if (!state.datatable_filters[2].empty()) {
-					if (p.server.find(state.datatable_filters[2]) == std::string::npos) return false;
-				}
-				// 3,4,5: x,y,z
-				if (!state.datatable_filters[3].empty()) { if (std::to_string(p.coord.x).find(state.datatable_filters[3]) == std::string::npos) return false; }
-				if (!state.datatable_filters[4].empty()) { if (std::to_string(p.coord.y).find(state.datatable_filters[4]) == std::string::npos) return false; }
-				if (!state.datatable_filters[5].empty()) { if (std::to_string(p.coord.z).find(state.datatable_filters[5]) == std::string::npos) return false; }
-				// 6: planet
-				if (!state.datatable_filters[6].empty()) { if (p.planet.find(state.datatable_filters[6]) == std::string::npos) return false; }
-				// 7: poi_type
-				if (!state.datatable_filters[7].empty()) { if (std::string(poi_type_name(p.poi_type)).find(state.datatable_filters[7]) == std::string::npos) return false; }
-				// 8: subtype
-				if (!state.datatable_filters[8].empty()) { if (std::string(poi_subtype_name(p.subtype)).find(state.datatable_filters[8]) == std::string::npos) return false; }
-				// 9: material
-				if (!state.datatable_filters[9].empty()) { if (p.material.find(state.datatable_filters[9]) == std::string::npos) return false; }
-				// 10,11: qmin/qmax
-				if (!state.datatable_filters[10].empty()) { if (std::to_string(p.quality_min).find(state.datatable_filters[10]) == std::string::npos) return false; }
-				if (!state.datatable_filters[11].empty()) { if (std::to_string(p.quality_max).find(state.datatable_filters[11]) == std::string::npos) return false; }
-				// 12: note
-				if (!state.datatable_filters[12].empty()) { if (p.note.find(state.datatable_filters[12]) == std::string::npos) return false; }
-				// 13: qt_persistent
-				if (!state.datatable_filters[13].empty()) { if (std::string(p.qt_persistent ? "1" : "0").find(state.datatable_filters[13]) == std::string::npos) return false; }
-				return true;
-			};
+			
 			// detect changes
 			if (prev_filters.size() != state.datatable_filters.size()) prev_filters.resize(state.datatable_filters.size());
 			bool filters_changed = false;
@@ -1629,11 +1607,50 @@ if (ImGui::Button("Browse")) {
 				if (prev_filters[i] != state.datatable_filters[i]) { filters_changed = true; break; }
 			}
 			bool sort_changed = (prev_sort_col != state.datatable_sort_column) || (prev_sort_order != state.datatable_sort_order);
-			bool points_changed = (prev_points_size != state.points.size()) || (data_dirty != prev_data_dirty);
+			bool points_changed = (prev_points_size != state.points.size()); //|| (data_dirty != prev_data_dirty);
 
 			if (filters_changed || sort_changed || points_changed) {
 				datatable_index_map.clear();
 				datatable_index_map.reserve(state.points.size());
+
+				auto matches = [&](const DataPoint& p) {
+				// Column 0: id
+					if (!state.datatable_filters[0].empty()) {
+						if (std::to_string(p.id).find(state.datatable_filters[0]) == std::string::npos) return false;
+					}
+					// 1: time_info
+					if (!state.datatable_filters[1].empty()) {
+						if (p.time_info.find(state.datatable_filters[1]) == std::string::npos) return false;
+					}
+					// 2: server
+					if (!state.datatable_filters[2].empty()) {
+						if (p.server.find(state.datatable_filters[2]) == std::string::npos) return false;
+					}
+					// 3,4,5: x,y,z
+					if (!state.datatable_filters[3].empty()) { if (std::to_string(p.coord.x).find(state.datatable_filters[3]) == std::string::npos) return false; }
+					if (!state.datatable_filters[4].empty()) { if (std::to_string(p.coord.y).find(state.datatable_filters[4]) == std::string::npos) return false; }
+					if (!state.datatable_filters[5].empty()) { if (std::to_string(p.coord.z).find(state.datatable_filters[5]) == std::string::npos) return false; }
+					// 6: planet
+					if (!state.datatable_filters[6].empty()) {
+						if (p.planet.find(state.datatable_filters[6]) == std::string::npos) return false;
+					}
+					// 7: poi_type
+					if (!state.datatable_filters[7].empty()) { if (std::string(poi_type_name(p.poi_type)).find(state.datatable_filters[7]) == std::string::npos) return false; }
+					// 8: subtype
+					if (!state.datatable_filters[8].empty()) { if (std::string(poi_subtype_name(p.subtype)).find(state.datatable_filters[8]) == std::string::npos) return false; }
+					// 9: material
+					if (!state.datatable_filters[9].empty()) { if (p.material.find(state.datatable_filters[9]) == std::string::npos) return false; }
+					// 10,11: qmin/qmax
+					if (!state.datatable_filters[10].empty()) { if (std::to_string(p.quality_min).find(state.datatable_filters[10]) == std::string::npos) return false; }
+					if (!state.datatable_filters[11].empty()) { if (std::to_string(p.quality_max).find(state.datatable_filters[11]) == std::string::npos) return false; }
+					// 12: note
+					if (!state.datatable_filters[12].empty()) { if (p.note.find(state.datatable_filters[12]) == std::string::npos) return false; }
+					// 13: qt_persistent
+					if (!state.datatable_filters[13].empty()) { if (std::string(p.qt_persistent ? "1" : "0").find(state.datatable_filters[13]) == std::string::npos) return false; }
+					return true;
+					};
+
+
 				for (size_t i = 0; i < state.points.size(); ++i) {
 					if (matches(state.points[i])) datatable_index_map.push_back(i);
 				}
@@ -1781,18 +1798,26 @@ if (ImGui::Button("Browse")) {
 					}
 					std::string btn_id = btn_label + std::string("##hdr") + std::to_string(col);
 					// color active sort button green
-					if (state.datatable_sort_column == key) ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.0f, 0.6f, 0.0f, 1.0f));
+					bool sort_key_changed = false;
+					bool sort_to_none = false;
+					if (state.datatable_sort_column == key && state.datatable_sort_order != 0) ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.0f, 0.6f, 0.0f, 1.0f));
 					if (ImGui::Button(btn_id.c_str())) {
 						if (state.datatable_sort_column == key) {
 							// cycle none -> asc -> desc -> none
 							state.datatable_sort_order = (state.datatable_sort_order + 1) % 3;
-							if (state.datatable_sort_order == 0) state.datatable_sort_column.clear();
+							if (state.datatable_sort_order == 0) { 
+								state.datatable_sort_column.clear(); 
+								sort_to_none = true;
+							}
 						} else {
+							sort_key_changed = true;
 							state.datatable_sort_column = key;
 							state.datatable_sort_order = 1;
 						}
 					}
-					if (state.datatable_sort_column == key) ImGui::PopStyleColor();
+					if ((state.datatable_sort_column == key && !sort_key_changed && state.datatable_sort_order != 0) || sort_to_none) {
+						ImGui::PopStyleColor();
+					}
 					// filter input below button
 					// Compact per-column widths for filter inputs
 					int iw = 100;
@@ -1854,7 +1879,9 @@ if (ImGui::Button("Browse")) {
 						}
 					} else {
 						char fbuf[128] = {0};
-						if (state.datatable_filters.size() > static_cast<size_t>(col)) strncpy(fbuf, state.datatable_filters[col].c_str(), sizeof(fbuf)-1);
+						if (state.datatable_filters.size() > static_cast<size_t>(col)) {
+							strncpy(fbuf, state.datatable_filters[col].c_str(), sizeof(fbuf) - 1);
+						}
 						if (ImGui::InputText(f_lbl.c_str(), fbuf, sizeof(fbuf))) {
 							state.datatable_filters[col] = fbuf;
 						}
@@ -1866,31 +1893,31 @@ if (ImGui::Button("Browse")) {
 				std::vector<size_t> to_erase;
 
 				// Rebuild index map after potential filter changes in header inputs
-				datatable_index_map.clear();
-				for (size_t i = 0; i < state.points.size(); ++i) {
-					if (matches(state.points[i])) datatable_index_map.push_back(i);
-				}
-				if (!state.datatable_sort_column.empty() && state.datatable_sort_order != 0) {
-					bool asc = (state.datatable_sort_order == 1);
-					const std::string &c = state.datatable_sort_column;
-					std::stable_sort(datatable_index_map.begin(), datatable_index_map.end(), [&](size_t ai, size_t bi) {
-						const DataPoint &a = state.points[ai];
-						const DataPoint &b = state.points[bi];
-						if (c == "id") return asc ? a.id < b.id : a.id > b.id;
-						if (c == "time") return asc ? a.time_info < b.time_info : a.time_info > b.time_info;
-						if (c == "server") return asc ? a.server < b.server : a.server > b.server;
-						if (c == "x") return asc ? a.coord.x < b.coord.x : a.coord.x > b.coord.x;
-						if (c == "y") return asc ? a.coord.y < b.coord.y : a.coord.y > b.coord.y;
-						if (c == "z") return asc ? a.coord.z < b.coord.z : a.coord.z > b.coord.z;
-						if (c == "planet") return asc ? a.planet < b.planet : a.planet > b.planet;
-						if (c == "material") return asc ? a.material < b.material : a.material > b.material;
-						if (c == "qmin") return asc ? a.quality_min < b.quality_min : a.quality_min > b.quality_min;
-						if (c == "qmax") return asc ? a.quality_max < b.quality_max : a.quality_max > b.quality_max;
-						return asc ? a.id < b.id : a.id > b.id;
-					});
-				} else {
-					std::stable_sort(datatable_index_map.begin(), datatable_index_map.end(), [&](size_t ai, size_t bi){ return state.points[ai].id < state.points[bi].id; });
-				}
+				//datatable_index_map.clear();
+				//for (size_t i = 0; i < state.points.size(); ++i) {
+				//	if (matches(state.points[i])) datatable_index_map.push_back(i);
+				//}
+				//if (!state.datatable_sort_column.empty() && state.datatable_sort_order != 0) {
+				//	bool asc = (state.datatable_sort_order == 1);
+				//	const std::string &c = state.datatable_sort_column;
+				//	std::stable_sort(datatable_index_map.begin(), datatable_index_map.end(), [&](size_t ai, size_t bi) {
+				//		const DataPoint &a = state.points[ai];
+				//		const DataPoint &b = state.points[bi];
+				//		if (c == "id") return asc ? a.id < b.id : a.id > b.id;
+				//		if (c == "time") return asc ? a.time_info < b.time_info : a.time_info > b.time_info;
+				//		if (c == "server") return asc ? a.server < b.server : a.server > b.server;
+				//		if (c == "x") return asc ? a.coord.x < b.coord.x : a.coord.x > b.coord.x;
+				//		if (c == "y") return asc ? a.coord.y < b.coord.y : a.coord.y > b.coord.y;
+				//		if (c == "z") return asc ? a.coord.z < b.coord.z : a.coord.z > b.coord.z;
+				//		if (c == "planet") return asc ? a.planet < b.planet : a.planet > b.planet;
+				//		if (c == "material") return asc ? a.material < b.material : a.material > b.material;
+				//		if (c == "qmin") return asc ? a.quality_min < b.quality_min : a.quality_min > b.quality_min;
+				//		if (c == "qmax") return asc ? a.quality_max < b.quality_max : a.quality_max > b.quality_max;
+				//		return asc ? a.id < b.id : a.id > b.id;
+				//	});
+				//} else {
+				//	std::stable_sort(datatable_index_map.begin(), datatable_index_map.end(), [&](size_t ai, size_t bi){ return state.points[ai].id < state.points[bi].id; });
+				//}
 				// Compute visible range based on current page (use datatable index map)
 				size_t start = static_cast<size_t>(page_index) * static_cast<size_t>(page_size);
 				if (start >= datatable_index_map.size()) start = 0;
@@ -2116,10 +2143,10 @@ if (ImGui::Button("Browse")) {
 					}
 
 					// Rebuild datatable index map after removals
-					datatable_index_map.clear();
-					for (size_t i = 0; i < state.points.size(); ++i) {
-						if (matches(state.points[i])) datatable_index_map.push_back(i);
-					}
+					//datatable_index_map.clear();
+					//for (size_t i = 0; i < state.points.size(); ++i) {
+					//	if (matches(state.points[i])) datatable_index_map.push_back(i);
+					//}
 				}
 
 				// After potential removals, ensure the current page index is valid
@@ -2558,13 +2585,13 @@ if (ImGui::Button("Browse")) {
 			if (mouse_pos && !io.WantCaptureMouse && std::abs(io.MouseWheel) > 1e-6f) {
 				double wheel = io.MouseWheel; // positive = up
 				double factor = std::pow(1.25, wheel);
-				double oldZoom = state.camera2d.getZoom();
+				double oldZoom = renderer.camera2d.getZoom();
 				double newZoom = oldZoom * factor;
 				if (newZoom < 1.0) newZoom = 1.0;
 				if (newZoom > 8.0) newZoom = 8.0;
 				if (std::abs(newZoom - oldZoom) > 1e-9) {
 					// compute world point under cursor (pre-zoom)
-					auto pan = state.camera2d.getPan();
+					auto pan = renderer.camera2d.getPan();
 					float sX = (*mouse_pos).first;
 					float sY = (*mouse_pos).second;
 					float wX = (sX - pan.first) / static_cast<float>(oldZoom) + pan.first;
@@ -2573,9 +2600,9 @@ if (ImGui::Button("Browse")) {
 					if (std::abs(denomX) > 1e-6f) {
 						float newPanX = (sX - wX * static_cast<float>(newZoom)) / denomX;
 						float newPanY = (sY - wY * static_cast<float>(newZoom)) / denomX;
-						state.camera2d.setPan({ newPanX, newPanY });
+						renderer.camera2d.setPan({ newPanX, newPanY });
 					}
-					state.camera2d.setZoom(newZoom);
+					renderer.camera2d.setZoom(newZoom);
 				}
 			}
 
@@ -2587,8 +2614,8 @@ if (ImGui::Button("Browse")) {
 						last_mouse_ndc = *mouse_pos;
 					} else {
 						// compute world point under previous cursor position
-						auto pan = state.camera2d.getPan();
-						double zoom = state.camera2d.getZoom();
+						auto pan = renderer.camera2d.getPan();
+						double zoom = renderer.camera2d.getZoom();
 						float s0x = last_mouse_ndc.first;
 						float s0y = last_mouse_ndc.second;
 						float w0x = (s0x - pan.first) / static_cast<float>(zoom) + pan.first;
@@ -2600,7 +2627,7 @@ if (ImGui::Button("Browse")) {
 						if (std::abs(denom) > 1e-6f) {
 							float newPanX = (s1x - w0x * static_cast<float>(zoom)) / denom;
 							float newPanY = (s1y - w0y * static_cast<float>(zoom)) / denom;
-							state.camera2d.setPan({ newPanX, newPanY });
+							renderer.camera2d.setPan({ newPanX, newPanY });
 						}
 						last_mouse_ndc = *mouse_pos;
 					}
@@ -2620,12 +2647,12 @@ if (ImGui::Button("Browse")) {
 			}
 
 
-			state.hovered_text = renderer.render_map(texture, state.filtered_points, mouse_pos, state.material_catalog, selected_zone, state.display_mode, state.grid_spacing, state.camera2d, &state.highlighted_materials);
+			state.hovered_text = renderer.render_map(texture, state.filtered_points, mouse_pos, state.material_catalog, selected_zone, state.display_mode, state.grid_spacing, &state.highlighted_materials);
 			// Render travel log overlay (if available) so users can see their tracked path
 			if (state.travel_log) {
 				const auto track = state.travel_log->get_tracked_points_copy();
 				if (!track.empty()) {
-					renderer.render_track(state.display_mode, track, selected_zone, state.grid_spacing, state.camera2d);
+					renderer.render_track(state.display_mode, track, selected_zone, state.grid_spacing);
 				}
 			}
 			const auto toggle_now = std::chrono::steady_clock::now();
@@ -2651,7 +2678,7 @@ if (ImGui::Button("Browse")) {
 							v = (y - y_min) / (y_max - y_min);
 							const float px = (u * 2.0f) - 1.0f;
 							const float py = (v * 2.0f) - 1.0f;
-							renderer.render_marker(px, py, 1.0f, 1.0f, 0.0f, 0.9f, 6.0f, state.camera2d);
+							renderer.render_marker(px, py, 1.0f, 1.0f, 0.0f, 0.9f, 6.0f);
 						} 
 						
 					} else {
@@ -2659,7 +2686,7 @@ if (ImGui::Button("Browse")) {
 						const auto [u, v] = latlon_to_uv(lat_lon_alt.latitude, lat_lon_alt.longitude);
 						const float px = (u * 2.0f) - 1.0f;
 						const float py = (v * 2.0f) - 1.0f;
-						renderer.render_marker(px, py, 1.0f, 1.0f, 0.0f, 0.9f, 6.0f, state.camera2d);
+						renderer.render_marker(px, py, 1.0f, 1.0f, 0.0f, 0.9f, 6.0f);
 					}
 				}
 			}
@@ -2669,7 +2696,7 @@ if (ImGui::Button("Browse")) {
 		//{
 		//	ImGui::SetNextWindowBgAlpha(0.55f);
 		//	ImGui::Begin("Map Legend", nullptr, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoTitleBar);
-		//	ImGui::Text("Zoom: %.2fx", state.camera2d.getZoom());
+		//	ImGui::Text("Zoom: %.2fx".getZoom());
 		//	if (ImGui::Button("+")) state.camera2d.increaseZoomBy(0.25);
 		//	ImGui::SameLine();
 		//	if (ImGui::Button("-")) state.camera2d.increaseZoomBy(-0.25);

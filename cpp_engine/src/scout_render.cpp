@@ -27,21 +27,22 @@
 
 Vector2 ScoutRenderer::zone_point_to_ndc(const DisplayMode dpm, const Planet* selected_zone, double a, double b, double grid_spacing_km) const {
 	if (dpm == DisplayMode::Asteroid_Field || dpm == DisplayMode::Celestial_Belt) {
-		bbox2d box = selected_zone->bounding_box_km;
-		return asteriod_point_to_ndc(box, grid_spacing_km, a, b);
+		const bbox2d box = selected_zone->bounding_box_km;
+		return asteroid_point_to_ndc(box, grid_spacing_km, a, b);
 	}
 	// Treat a,b as lat,lon
 	if (dpm == DisplayMode::Surface) {
 		return latlon_to_ndc(a, b);
 	}
+	return { static_cast<float>(a), static_cast<float>(b) };
 }
 
-Vector2 ScoutRenderer::asteriod_point_to_ndc(const bbox2d& box, double grid_spacing_km, double a, double b) const
+Vector2 ScoutRenderer::asteroid_point_to_ndc(const bbox2d& box, double grid_spacing_km, double a, double b) const
 {
-	double minx = box.min_x;
-	double maxx = box.max_x;
-	double miny = box.min_y;
-	double maxy = box.max_y;
+	const double minx = box.min_x;
+	const double maxx = box.max_x;
+	const double miny = box.min_y;
+	const double maxy = box.max_y;
 	double cx = 0.0, cy = 0.0;
 	double half_w = 0.0, half_h = 0.0;
 	if (maxx > minx) {
@@ -93,7 +94,7 @@ std::string ScoutRenderer::sector_label_for_point(const DisplayMode dpm, const P
 			col_label_cache_.emplace(col, col_label);
 		}
 		return col_label + std::to_string(row + 1);
-	} else if (dpm == DisplayMode::Surface) {
+	} if (dpm == DisplayMode::Surface) {
 		// Celestial body: treat grid_spacing_km as degrees for lat/lon
 		const double deg_step = grid_spacing_km;
 		if (deg_step <= 0.0) return std::string();
@@ -110,17 +111,19 @@ std::string ScoutRenderer::sector_label_for_point(const DisplayMode dpm, const P
 		}
 		return col_label + std::to_string(row + 1);
 	}
+	return std::string();
 }
 
-void ScoutRenderer::render_sector_labels_grid(const DisplayMode dpm, const Planet* selected_zone, double start_x, double start_y, int cols, int rows, double grid_spacing_x_km, double grid_spacing_y_km, bool coords_are_latlon, const Camera2D &camera) {
+void ScoutRenderer::render_sector_labels_grid(const DisplayMode dpm, const Planet* selected_zone, double start_x, double start_y, int cols, int rows, double grid_spacing_x_km, double grid_spacing_y_km, bool coords_are_latlon) {
 	ImDrawList* dl = ImGui::GetBackgroundDrawList();
 	ImVec2 disp = ImGui::GetIO().DisplaySize;
 	ImFont* font = ImGui::GetFont();
-	const std::string name = selected_zone->name + ":" + display_mode_name(dpm);
+	const std::string dpm_name = display_mode_name(dpm);
+	const std::string name = std::format("%s:%s", selected_zone->name.c_str(), dpm_name.c_str());
 	const float font_size = 13.0f;
 
-	auto pan = camera.getPan();
-	double zoom = camera.getZoom();
+	auto pan = camera2d.getPan();
+	double zoom = camera2d.getZoom();
 
 	auto it1 = zone_label_cache_.find(name);
 	if (it1 != zone_label_cache_.end()) {
@@ -172,12 +175,13 @@ void ScoutRenderer::render_sector_labels_grid(const DisplayMode dpm, const Plane
 	}
 }
 
-void ScoutRenderer::render_grid_for_zone(const DisplayMode dpm, const Planet* selected_zone, double grid_spacing_km, const Camera2D &camera) {
+void ScoutRenderer::render_grid_for_zone(const DisplayMode dpm, const Planet* selected_zone, double grid_spacing_km) {
 	if (!selected_zone) return;
 
-	auto pan = camera.getPan();
-	double zoom = camera.getZoom();
-
+	auto pan = camera2d.getPan();
+	double zoom = camera2d.getZoom();
+	std::vector<float> lines;
+	size_t idx = 0;
 	if (dpm == DisplayMode::Asteroid_Field || dpm == DisplayMode::Celestial_Belt) {
 		bbox2d box = selected_zone->bounding_box_km;
 		double minx = box.min_x;
@@ -192,116 +196,95 @@ void ScoutRenderer::render_grid_for_zone(const DisplayMode dpm, const Planet* se
 		const double start_y = std::floor(miny / grid_spacing_km) * grid_spacing_km;
 		const double end_y = std::ceil(maxy / grid_spacing_km) * grid_spacing_km;
 
-		std::vector<float> lines;
+		
 
-		lines.reserve(static_cast<size_t>((end_x - start_x) / grid_spacing_km + (end_y - start_y) / grid_spacing_km - 4) * 4);
+		lines.resize(static_cast<size_t>((end_x - start_x) / grid_spacing_km + (end_y - start_y) / grid_spacing_km - 2) * 4);
 		// vertical lines
 		for (double x = start_x + grid_spacing_km; x < end_x; x += grid_spacing_km) {
 			const auto a = zone_point_to_ndc(dpm, selected_zone, x, miny, grid_spacing_km);
 			const auto b = zone_point_to_ndc(dpm, selected_zone, x, maxy, grid_spacing_km);
 			// Buffer raw NDC; GPU will apply pan/zoom in marker shader
-			lines.push_back(a.x);
-			lines.push_back(a.y);
-			lines.push_back(b.x);
-			lines.push_back(b.y);
+			lines[idx++] = a.x;
+			lines[idx++] = a.y;
+			lines[idx++] = b.x;
+			lines[idx++] = b.y;
 		}
 		// horizontal lines
 		for (double y = start_y + grid_spacing_km; y < end_y; y += grid_spacing_km) {
 			const auto a = zone_point_to_ndc(dpm, selected_zone, minx, y, grid_spacing_km);
 			const auto b = zone_point_to_ndc(dpm, selected_zone, maxx, y, grid_spacing_km);
 			// Buffer raw NDC; GPU will apply pan/zoom in marker shader
-			lines.push_back(a.x);
-			lines.push_back(a.y);
-			lines.push_back(b.x);
-			lines.push_back(b.y);
+			lines[idx++] = a.x;
+			lines[idx++] = a.y;
+			lines[idx++] = b.x;
+			lines[idx++] = b.y;
 		}
 
-		// If bounding-box grid produced lines, draw them in gray (opaque)
-		if (!lines.empty()) {
-			glUseProgram(marker_shader_);
-			// set camera pan/zoom uniforms for grid rendering
-			if (marker_pan_ndc_loc_ != -1) glUniform2f(marker_pan_ndc_loc_, pan.first, pan.second);
-			if (marker_zoom_loc_ != -1) glUniform1f(marker_zoom_loc_, static_cast<float>(zoom));
-			glBindVertexArray(marker_vao_);
-			glBindBuffer(GL_ARRAY_BUFFER, marker_vbo_);
-			glBufferData(GL_ARRAY_BUFFER, lines.size() * sizeof(float), lines.data(), GL_DYNAMIC_DRAW);
-			// gray, opaque
-			if (marker_color_loc_ != -1) {
-				glUniform4f(marker_color_loc_, 0.6f, 0.6f, 0.6f, 0.10f);
-			} else {
-				const GLint color_loc = glGetUniformLocation(marker_shader_, "u_color");
-				if (color_loc != -1) marker_color_loc_ = color_loc;
-				glUniform4f(color_loc, 0.6f, 0.6f, 0.6f, 0.10f);
-			}
-			// draw lines (thin)
-			//glLineWidth(1.0f);
-			glDrawArrays(GL_LINES, 0, static_cast<GLsizei>(lines.size() / 2));
-			glBindVertexArray(0);
-		}
 
 		// Render sector labels for this asteroid bounding-grid
-		{
-			int cols = static_cast<int>(std::round((end_x - start_x) / grid_spacing_km));
-			int rows = static_cast<int>(std::round((end_y - start_y) / grid_spacing_km));
-				if (cols > 0 && rows > 0) {
-					render_sector_labels_grid(dpm, selected_zone, start_x, end_y, cols, rows, grid_spacing_km, -grid_spacing_km, false, camera);
-			}
+		
+		int cols = static_cast<int>(std::round((end_x - start_x) / grid_spacing_km));
+		int rows = static_cast<int>(std::round((end_y - start_y) / grid_spacing_km));
+			if (cols > 0 && rows > 0) {
+				render_sector_labels_grid(dpm, selected_zone, start_x, end_y, cols, rows, grid_spacing_km, -grid_spacing_km, false);
 		}
+		
 	}
 	if (dpm == DisplayMode::Surface) {
 		// Draw planetary lat/lon grid lines (treat grid_spacing_km as degrees)
 		const double deg_step = grid_spacing_km;
 		if (deg_step > 0.0) {
-			std::vector<float> latlon_lines;
+			lines.resize(static_cast<size_t>((360.0 / deg_step) + (180.0 / deg_step) -2) * 4);
 			// longitude lines (meridians)
 			for (double lon = -180.0 + deg_step; lon < 180.0; lon += deg_step) {
 				const auto p1 = latlon_to_ndc(-90.0, lon);
 				const auto p2 = latlon_to_ndc(90.0, lon);
-				latlon_lines.push_back(p1.x);
-				latlon_lines.push_back(p1.y);
-				latlon_lines.push_back(p2.x);
-				latlon_lines.push_back(p2.y);
+				lines[idx++] = p1.x;
+				lines[idx++] = p1.y;
+				lines[idx++] = p2.x;
+				lines[idx++] = p2.y;
 			}
 			// latitude lines (parallels)
 			for (double lat = -90.0 + deg_step; lat < 90.0; lat += deg_step) {
 				const auto p1 = latlon_to_ndc(lat, -180.0);
 				const auto p2 = latlon_to_ndc(lat, 180.0);
-				latlon_lines.push_back(p1.x);
-				latlon_lines.push_back(p1.y);
-				latlon_lines.push_back(p2.x);
-				latlon_lines.push_back(p2.y);
-			}
-
-			if (!latlon_lines.empty()) {
-				glUseProgram(marker_shader_);
-				// set camera pan/zoom uniforms for planetary grid rendering
-				if (marker_pan_ndc_loc_ != -1) glUniform2f(marker_pan_ndc_loc_, pan.first, pan.second);
-				if (marker_zoom_loc_ != -1) glUniform1f(marker_zoom_loc_, static_cast<float>(zoom));
-				glBindVertexArray(marker_vao_);
-				glBindBuffer(GL_ARRAY_BUFFER, marker_vbo_);
-				// buffer raw NDC lat/lon lines; shader applies pan/zoom
-				glBufferData(GL_ARRAY_BUFFER, latlon_lines.size() * sizeof(float), latlon_lines.data(), GL_DYNAMIC_DRAW);
-				// gray and opaque; slightly thicker for planetary grid
-				if (marker_color_loc_ != -1) {
-					glUniform4f(marker_color_loc_, 0.6f, 0.6f, 0.6f, 0.25f);
-				} else {
-					const GLint color_loc2 = glGetUniformLocation(marker_shader_, "u_color");
-					if (color_loc2 != -1) marker_color_loc_ = color_loc2;
-					glUniform4f(color_loc2, 0.6f, 0.6f, 0.6f, 0.25f);
-				}
-				//glLineWidth(20.0f);
-				glDrawArrays(GL_LINES, 0, static_cast<GLsizei>(latlon_lines.size() / 2));
-				glBindVertexArray(0);
+				lines[idx++] = p1.x;
+				lines[idx++] = p1.y;
+				lines[idx++] = p2.x;
+				lines[idx++] = p2.y;
 			}
 
 			// Render sector labels for planetary grid: start lon/lat at -180/-90
 			int cols = static_cast<int>(std::floor(360.0 / deg_step));
 			int rows = static_cast<int>(std::floor(180.0 / deg_step));
 			if (cols > 0 && rows > 0) {
-				render_sector_labels_grid(dpm, selected_zone, 90.0f, -180.0f, rows, cols, -deg_step, deg_step, true, camera);
+				render_sector_labels_grid(dpm, selected_zone, 90.0f, -180.0f, rows, cols, -deg_step, deg_step, true);
 			}
 		}
+
+		
 	}
+	if (!lines.empty()) {
+			glUseProgram(marker_shader_);
+			// set camera2d pan/zoom uniforms for planetary grid rendering
+			if (marker_pan_ndc_loc_ != -1) glUniform2f(marker_pan_ndc_loc_, pan.first, pan.second);
+			if (marker_zoom_loc_ != -1) glUniform1f(marker_zoom_loc_, static_cast<float>(zoom));
+			glBindVertexArray(marker_vao_);
+			glBindBuffer(GL_ARRAY_BUFFER, marker_vbo_);
+			// buffer raw NDC lat/lon lines; shader applies pan/zoom
+			glBufferData(GL_ARRAY_BUFFER, lines.size() * sizeof(float), lines.data(), GL_DYNAMIC_DRAW);
+			// gray and opaque; slightly thicker for planetary grid
+			if (marker_color_loc_ != -1) {
+				glUniform4f(marker_color_loc_, 0.6f, 0.6f, 0.6f, 0.25f);
+			} else {
+				const GLint color_loc2 = glGetUniformLocation(marker_shader_, "u_color");
+				if (color_loc2 != -1) marker_color_loc_ = color_loc2;
+				glUniform4f(color_loc2, 0.6f, 0.6f, 0.6f, 0.25f);
+			}
+			//glLineWidth(20.0f);
+			glDrawArrays(GL_LINES, 0, static_cast<GLsizei>(lines.size() / 2));
+			glBindVertexArray(0);
+		}
 }
 
 struct DataPoint;
@@ -590,39 +573,7 @@ bool ScoutRenderer::init() {
 	return true;
 }
 
-struct rgba {
-	float r, g, b, a;
-	const void overide(float r_, float g_, float b_, float a_) {
-		r = r_; g = g_; b = b_; a = a_;
-	};
-	const void overide(float r_, float g_, float b_) {
-		r = r_; g = g_; b = b_;
-	};
-	const void overide(const rgba& c) {
-		r = c.r; g = c.g; b = c.b; a = c.a;
-	};
-	const float luminance() const {
-		return 0.2126f * r + 0.7152f * g + 0.0722f * b;
-	};
-};
-
-inline rgba make_rgba(uint8_t r, uint8_t g, uint8_t b, uint8_t a) {
-	return { r / 255.0f, g / 255.0f, b / 255.0f, a / 255.0f };
-}
-
-
-//rgb(183, 65, 14)
-const rgba wreck = make_rgba(183, 65, 14, 255);
-//rgb(150, 90, 50)
-const rgba cave = make_rgba(150, 90, 50, 255);
-
-//rgb(203, 58, 51)
-const rgba onyx_facility = make_rgba(212, 58, 51, 255);
-//rgb(128, 128, 128)
-const rgba qtless_location = make_rgba(128, 128, 128, 255);
-
-
-static inline void FillPointBuffer(float x, float y, std::vector<float>& buf, std::vector<float>& border_buf, rgba& colour, const DataPoint& point) {
+static inline void FillPointBuffer(float x, float y, std::vector<float>& buf, std::vector<float>& border_buf, size_t idx, rgba& colour, const DataPoint& point) {
 	colour.r = 1.0f; colour.g = 1.0f; colour.b = 1.0f; colour.a = 1.0f;
 	if (point.poi_type == PoiType::Mineral) {
 		double quality_norm = (point.quality_max - 0.0) / (1000.0 - 0.0);
@@ -660,12 +611,12 @@ static inline void FillPointBuffer(float x, float y, std::vector<float>& buf, st
 		}
 	}
 
-	buf.push_back(x);
-	buf.push_back(y);
-	buf.push_back(colour.r);
-	buf.push_back(colour.g);
-	buf.push_back(colour.b);
-	buf.push_back(colour.a);
+	buf.at(idx) = x;
+	buf.at(idx + 1) = y;
+	buf.at(idx + 2) = colour.r;
+	buf.at(idx + 3) = colour.g;
+	buf.at(idx + 4) = colour.b;
+	buf.at(idx + 5) = colour.a;
 
 	// choose border color: black if color is light, white if dark
 	const float lum = colour.luminance();
@@ -677,15 +628,15 @@ static inline void FillPointBuffer(float x, float y, std::vector<float>& buf, st
 		// dark color -> use white border
 		br = bg = bb = 0.6f;
 	}
-	border_buf.push_back(x);
-	border_buf.push_back(y);
-	border_buf.push_back(br);
-	border_buf.push_back(bg);
-	border_buf.push_back(bb);
-	border_buf.push_back(ba);
+	border_buf.at(idx) = x;
+	border_buf.at(idx + 1) = y;
+	border_buf.at(idx + 2) = br;
+	border_buf.at(idx + 3) = bg;
+	border_buf.at(idx + 4) = bb;
+	border_buf.at(idx + 5) = ba;
 }
 
-void ScoutRenderer::RenderPlanet(GLuint texture, const Planet* selected_zone, double radius_planet_km, double grid_spacing_km, const Camera2D &camera) {
+void ScoutRenderer::RenderPlanet(GLuint texture, const Planet* selected_zone, double radius_planet_km, double grid_spacing_km) {
 	if (!planet_shader_) return;
 	glUseProgram(planet_shader_);
 	// bind texture unit 0
@@ -707,7 +658,7 @@ void ScoutRenderer::RenderPlanet(GLuint texture, const Planet* selected_zone, do
 		if (box.max_x > box.min_x) cx = (box.min_x + box.max_x) * 0.5;
 		if (box.max_y > box.min_y) cy = (box.min_y + box.max_y) * 0.5;
 		// map center (0,0) in world coords -> ndc via asteriod_point_to_ndc
-		auto center_ndc = asteriod_point_to_ndc(box, grid_spacing_km, 0.0, 0.0);
+		auto center_ndc = asteroid_point_to_ndc(box, grid_spacing_km, 0.0, 0.0);
 		center_u = (center_ndc.x * 0.5f) + 0.5f;
 		center_v = (1.0f - center_ndc.y) * 0.5f;
 
@@ -731,13 +682,13 @@ void ScoutRenderer::RenderPlanet(GLuint texture, const Planet* selected_zone, do
 	}
 
 	// set planet shader uniforms (center, radius, sample v-scale for full texture)
-	// set pan/zoom uniforms for planet shader using Camera2D
-	auto pan = camera.getPan();
-	double zoom = camera.getZoom();
+	// set pan/zoom uniforms for planet shader using camera2d2D
+	auto pan = camera2d.getPan();
+	double zoom = camera2d.getZoom();
 	if (planet_pan_ndc_loc_ != -1) glUniform2f(planet_pan_ndc_loc_, pan.first, pan.second);
 	if (planet_zoom_loc_ != -1) glUniform1f(planet_zoom_loc_, static_cast<float>(zoom));
-	// compute uv pan from camera
-	auto uv_pan = camera.uvPan();
+	// compute uv pan from camera2d
+	auto uv_pan = camera2d.uvPan();
 	float uv_pan_x = uv_pan.first;
 	float uv_pan_y = uv_pan.second;
 	if (planet_uv_pan_loc_ != -1) glUniform2f(planet_uv_pan_loc_, uv_pan_x, uv_pan_y);
@@ -764,37 +715,34 @@ std::optional<std::string> ScoutRenderer::render_map(GLuint texture,
 	const Planet* selected_zone,
 	const DisplayMode dpm,
 	double grid_spacing_km,
-	const Camera2D &camera,
 	const std::unordered_set<std::string>* highlighted_materials) {
 
-	auto pan = camera.getPan();
-	double zoom = camera.getZoom();
+	auto pan = camera2d.getPan();
+	double zoom = camera2d.getZoom();
 
 	if (dpm == DisplayMode::Asteroid_Field || dpm == DisplayMode::Surface || dpm == DisplayMode::Celestial_Belt) {
 		// Draw textured quad. Only change active texture / bind when texture differs
 
 		if(dpm== DisplayMode::Celestial_Belt) {
 			// render top-down (north-pole) view of planet for celestial belt
-			RenderPlanet(texture, selected_zone, selected_zone ? selected_zone->planet_radius_km : 500.0, grid_spacing_km, camera);
+			RenderPlanet(texture, selected_zone, selected_zone ? selected_zone->planet_radius_km : 500.0, grid_spacing_km);
 
 			// Draw faint glow ring for asteroid belt area (if configured)
-			RenderAstroidFieldZone(selected_zone, grid_spacing_km, camera);
+			RenderAstroidFieldZone(selected_zone, grid_spacing_km);
 		}
 		else{
-			RenderBackground(texture, camera);
+			RenderBackground(texture);
 		}
-
-	
 
 		// Draw grid for the selected zone (asteroid bbox or planetary lat/lon)
 		if (selected_zone) {
-			render_grid_for_zone(dpm, selected_zone, grid_spacing_km, camera);
+			render_grid_for_zone(dpm, selected_zone, grid_spacing_km);
 		}
 		// Prepare points buffer (pos + rgba) and border buffer
 		std::vector<float> buf;
 		std::vector<float> border_buf;
-		buf.reserve(points.size() * 6);
-		border_buf.reserve(points.size() * 6);
+		buf.resize(points.size() * 6); // 2 for pos, 4 for rgba
+		border_buf.resize(points.size() * 6);
 		rgba colour = { 1.0f, 1.0f, 1.0f, 1.0f };
 		int displayed_points = 0;
 		for (const auto& point : points) {
@@ -814,7 +762,7 @@ std::optional<std::string> ScoutRenderer::render_map(GLuint texture,
 			}
 			
 			auto ndc = dpm == DisplayMode::Asteroid_Field || dpm == DisplayMode::Celestial_Belt
-				? asteriod_point_to_ndc(selected_zone->bounding_box_km, grid_spacing_km, point.coord.x, point.coord.y)
+				? asteroid_point_to_ndc(selected_zone->bounding_box_km, grid_spacing_km, point.coord.x, point.coord.y)
 				: latlon_to_ndc(latlonalt.latitude, latlonalt.longitude);
 			// If highlighted set provided and this point's material is highlighted, adjust colour/alpha
 			if (highlighted_materials && highlighted_materials->count(point.material) == 0 && !highlighted_materials->empty()) {
@@ -822,12 +770,12 @@ std::optional<std::string> ScoutRenderer::render_map(GLuint texture,
 				colour.overide(colour.r * 0.25f + 0.75f * 0.25f, colour.g * 0.25f + 0.75f * 0.25f, colour.b * 0.25f + 0.75f * 0.25f, 0.35f);
 			}
 
-			FillPointBuffer(ndc.x, ndc.y, buf, border_buf, colour, point);
+			FillPointBuffer(ndc.x, ndc.y, buf, border_buf, displayed_points * 6, colour, point);
 			displayed_points++;
 		}
 
 		// Upload and draw border (one size larger)
-		RenderPointsWithBorder(border_buf, points, buf, camera);
+		RenderPointsWithBorder(border_buf, buf);
 
 		// Hover detection (CPU, same logic as before)
 		if (!mouse_pos) return std::nullopt;
@@ -852,10 +800,10 @@ std::optional<std::string> ScoutRenderer::render_map(GLuint texture,
 			}
 
 			auto pndc = dpm == DisplayMode::Asteroid_Field || dpm == DisplayMode::Celestial_Belt
-				? asteriod_point_to_ndc(selected_zone->bounding_box_km, grid_spacing_km, point.coord.x, point.coord.y)
+				? asteroid_point_to_ndc(selected_zone->bounding_box_km, grid_spacing_km, point.coord.x, point.coord.y)
 				: latlon_to_ndc(latlonalt.latitude, latlonalt.longitude);
 			// transform to screen space consistent with rendering
-			auto pt = camera.applyToNdc(pndc.x, pndc.y);
+			auto pt = camera2d.applyToNdc(pndc.x, pndc.y);
 			px = pt.first;
 			py = pt.second;
 			const float dx = mx - px;
@@ -899,7 +847,7 @@ std::optional<std::string> ScoutRenderer::render_map(GLuint texture,
 				}
 				//auto latlonalt = closest_point->get_lat_lon_alt();
 				//auto pndc = latlon_to_ndc(latlonalt[0], latlonalt[1]);
-				//auto pt = camera.applyToNdc(pndc.first, pndc.second);
+				//auto pt = camera2d.applyToNdc(pndc.first, pndc.second);
 				//auto px = pt.first;
 				//auto py = pt.second;
 				//tooltip += "\n" + std::to_string(dist) + " " + std::to_string(px) +" "+ std::to_string(py) + "\n";
@@ -911,18 +859,18 @@ std::optional<std::string> ScoutRenderer::render_map(GLuint texture,
 	return std::nullopt;
 }
 
-void ScoutRenderer::RenderAstroidFieldZone(const Planet* selected_zone, double grid_spacing_km, const Camera2D &camera)
+void ScoutRenderer::RenderAstroidFieldZone(const Planet* selected_zone, double grid_spacing_km)
 {
 	if (selected_zone && (selected_zone->has_asteroid_belt || selected_zone->belt_outer_radius_km > 0.0)) {
-		auto pan = camera.getPan();
-		double zoom = camera.getZoom();
+		auto pan = camera2d.getPan();
+		double zoom = camera2d.getZoom();
 		ImDrawList* dl = ImGui::GetBackgroundDrawList();
 		ImVec2 disp = ImGui::GetIO().DisplaySize;
 		const bbox2d& box = selected_zone->bounding_box_km;
 		// compute center ndc and pixel center
-		auto center_ndc = asteriod_point_to_ndc(box, grid_spacing_km, 0.0, 0.0);
-		// transform center by camera
-		auto center_t = camera.applyToNdc(center_ndc.x, center_ndc.y);
+		auto center_ndc = asteroid_point_to_ndc(box, grid_spacing_km, 0.0, 0.0);
+		// transform center by camera2d
+		auto center_t = camera2d.applyToNdc(center_ndc.x, center_ndc.y);
 		float center_ndc_x_t = center_t.first;
 		float center_ndc_y_t = center_t.second;
 		float px = (center_ndc_x_t + 1.0f) * 0.5f * disp.x;
@@ -933,18 +881,18 @@ void ScoutRenderer::RenderAstroidFieldZone(const Planet* selected_zone, double g
 		double outer_km = selected_zone->belt_outer_radius_km > 0.0 ? selected_zone->belt_outer_radius_km : (std::min(box.max_x - box.min_x, box.max_y - box.min_y) * 0.45);
 
 		// center in world coords is 0,0 per design; map to NDC
-		auto center_ndc2 = asteriod_point_to_ndc(box, grid_spacing_km, 0.0, 0.0);
-		auto inner_ndc_x_pair = asteriod_point_to_ndc(box, grid_spacing_km, inner_km, 0.0);
-		auto inner_ndc_y_pair = asteriod_point_to_ndc(box, grid_spacing_km, 0.0, inner_km);
-		auto outer_ndc_x_pair = asteriod_point_to_ndc(box, grid_spacing_km, outer_km, 0.0);
-		auto outer_ndc_y_pair = asteriod_point_to_ndc(box, grid_spacing_km, 0.0, outer_km);
+		auto center_ndc2 = asteroid_point_to_ndc(box, grid_spacing_km, 0.0, 0.0);
+		auto inner_ndc_x_pair = asteroid_point_to_ndc(box, grid_spacing_km, inner_km, 0.0);
+		auto inner_ndc_y_pair = asteroid_point_to_ndc(box, grid_spacing_km, 0.0, inner_km);
+		auto outer_ndc_x_pair = asteroid_point_to_ndc(box, grid_spacing_km, outer_km, 0.0);
+		auto outer_ndc_y_pair = asteroid_point_to_ndc(box, grid_spacing_km, 0.0, outer_km);
 
-		// transform ndc radii points by camera
-		auto center_ndc2_t = camera.applyToNdc(center_ndc2.x, center_ndc2.y);
-		auto inner_x_t = camera.applyToNdc(inner_ndc_x_pair.x, inner_ndc_x_pair.y);
-		auto inner_y_t = camera.applyToNdc(inner_ndc_y_pair.x, inner_ndc_y_pair.y);
-		auto outer_x_t = camera.applyToNdc(outer_ndc_x_pair.x, outer_ndc_x_pair.y);
-		auto outer_y_t = camera.applyToNdc(outer_ndc_y_pair.x, outer_ndc_y_pair.y);
+		// transform ndc radii points by camera2d
+		auto center_ndc2_t = camera2d.applyToNdc(center_ndc2.x, center_ndc2.y);
+		auto inner_x_t = camera2d.applyToNdc(inner_ndc_x_pair.x, inner_ndc_x_pair.y);
+		auto inner_y_t = camera2d.applyToNdc(inner_ndc_y_pair.x, inner_ndc_y_pair.y);
+		auto outer_x_t = camera2d.applyToNdc(outer_ndc_x_pair.x, outer_ndc_x_pair.y);
+		auto outer_y_t = camera2d.applyToNdc(outer_ndc_y_pair.x, outer_ndc_y_pair.y);
 		auto center_ndc2_tx = center_ndc2_t.first;
 		auto center_ndc2_ty = center_ndc2_t.second;
 		auto inner_ndc_x_t = inner_x_t.first;
@@ -1000,7 +948,7 @@ void ScoutRenderer::RenderAstroidFieldZone(const Planet* selected_zone, double g
 	}
 }
 
-void ScoutRenderer::RenderBackground(GLuint texture, const Camera2D &camera)
+void ScoutRenderer::RenderBackground(GLuint texture)
 {
 	glUseProgram(quad_shader_);
 	if (!last_bound_texture_unit0_valid_ || last_bound_texture_unit0_ != texture) {
@@ -1017,12 +965,12 @@ void ScoutRenderer::RenderBackground(GLuint texture, const Camera2D &camera)
 			glUniform1i(quad_texture_loc_, 0);
 		}
 	}
-	// set pan/zoom uniforms for quad shader from Camera2D
-	auto pan = camera.getPan();
-	double zoom = camera.getZoom();
+	// set pan/zoom uniforms for quad shader from camera2d2D
+	auto pan = camera2d.getPan();
+	double zoom = camera2d.getZoom();
 	if (quad_pan_ndc_loc_ != -1) glUniform2f(quad_pan_ndc_loc_, pan.first, pan.second);
-	// compute uv pan from ndc pan via camera
-	auto uvpan = camera.uvPan();
+	// compute uv pan from ndc pan via camera2d
+	auto uvpan = camera2d.uvPan();
 	float uv_pan_x = uvpan.first;
 	float uv_pan_y = uvpan.second;
 	if (quad_uv_pan_loc_ != -1) glUniform2f(quad_uv_pan_loc_, uv_pan_x, uv_pan_y);
@@ -1032,41 +980,42 @@ void ScoutRenderer::RenderBackground(GLuint texture, const Camera2D &camera)
 	glBindVertexArray(0);
 }
 
-void ScoutRenderer::RenderPointsWithBorder(std::vector<float>& border_buf, const std::vector<DataPoint>& points, std::vector<float>& buf, const Camera2D &camera)
+void ScoutRenderer::RenderPointsWithBorder(std::vector<float>& border_buf, std::vector<float>& buf)
 {
-	if (!border_buf.empty()) {
-		glUseProgram(points_shader_);
-		// set camera pan/zoom uniforms for points shader
-		auto pan = camera.getPan();
-		double zoom = camera.getZoom();
-		if (points_pan_ndc_loc_ != -1) glUniform2f(points_pan_ndc_loc_, pan.first, pan.second);
-		if (points_zoom_loc_ != -1) glUniform1f(points_zoom_loc_, static_cast<float>(zoom));
-		glBindVertexArray(points_vao_);
-		glBindBuffer(GL_ARRAY_BUFFER, points_vbo_);
-		glBufferData(GL_ARRAY_BUFFER, border_buf.size() * sizeof(float), border_buf.data(), GL_DYNAMIC_DRAW);
-		// Use cached point-size uniform location if available (fallback to query-and-cache)
-		GLint size_loc = points_point_size_loc_;
-		if (size_loc == -1) {
-			size_loc = glad_glGetUniformLocation(points_shader_, "u_point_size");
-			if (size_loc != -1)
-				points_point_size_loc_ = size_loc;
-		}
-		const float base_size = 3.0f;
-		glUniform1f(size_loc, base_size + 2.0f);
-		glDrawArrays(GL_POINTS, 0, static_cast<GLsizei>(points.size()));
-		// Draw inner points on top
-		glBufferData(GL_ARRAY_BUFFER, buf.size() * sizeof(float), buf.empty() ? nullptr : buf.data(), GL_DYNAMIC_DRAW);
-		glUniform1f(size_loc, base_size);
-		glDrawArrays(GL_POINTS, 0, static_cast<GLsizei>(points.size()));
-		glBindVertexArray(0);
+	if (border_buf.empty()) return;
+
+	glUseProgram(points_shader_);
+	// set camera2d pan/zoom uniforms for points shader
+	auto pan = camera2d.getPan();
+	double zoom = camera2d.getZoom();
+	if (points_pan_ndc_loc_ != -1) glUniform2f(points_pan_ndc_loc_, pan.first, pan.second);
+	if (points_zoom_loc_ != -1) glUniform1f(points_zoom_loc_, static_cast<float>(zoom));
+	glBindVertexArray(points_vao_);
+	glBindBuffer(GL_ARRAY_BUFFER, points_vbo_);
+	glBufferData(GL_ARRAY_BUFFER, border_buf.size() * sizeof(float), border_buf.data(), GL_DYNAMIC_DRAW);
+	// Use cached point-size uniform location if available (fallback to query-and-cache)
+	GLint size_loc = points_point_size_loc_;
+	if (size_loc == -1) {
+		size_loc = glad_glGetUniformLocation(points_shader_, "u_point_size");
+		if (size_loc != -1)
+			points_point_size_loc_ = size_loc;
 	}
+	const float base_size = 3.0f;
+	glUniform1f(size_loc, base_size + 2.0f);
+	glDrawArrays(GL_POINTS, 0, static_cast<GLsizei>(border_buf.size()));
+	// Draw inner points on top
+	glBufferData(GL_ARRAY_BUFFER, buf.size() * sizeof(float), buf.empty() ? nullptr : buf.data(), GL_DYNAMIC_DRAW);
+	glUniform1f(size_loc, base_size);
+	glDrawArrays(GL_POINTS, 0, static_cast<GLsizei>(border_buf.size()));
+	glBindVertexArray(0);
+	
 }
 
-void ScoutRenderer::render_marker(float x, float y, float r, float g, float b, float a, float size, const Camera2D &camera) {
+void ScoutRenderer::render_marker(float x, float y, float r, float g, float b, float a, float size) {
 	glUseProgram(marker_shader_);
-	// set camera pan/zoom uniforms for marker shader
-	auto pan = camera.getPan();
-	double zoom = camera.getZoom();
+	// set camera2d pan/zoom uniforms for marker shader
+	auto pan = camera2d.getPan();
+	double zoom = camera2d.getZoom();
 	if (marker_pan_ndc_loc_ != -1) glUniform2f(marker_pan_ndc_loc_, pan.first, pan.second);
 	if (marker_zoom_loc_ != -1) glUniform1f(marker_zoom_loc_, static_cast<float>(zoom));
 	glBindVertexArray(marker_vao_);
@@ -1085,31 +1034,32 @@ void ScoutRenderer::render_marker(float x, float y, float r, float g, float b, f
 	glBindVertexArray(0);
 }
 
-void ScoutRenderer::render_track(const DisplayMode dpm, const std::vector<DataPoint>& track, const Planet* selected_zone, double grid_spacing_km, const Camera2D &camera) {
+void ScoutRenderer::render_track(const DisplayMode dpm, const std::vector<DataPoint>& track, const Planet* selected_zone, double grid_spacing_km) {
 	if (track.empty()) return;
 
 	std::vector<float> pts;
-	pts.reserve(track.size() * 2);
+	pts.resize(track.size() * 2);
+	size_t idx = 0;
 	for (const auto& p : track) {
 		Vector2 ndc;
 		if (dpm == DisplayMode::Asteroid_Field || dpm == DisplayMode::Celestial_Belt) {
-			ndc = asteriod_point_to_ndc(selected_zone->bounding_box_km, grid_spacing_km, p.coord.x, p.coord.y);
+			ndc = asteroid_point_to_ndc(selected_zone->bounding_box_km, grid_spacing_km, p.coord.x, p.coord.y);
 		} else {
 			const auto lla = p.get_lat_lon_alt();
 			ndc = latlon_to_ndc(lla.latitude, lla.longitude);
 		}
-		// Buffer raw NDC; GPU will apply camera pan/zoom
+		// Buffer raw NDC; GPU will apply camera2d pan/zoom
 		float tx = ndc.x;
 		float ty = ndc.y;
-		pts.push_back(tx);
-		pts.push_back(ty);
+		pts[idx++] = tx;
+		pts[idx++] = ty;
 	}
 
 	// Draw line strip in marker shader with a distinct color
 	glUseProgram(marker_shader_);
-	// set camera pan/zoom uniforms for marker shader
-	auto pan = camera.getPan();
-	double zoom = camera.getZoom();
+	// set camera2d pan/zoom uniforms for marker shader
+	auto pan = camera2d.getPan();
+	double zoom = camera2d.getZoom();
 	if (marker_pan_ndc_loc_ != -1) glUniform2f(marker_pan_ndc_loc_, pan.first, pan.second);
 	if (marker_zoom_loc_ != -1) glUniform1f(marker_zoom_loc_, static_cast<float>(zoom));
 	glBindVertexArray(marker_vao_);
@@ -1130,7 +1080,7 @@ void ScoutRenderer::render_track(const DisplayMode dpm, const std::vector<DataPo
 	// Draw start (yellow) and end (red) markers for quick orientation
 	if (!pts.empty()) {
 		const float sx = pts[0]; const float sy = pts[1];
-		render_marker(sx, sy, 1.0f, 1.0f, 1.0f, 0.95f, 3.0f, camera);
+		render_marker(sx, sy, 1.0f, 1.0f, 1.0f, 0.95f, 3.0f);
 		//const float ex = pts[pts.size() - 2]; const float ey = pts[pts.size() - 1];
 		//render_marker(ex, ey, 1.0f, 0.0f, 1.0f, 0.95f, 3.0f);
 	}

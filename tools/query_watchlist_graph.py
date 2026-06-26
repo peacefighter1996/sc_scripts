@@ -26,11 +26,13 @@ DEFAULT_HEADERS = [
     "Display Name",
     "Reason",
     "Org Affiliation",
+    "Main Org",
     "Last Seen / Incident Date",
     "Risk Level",
     "Notes",
     "Source",
     "Alert"
+    
 ]
 
 
@@ -56,6 +58,7 @@ def node_to_row(node: dict) -> dict:
         "Display Name": display,
         "Reason": reason,
         "Org Affiliation": org_aff,
+        "Main Org": node.get("main_org") or ""  ,
         "Last Seen / Incident Date": "",
         "Risk Level": risk,
         "Notes": notes,
@@ -91,8 +94,8 @@ def write_csv(path: str, rows: List[dict]):
 
 def main():
     p = argparse.ArgumentParser()
-    p.add_argument("--graph", required=True)
-    p.add_argument("--output", default="exported_watchlist.csv")
+    p.add_argument("--graph", default="watchlist_graph.json", help="Path to watchlist graph JSON")
+    p.add_argument("--output", default="exported_watchlist.csv", help="CSV output path")
     p.add_argument("--min-risk", type=int, default=4, help="Max numeric risk level to include (1..4). 1 highest risk")
     p.add_argument("--org", action="append", help="Org SID to filter by (can repeat)")
     p.add_argument("--handle", help="Handle substring filter (case-insensitive)")

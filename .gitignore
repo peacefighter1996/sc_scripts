@@ -19,3 +19,5 @@ images/test/bb_unknown/
 images/planets/
 scout_*.zip
 vcpkg/
+watchlist*.json
+*watchlist*.csv

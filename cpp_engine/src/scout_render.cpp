@@ -119,7 +119,7 @@ void ScoutRenderer::render_sector_labels_grid(const DisplayMode dpm, const Plane
 	ImVec2 disp = ImGui::GetIO().DisplaySize;
 	ImFont* font = ImGui::GetFont();
 	const std::string dpm_name = display_mode_name(dpm);
-	const std::string name = std::format("%s:%s", selected_zone->name.c_str(), dpm_name.c_str());
+	const std::string name = std::string(selected_zone->name) + ":" + std::string(dpm_name);
 	const float font_size = 13.0f;
 
 	auto pan = camera2d.getPan();

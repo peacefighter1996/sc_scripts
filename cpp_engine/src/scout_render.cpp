@@ -708,13 +708,18 @@ void ScoutRenderer::RenderPlanet(GLuint texture, const Planet* selected_zone, do
 }
 
 
-std::optional<std::string> ScoutRenderer::render_map(GLuint texture,
-	const std::vector<DataPoint>& points,
-	std::optional<std::pair<float, float>> mouse_pos,
-	const std::vector<Resource>& material_catalog,
-	const Planet* selected_zone,
-	const DisplayMode dpm,
-	double grid_spacing_km) {
+std::optional<std::string> ScoutRenderer::render_map(const RenderMapParams& params) {
+
+	// Validate input
+	if (!params.points) return std::nullopt;
+
+	const GLuint texture = params.texture;
+	const auto& points = *params.points;
+	const auto mouse_pos = params.mouse_pos;
+	const auto* material_catalog = params.material_catalog;
+	const Planet* selected_zone = params.selected_zone;
+	const DisplayMode dpm = params.display_mode;
+	const double grid_spacing_km = params.grid_spacing_km;
 
 	auto pan = camera2d.getPan();
 	double zoom = camera2d.getZoom();
@@ -763,11 +768,6 @@ std::optional<std::string> ScoutRenderer::render_map(GLuint texture,
 			auto ndc = dpm == DisplayMode::Asteroid_Field || dpm == DisplayMode::Celestial_Belt
 				? asteroid_point_to_ndc(selected_zone->bounding_box_km, grid_spacing_km, point.coord.x, point.coord.y)
 				: latlon_to_ndc(latlonalt.latitude, latlonalt.longitude);
-			// If highlighted set provided and this point's material is highlighted, adjust colour/alpha
-			//if (highlighted_materials && highlighted_materials->count(point.material) == 0 && !highlighted_materials->empty()) {
-			//	// dim non-highlighted points
-			//	colour.overide(colour.r * 0.25f + 0.75f * 0.25f, colour.g * 0.25f + 0.75f * 0.25f, colour.b * 0.25f + 0.75f * 0.25f, 0.35f);
-			//}
 
 			FillPointBuffer(ndc.x, ndc.y, buf, border_buf, displayed_points * 6, colour, point);
 			displayed_points++;
@@ -826,15 +826,16 @@ std::optional<std::string> ScoutRenderer::render_map(GLuint texture,
 				const auto& [dist, closest_point] = closest_points[i];
 				if (closest_point->poi_type == PoiType::Mineral) {
 					// if this point is a mineral, prepend material and quality info to the tooltip
-					const auto it = std::find_if(material_catalog.begin(), material_catalog.end(), [&](const Resource& m) {
-						return m.name == closest_point->material;
+					if (material_catalog) {
+						auto it = std::find_if(material_catalog->begin(), material_catalog->end(), [&](const Resource& m) {
+							return m.name == closest_point->material;
 						});
-					if (it != material_catalog.end()) {
-						// if this material is highlighted, add a marker to the tooltip
-						const auto material_id = it != material_catalog.end() ? it->short_name : closest_point->material.substr(0, std::min<size_t>(4, closest_point->material.size()));
-						tooltip += material_id + " Quality: " + std::to_string(int(closest_point->quality_max));
-						if (closest_point->note.size() > 0)
-							tooltip += "\n" + closest_point->note;
+						if (it != material_catalog->end()) {
+							const auto material_id = it->short_name;
+							tooltip += material_id + " Quality: " + std::to_string(int(closest_point->quality_max));
+							if (closest_point->note.size() > 0)
+								tooltip += "\n" + closest_point->note;
+						}
 					}
 				}
 				else {
@@ -1033,55 +1034,130 @@ void ScoutRenderer::render_marker(float x, float y, float r, float g, float b, f
 	glBindVertexArray(0);
 }
 
-void ScoutRenderer::render_track(const DisplayMode dpm, const std::vector<DataPoint>& track, const Planet* selected_zone, double grid_spacing_km) {
+
+
+void ScoutRenderer::render_track(const DisplayMode dpm, const std::vector<DataPoint>& track, const Planet* selected_zone, double grid_spacing_km, const rgba& track_color) {
 	if (track.empty()) return;
 
-	std::vector<float> pts;
-	pts.resize(track.size() * 2);
-	size_t idx = 0;
-	for (const auto& p : track) {
-		Vector2 ndc;
-		if (dpm == DisplayMode::Asteroid_Field || dpm == DisplayMode::Celestial_Belt) {
-			ndc = asteroid_point_to_ndc(selected_zone->bounding_box_km, grid_spacing_km, p.coord.x, p.coord.y);
-		} else {
-			const auto lla = p.get_lat_lon_alt();
-			ndc = latlon_to_ndc(lla.latitude, lla.longitude);
+	// For surface display mode we must handle ±180° meridian wrapping.
+	// Build one or more line segments (each a vector of NDC points) so that
+	// polylines that cross the dateline are split and not drawn across the map.
+	std::vector<std::vector<float>> segments;
+	segments.reserve(2);
+
+	auto push_ndc_point = [&](std::vector<float>& seg, const Vector2& ndc) {
+		seg.push_back(ndc.x);
+		seg.push_back(ndc.y);
+	};
+
+	if (dpm == DisplayMode::Asteroid_Field || dpm == DisplayMode::Celestial_Belt) {
+		// Single continuous segment for non-spherical projections
+		std::vector<float> seg;
+		seg.reserve(track.size() * 2);
+		for (const auto& p : track) {
+			Vector2 ndc = asteroid_point_to_ndc(selected_zone->bounding_box_km, grid_spacing_km, p.coord.x, p.coord.y);
+			push_ndc_point(seg, ndc);
 		}
-		// Buffer raw NDC; GPU will apply camera2d pan/zoom
-		float tx = ndc.x;
-		float ty = ndc.y;
-		pts[idx++] = tx;
-		pts[idx++] = ty;
+		if (!seg.empty()) segments.push_back(std::move(seg));
+	} else {
+		// Surface mode: check for dateline crossings and split segments
+		std::vector<float> cur_seg;
+		cur_seg.reserve(track.size() * 2);
+
+		auto push_latlon_ndc = [&](std::vector<float>& seg, double lat, double lon) {
+			Vector2 ndc = latlon_to_ndc(lat, lon);
+			push_ndc_point(seg, ndc);
+		};
+
+		// Start with first point
+		const auto& first = track.front();
+		const auto lla_first = first.get_lat_lon_alt();
+		push_latlon_ndc(cur_seg, lla_first.latitude, lla_first.longitude);
+
+		for (size_t i = 1; i < track.size(); ++i) {
+			const auto& prev = track[i - 1];
+			const auto& cur = track[i];
+			const auto lla_prev = prev.get_lat_lon_alt();
+			const auto lla_cur = cur.get_lat_lon_alt();
+
+			double lon1 = lla_prev.longitude;
+			double lon2 = lla_cur.longitude;
+			double lat1 = lla_prev.latitude;
+			double lat2 = lla_cur.latitude;
+
+			double delta = lon2 - lon1;
+			// If the long difference is large, choose the shorter wrap direction
+			double lon2_adj = lon2;
+			if (delta > 180.0) lon2_adj = lon2 - 360.0;
+			else if (delta < -180.0) lon2_adj = lon2 + 360.0;
+
+			if (std::abs(lon2_adj - lon1) > 180.0) {
+				// Shouldn't happen due to adjustment, but guard anyway
+				// fallback to simple push
+				push_latlon_ndc(cur_seg, lat2, lon2);
+				continue;
+			}
+
+			if (std::abs(lon2 - lon1) > 180.0) {
+				// Crossing the dateline: compute intersection latitude at the dateline
+				double crossing_lon = (lon1 >= 0.0) ? 180.0 : -180.0;
+				double denom = lon2_adj - lon1;
+				double t = (denom == 0.0) ? 0.5 : ((crossing_lon - lon1) / denom);
+				t = std::clamp(t, 0.0, 1.0);
+				double lat_cross = lat1 + t * (lat2 - lat1);
+
+				// Add crossing point at the border for the first segment
+				push_latlon_ndc(cur_seg, lat_cross, crossing_lon);
+				// Close current segment and start a new one from the opposite border
+				if (!cur_seg.empty()) {
+					segments.push_back(std::move(cur_seg));
+					cur_seg.clear();
+				}
+				// Opposite border longitude (normalized)
+				double other_border_lon = (crossing_lon > 0.0) ? -180.0 : 180.0;
+				// Start new segment with the counterpart crossing point and the current point
+				push_latlon_ndc(cur_seg, lat_cross, other_border_lon);
+				push_latlon_ndc(cur_seg, lat2, lon2);
+			} else {
+				// No crossing: just append current point
+				push_latlon_ndc(cur_seg, lat2, lon2);
+			}
+		}
+
+		if (!cur_seg.empty()) segments.push_back(std::move(cur_seg));
 	}
 
-	// Draw line strip in marker shader with a distinct color
+	// Draw each segment separately so dateline splits don't connect across the map
 	glUseProgram(marker_shader_);
-	// set camera2d pan/zoom uniforms for marker shader
 	auto pan = camera2d.getPan();
 	double zoom = camera2d.getZoom();
 	if (marker_pan_ndc_loc_ != -1) glUniform2f(marker_pan_ndc_loc_, pan.first, pan.second);
 	if (marker_zoom_loc_ != -1) glUniform1f(marker_zoom_loc_, static_cast<float>(zoom));
 	glBindVertexArray(marker_vao_);
 	glBindBuffer(GL_ARRAY_BUFFER, marker_vbo_);
-	glBufferData(GL_ARRAY_BUFFER, pts.size() * sizeof(float), pts.data(), GL_DYNAMIC_DRAW);
-	// Use cached marker color uniform location if available
+
+	// Set color
 	if (marker_color_loc_ != -1) {
-		// subtle blue with some transparency
-		glUniform4f(marker_color_loc_, 1.0f, 0.0f, 1.0f, 0.75f);
+		glUniform4f(marker_color_loc_, track_color.r, track_color.g, track_color.b, track_color.a);
 	} else {
 		const GLint color_loc = glGetUniformLocation(marker_shader_, "u_color");
 		if (color_loc != -1) marker_color_loc_ = color_loc;
-		glUniform4f(color_loc, 1.0f, 0.0f, 1.0f, 0.75f);
+		glUniform4f(color_loc, track_color.r, track_color.g, track_color.b, track_color.a);
 	}
-	// draw as connected line
-	glDrawArrays(GL_LINE_STRIP, 0, static_cast<GLsizei>(pts.size() / 2));
 
-	// Draw start (yellow) and end (red) markers for quick orientation
-	if (!pts.empty()) {
-		const float sx = pts[0]; const float sy = pts[1];
-		render_marker(sx, sy, 1.0f, 1.0f, 1.0f, 0.95f, 3.0f);
-		//const float ex = pts[pts.size() - 2]; const float ey = pts[pts.size() - 1];
-		//render_marker(ex, ey, 1.0f, 0.0f, 1.0f, 0.95f, 3.0f);
+	for (const auto& seg : segments) {
+		if (seg.empty()) continue;
+		glBufferData(GL_ARRAY_BUFFER, seg.size() * sizeof(float), seg.data(), GL_DYNAMIC_DRAW);
+		glDrawArrays(GL_LINE_STRIP, 0, static_cast<GLsizei>(seg.size() / 2));
+	}
+
+	// Draw start marker using first non-empty segment's first point
+	for (const auto& seg : segments) {
+		if (!seg.empty()) {
+			const float sx = seg[0]; const float sy = seg[1];
+			render_marker(sx, sy, 1.0f, 1.0f, 1.0f, 0.95f, 3.0f);
+			break;
+		}
 	}
 
 	glBindVertexArray(0);

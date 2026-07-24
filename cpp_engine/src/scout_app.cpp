@@ -167,6 +167,33 @@ static std::string format_iso_filesystem_date(const std::chrono::system_clock::t
 	return std::string(buf);
 }
 
+// Compute great-circle initial bearing (degrees) and distance (km) between two lat/lon points
+static void compute_bearing_distance_km_local(const LatLonAlt& a, const LatLonAlt& b, double radius_km, double& out_bearing_deg, double& out_distance_km) {
+	const double deg_to_rad = 3.14159265358979323846 / 180.0;
+	const double rad_to_deg = 180.0 / 3.14159265358979323846;
+	double lat1 = a.latitude * deg_to_rad;
+	double lon1 = a.longitude * deg_to_rad;
+	double lat2 = b.latitude * deg_to_rad;
+	double lon2 = b.longitude * deg_to_rad;
+	double dlon = lon2 - lon1;
+	double central = std::acos(std::clamp(std::sin(lat1) * std::sin(lat2) + std::cos(lat1) * std::cos(lat2) * std::cos(dlon), -1.0, 1.0));
+	out_distance_km = central * radius_km;
+	double y = std::sin(dlon) * std::cos(lat2);
+	double x = std::cos(lat1) * std::sin(lat2) - std::sin(lat1) * std::cos(lat2) * std::cos(dlon);
+	double bearing = std::atan2(y, x) * rad_to_deg;
+	if (bearing < 0) bearing += 360.0;
+	out_bearing_deg = bearing;
+}
+
+static double angular_error_deg_for_max_drift_local(double distance_km, double max_drift_km) {
+	if (distance_km <= 0.0) return 180.0;
+	if (max_drift_km <= 0.0) return 0.0;
+	if (distance_km <= max_drift_km) return 180.0;
+	double ratio = min(1.0, max_drift_km / distance_km);
+	double ang = std::asin(ratio) * (180.0 / 3.14159265358979323846);
+	return ang;
+}
+
 
 // Frame timing (seconds per frame)
 static constexpr double kFrameTime = 1.0 / 60.0;
@@ -1819,6 +1846,7 @@ int run_scout_app() {
 				double factor = std::pow(1.25, wheel);
 				double oldZoom = renderer.camera2d.getZoom();
 				double newZoom = oldZoom * factor;
+				state.focus_on_map = false;
 				if (newZoom < 1.0) newZoom = 1.0;
 				if (newZoom > 8.0) newZoom = 8.0;
 				if (std::abs(newZoom - oldZoom) > 1e-9) {
@@ -1879,16 +1907,40 @@ int run_scout_app() {
 			}
 
 
-			state.hovered_text = renderer.render_map(texture, state.filtered_points, mouse_pos, state.material_catalog, selected_zone, state.display_mode, state.grid_spacing);
+			ScoutRenderer::RenderMapParams rmp;
+			rmp.texture = texture;
+			rmp.points = &state.filtered_points;
+			rmp.mouse_pos = mouse_pos;
+			rmp.material_catalog = &state.material_catalog;
+			rmp.selected_zone = selected_zone;
+			rmp.display_mode = state.display_mode;
+			rmp.grid_spacing_km = state.grid_spacing;
+			state.hovered_text = renderer.render_map(rmp);
 			// Render travel log overlay (if available) so users can see their tracked path
 
 			const auto track = state.travel_log.get_tracked_points_copy();
 			if (!track.empty()) {
 				renderer.render_track(state.display_mode, track, selected_zone, state.grid_spacing);
 			}
+			if (!state.nav_route.empty()) {
+				//rgb(0, 118, 187) for nav route
+				const rgba route_color = { 0.0f, 118.0f / 255.0f, 187.0f / 255.0f, 1.0f };
+				renderer.render_track(state.display_mode, state.nav_route, selected_zone, state.grid_spacing, route_color);
+			}
+
+			if (!state.nav_route.empty()) {
+				//rgb(197, 252, 0) for nav route
+				auto route_idx = std::clamp(state.nav_route_index, 0, static_cast<int>(state.nav_route.size()) - 1);
+				auto route_point = state.nav_route[route_idx];
+				std::vector<DataPoint> route_to_point = { state.new_data, route_point };
+				const rgba route_color = { 197.0f / 255.0f, 252.0f / 255.0f, 0.0f, 1.0f };
+				renderer.render_track(state.display_mode, route_to_point, selected_zone, state.grid_spacing, route_color);
+			}
+
+
 			const auto toggle_now = std::chrono::steady_clock::now();
-			if (std::chrono::duration<double>(toggle_now - last_toggle).count() > 0.25) {
-				last_toggle = toggle_now;
+			if (std::chrono::duration<double>(toggle_now - state.last_location_toggle).count() > 0.25) {
+				state.last_location_toggle = toggle_now;
 				location_on = !location_on;
 			}
 			if (location_on) {
@@ -1918,6 +1970,160 @@ int run_scout_app() {
 						const float px = (u * 2.0f) - 1.0f;
 						const float py = (v * 2.0f) - 1.0f;
 						renderer.render_marker(px, py, 1.0f, 1.0f, 0.0f, 0.9f, 6.0f);
+					}
+				}
+			}
+
+			// If UI requested a focus on a point, center camera and draw highlight
+			if (state.focus_on_map) {
+				const DataPoint& fp = state.focus_point;
+				float px = 0.0f, py = 0.0f;
+				if (state.selected_planet_obj != nullptr && state.selected_planet_obj->zone_type == ZoneType::CelestialBody) {
+					auto lla = fp.to_lat_lon_alt();
+					auto uv = latlon_to_uv(lla.latitude, lla.longitude);
+					px = (uv.first * 2.0f) - 1.0f;
+					py = (uv.second * 2.0f) - 1.0f;
+				} else {
+					// planar/asteroid
+					const bbox2d box = state.selected_planet_obj ? state.selected_planet_obj->bounding_box_km : bbox2d{ -300.0,300.0,-300.0,300.0 };
+					double u = 0.5; double v = 0.5;
+					double x_min = box.min_x, x_max = box.max_x, y_min = box.min_y, y_max = box.max_y;
+					if (x_max > x_min && y_max > y_min) {
+						u = (fp.coord.x - x_min) / (x_max - x_min);
+						v = (fp.coord.y - y_min) / (y_max - y_min);
+					}
+					px = (static_cast<float>(u) * 2.0f) - 1.0f;
+					py = (static_cast<float>(v) * 2.0f) - 1.0f;
+				}
+				// center camera so px,py maps to center (0,0)
+				double zoom = renderer.camera2d.getZoom();
+				if (zoom <= 1.0) zoom = 2.0; // pick modest zoom if at default
+				float panx = static_cast<float>((px * zoom) / (zoom - 1.0));
+				float pany = static_cast<float>((py * zoom) / (zoom - 1.0));
+				renderer.camera2d.setZoom(zoom);
+				renderer.camera2d.setPan({ panx, pany });
+				// Draw highlight marker
+				renderer.render_marker(px, py, 0.2f, 0.5f, 1.0f, 0.95f, 10.0f);
+				// keep focus flag (user can clear via UI if desired)
+			}
+
+			// Navigation route overlay and controls
+			if (state.nav_route_active && !state.nav_route.empty()) {
+				int idx = std::clamp(state.nav_route_index, 0, static_cast<int>(state.nav_route.size()) - 1);
+				const DataPoint& wp = state.nav_route[idx];
+				// current location assumed to be state.new_data
+				double dist_km = 0.0; double bearing_deg = 0.0;
+				if (state.selected_planet_obj && state.selected_planet_obj->zone_type == ZoneType::CelestialBody) {
+					auto cur = state.new_data.to_lat_lon_alt();
+					auto trg = wp.to_lat_lon_alt();
+					double rr = state.selected_planet_obj->planet_radius_km > 0.0 ? state.selected_planet_obj->planet_radius_km : cur.altitude;
+					compute_bearing_distance_km_local(cur, trg, rr, bearing_deg, dist_km);
+				} else {
+					double dx = wp.coord.x - state.new_data.coord.x; double dy = wp.coord.y - state.new_data.coord.y;
+					dist_km = std::sqrt(dx*dx + dy*dy);
+					bearing_deg = std::atan2(dy, dx) * 180.0 / 3.14159265358979323846;
+					if (bearing_deg < 0) bearing_deg += 360.0;
+				}
+				// Auto-advance if within threshold
+				if (dist_km <= state.settings.nav_auto_advance_distance_km) {
+					if (idx < static_cast<int>(state.nav_route.size()) - 1) {
+						state.nav_route_index = idx + 1;
+						idx = state.nav_route_index;
+						// recompute for new idx
+						// (simple re-eval next loop)
+					}
+				}
+				// Next waypoint info (heading from this waypoint to the following one)
+				std::string next_info;
+				if (idx + 1 < static_cast<int>(state.nav_route.size())) {
+					const DataPoint& wp2 = state.nav_route[idx + 1];
+					double d2 = 0.0; double b2 = 0.0;
+					if (state.selected_planet_obj && state.selected_planet_obj->zone_type == ZoneType::CelestialBody) {
+						auto l1 = wp.to_lat_lon_alt();
+						auto l2 = wp2.to_lat_lon_alt();
+						double rr = state.selected_planet_obj->planet_radius_km > 0.0 ? state.selected_planet_obj->planet_radius_km : l1.altitude;
+						compute_bearing_distance_km_local(l1, l2, rr, b2, d2);
+					} else {
+						double dx = wp2.coord.x - wp.coord.x; double dy = wp2.coord.y - wp.coord.y;
+						d2 = std::sqrt(dx*dx + dy*dy);
+						b2 = std::atan2(dy, dx) * 180.0 / 3.14159265358979323846;
+						if (b2 < 0) b2 += 360.0;
+					}
+					char buf[256]; snprintf(buf, sizeof(buf), "Next: %d/%d - %.1f km, heading %.0f°", idx+2, (int)state.nav_route.size(), d2, b2);
+					next_info = buf;
+				}
+
+				// Decide whether to show bottom-center panel based on latitude threshold (if planetary)
+				bool show_bottom = true;
+				if (state.selected_planet_obj && state.selected_planet_obj->zone_type == ZoneType::CelestialBody && state.settings.nav_show_min_lat_deg > 0.0) {
+					auto lwp = wp.to_lat_lon_alt();
+					if (std::abs(lwp.latitude) < state.settings.nav_show_min_lat_deg) show_bottom = false;
+				}
+				if (show_bottom) {
+					// bottom-center small window
+					ImGui::SetNextWindowBgAlpha(0.45f);
+					ImGuiWindowFlags wf = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings;
+					float win_w = 420.0f;
+					ImGui::SetNextWindowSize(ImVec2(win_w, 0), ImGuiCond_Always);
+					ImGui::SetNextWindowPos(ImVec2((float)width * 0.5f - win_w * 0.5f, (float)height - 110.0f), ImGuiCond_Always);
+					if (ImGui::Begin("Nav Panel", nullptr, wf)) {
+						ImGui::Text("Waypoint %d/%d: %.1f km, heading %.0f°", idx+1, (int)state.nav_route.size(), dist_km, bearing_deg);
+						if (!next_info.empty()) ImGui::TextUnformatted(next_info.c_str());
+						ImGui::Separator();
+						// Show waypoint identification (note or mineral id/resource/quality)
+						std::string wp_id_str;
+						if (wp.poi_type == PoiType::Mineral) {
+							char bbuf[128];
+							snprintf(bbuf, sizeof(bbuf), "ID:%d %s Q%d", wp.id, wp.material.c_str(), wp.quality_max);
+							wp_id_str = bbuf;
+						} else {
+							if (!wp.note.empty()) wp_id_str = wp.note; else wp_id_str = wp.material.empty() ? wp.planet : wp.material;
+						}
+						ImGui::TextUnformatted(wp_id_str.c_str());
+
+						// Prev/Next controls
+						if (ImGui::Button("Prev")) {
+							if (state.nav_route_index > 0) --state.nav_route_index;
+						}
+						ImGui::SameLine();
+						if (ImGui::Button("Next")) {
+							if (state.nav_route_index + 1 < static_cast<int>(state.nav_route.size())) ++state.nav_route_index;
+						}
+						ImGui::SameLine();
+
+						// Up / Down to reorder waypoints
+						if (ImGui::Button("Up")) {
+							int cur = state.nav_route_index;
+							if (cur > 0 && cur < static_cast<int>(state.nav_route.size())) {
+								std::swap(state.nav_route[cur], state.nav_route[cur - 1]);
+								state.nav_route_index = cur - 1;
+							}
+						}
+						ImGui::SameLine();
+						if (ImGui::Button("Down")) {
+							int cur = state.nav_route_index;
+							if (cur + 1 < static_cast<int>(state.nav_route.size())) {
+								std::swap(state.nav_route[cur], state.nav_route[cur + 1]);
+								state.nav_route_index = cur + 1;
+							}
+						}
+						ImGui::SameLine();
+
+						// Delete current waypoint
+						if (ImGui::Button("Delete")) {
+							int cur = state.nav_route_index;
+							if (cur >= 0 && cur < static_cast<int>(state.nav_route.size())) {
+								state.nav_route.erase(state.nav_route.begin() + cur);
+								if (state.nav_route.empty()) {
+									state.nav_route_active = false;
+									state.nav_route_index = 0;
+								} else {
+									state.nav_route_index = std::clamp(cur, 0, static_cast<int>(state.nav_route.size()) - 1);
+								}
+							}
+						}
+
+						ImGui::End();
 					}
 				}
 			}

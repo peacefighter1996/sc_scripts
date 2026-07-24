@@ -67,11 +67,12 @@ static rgba wreck = make_rgba(183, 65, 14, 255);
 static rgba cave = make_rgba(150, 90, 50, 255);
 
 //rgb(203, 58, 51)
-static rgba onyx_facility = make_rgba(212, 58, 51, 255);
+static rgba onyx_facility = make_rgba(203, 58, 51, 255);
 //rgb(128, 128, 128)
 static rgba qtless_location = make_rgba(128, 128, 128, 255);
 
-
+//rgb(148, 0, 148)
+const rgba default_track_color = make_rgba( 148, 0, 148, 192); // subtle purple with some transparency
 
 class ScoutRenderer {
 public:
@@ -81,14 +82,19 @@ public:
     // Initialize GL resources (shaders/VAO/VBO). Call after OpenGL context is current and GLAD is loaded.
     bool init();
 
+    // Parameters for rendering the textured map and points.
+    struct RenderMapParams {
+        GLuint texture{0};
+        const std::vector<DataPoint>* points{nullptr};
+        std::optional<std::pair<float, float>> mouse_pos{std::nullopt};
+        const std::vector<Resource>* material_catalog{nullptr};
+        const Planet* selected_zone{nullptr};
+        DisplayMode display_mode{DisplayMode::Default};
+        double grid_spacing_km{100.0};
+    };
+
     // Render the textured map and points. Returns optional hover text.
-    std::optional<std::string> render_map(GLuint texture,
-                                          const std::vector<DataPoint> &points,
-                                          std::optional<std::pair<float, float>> mouse_pos,
-                                          const std::vector<Resource> &material_catalog,
-                                          const Planet *selected_zone = nullptr,
-                                          const DisplayMode display_mode = DisplayMode::Default,
-                                          double grid_spacing_km = 100.0);
+    std::optional<std::string> render_map(const RenderMapParams& params);
 
     void RenderAstroidFieldZone(const Planet* selected_zone, double grid_spacing_km);
 
@@ -101,7 +107,8 @@ public:
     void render_track(const DisplayMode dpm, 
                       const std::vector<DataPoint>& track,
                       const Planet* selected_zone = nullptr,
-                      double grid_spacing_km = 100.0);
+                      double grid_spacing_km = 100.0, 
+                      const rgba& track_color = default_track_color);
 
     Camera2D camera2d;
     Camera3D camera3d;

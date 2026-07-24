@@ -3,8 +3,10 @@
 #include "scout_core.h"
 #include <imgui.h>
 #include <algorithm>
+#include <cmath>
 #include <cstring>
 #include <memory>
+#include <sstream>
 
 DataTable::DataTable() {
 	init();
@@ -57,6 +59,35 @@ static bool matches_filters(const DataPoint& p, const std::vector<std::string>& 
 	if (!filters[12].empty()) { if (p.note.find(filters[12]) == std::string::npos) return false; }
 	if (!filters[13].empty()) { if (std::string(p.qt_persistent ? "1" : "0").find(filters[13]) == std::string::npos) return false; }
 	return true;
+}
+
+// Compute great-circle initial bearing (degrees) and distance (km) between two lat/lon points
+static void compute_bearing_distance_km(const LatLonAlt& a, const LatLonAlt& b, double radius_km, double& out_bearing_deg, double& out_distance_km) {
+	const double deg_to_rad = 3.14159265358979323846 / 180.0;
+	const double rad_to_deg = 180.0 / 3.14159265358979323846;
+	double lat1 = a.latitude * deg_to_rad;
+	double lon1 = a.longitude * deg_to_rad;
+	double lat2 = b.latitude * deg_to_rad;
+	double lon2 = b.longitude * deg_to_rad;
+	double dlon = lon2 - lon1;
+	// central angle
+	double central = std::acos(std::clamp(std::sin(lat1) * std::sin(lat2) + std::cos(lat1) * std::cos(lat2) * std::cos(dlon), -1.0, 1.0));
+	out_distance_km = central * radius_km;
+	double y = std::sin(dlon) * std::cos(lat2);
+	double x = std::cos(lat1) * std::sin(lat2) - std::sin(lat1) * std::cos(lat2) * std::cos(dlon);
+	double bearing = std::atan2(y, x) * rad_to_deg;
+	if (bearing < 0) bearing += 360.0;
+	out_bearing_deg = bearing;
+}
+
+// Compute allowable angular error (deg) so lateral drift <= max_drift_km at given distance
+static double angular_error_deg_for_max_drift(double distance_km, double max_drift_km) {
+	if (distance_km <= 0.0) return 180.0;
+	if (max_drift_km <= 0.0) return 0.0;
+	if (distance_km <= max_drift_km) return 180.0;
+	double ratio = std::min(1.0, max_drift_km / distance_km);
+	double ang = std::asin(ratio) * (180.0 / 3.14159265358979323846);
+	return ang;
 }
 
 void DataTable::render(AppState& state) {
@@ -536,6 +567,145 @@ void DataTable::render(AppState& state) {
 				if (ImGui::SmallButton("Delete")) {
 					mark_deleted(dp.id);
 					to_erase.push_back(idx);
+				}
+				ImGui::SameLine();
+				// Show Nav: compute 3 closest QT-persistent locations relative to this record
+				std::string show_nav_id = std::string("show_nav_popup_") + std::to_string(dp.id);
+				if (ImGui::SmallButton("Show Nav")) {
+					// collect QT-persistent candidates from state.points on same planet
+					std::vector<std::pair<double, DataPoint*>> cands;
+					for (auto &p : state.points) {
+						if (!p.qt_persistent) continue;
+						if (p.id == dp.id) continue;
+						if (p.planet != dp.planet) continue;
+						// compute distance depending on zone type
+						double dist_km = 0.0;
+						double bearing = 0.0;
+						if (state.selected_planet_obj && state.selected_planet_obj->zone_type == ZoneType::CelestialBody) {
+							auto la = p.get_lat_lon_alt();
+							auto lb = dp.get_lat_lon_alt();
+							double rr = state.selected_planet_obj->planet_radius_km > 0.0 ? state.selected_planet_obj->planet_radius_km : la.altitude;
+							compute_bearing_distance_km(la, lb, rr, bearing, dist_km);
+						} else {
+							// asteroid/planar: simple XY distance
+							double dx = p.coord.x - dp.coord.x;
+							double dy = p.coord.y - dp.coord.y;
+							dist_km = std::sqrt(dx*dx + dy*dy);
+							bearing = std::atan2(dy, dx) * 180.0 / 3.14159265358979323846;
+							if (bearing < 0) bearing += 360.0;
+						}
+						cands.emplace_back(dist_km, &p);
+					}
+					std::sort(cands.begin(), cands.end(), [](const auto &a, const auto &b){ return a.first < b.first; });
+					// store results in the popup via a temp string in the popup content
+					ImGui::OpenPopup(show_nav_id.c_str());
+				}
+				if (ImGui::BeginPopupModal(show_nav_id.c_str(), nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+					// recompute candidates (repeat to keep local scope simple)
+					std::vector<std::pair<double, DataPoint*>> cands;
+					for (auto &p : state.points) {
+						if (!p.qt_persistent) continue;
+						if (p.id == dp.id) continue;
+						if (p.planet != dp.planet) continue;
+						double dist_km = 0.0; double bearing = 0.0;
+						if (state.selected_planet_obj && state.selected_planet_obj->zone_type == ZoneType::CelestialBody) {
+							auto la = p.get_lat_lon_alt();
+							auto lb = dp.get_lat_lon_alt();
+							double rr = state.selected_planet_obj->planet_radius_km > 0.0 ? state.selected_planet_obj->planet_radius_km : la.altitude;
+							compute_bearing_distance_km(la, lb, rr, bearing, dist_km);
+						} else {
+							double dx = p.coord.x - dp.coord.x; double dy = p.coord.y - dp.coord.y;
+							dist_km = std::sqrt(dx*dx + dy*dy);
+							bearing = std::atan2(dy, dx) * 180.0 / 3.14159265358979323846;
+							if (bearing < 0) bearing += 360.0;
+						}
+						cands.emplace_back(dist_km, &p);
+					}
+					std::sort(cands.begin(), cands.end(), [](const auto &a, const auto &b){ return a.first < b.first; });
+					int show = (int)std::min<size_t>(3, cands.size());
+					ImGui::Text("Closest QT-persistent locations to record %d:", dp.id);
+					ImGui::Separator();
+					for (int i = 0; i < show; ++i) {
+						auto &pr = cands[i];
+						double dist = pr.first;
+						DataPoint* pp = pr.second;
+						double bearing_deg = 0.0; double dummy=0.0;
+						if (state.selected_planet_obj && state.selected_planet_obj->zone_type == ZoneType::CelestialBody) {
+							auto la = pp->get_lat_lon_alt();
+							auto lb = dp.get_lat_lon_alt();
+							double rr = state.selected_planet_obj->planet_radius_km > 0.0 ? state.selected_planet_obj->planet_radius_km : la.altitude;
+							compute_bearing_distance_km(la, lb, rr, bearing_deg, dummy);
+						} else {
+							double dx = pp->coord.x - dp.coord.x; double dy = pp->coord.y - dp.coord.y;
+							bearing_deg = std::atan2(dy, dx) * 180.0 / 3.14159265358979323846;
+							if (bearing_deg < 0) bearing_deg += 360.0;
+						}
+						double err_deg = angular_error_deg_for_max_drift(dist, 5.0);
+						std::ostringstream ss; ss.setf(std::ios::fixed); ss.precision(2);
+						ss << (i+1) << ") ";
+						if (!pp->note.empty()) ss << pp->note << " "; else ss << "ID:" << pp->id << " ";
+						ss << " - " << dist << " km, heading " << static_cast<int>(std::round(bearing_deg)) << "° ± " << static_cast<int>(std::round(err_deg)) << "°";
+						ImGui::TextUnformatted(ss.str().c_str());
+						ImGui::SameLine();
+						std::string add_id = std::string("add_wp_") + std::to_string(pp->id);
+						if (ImGui::SmallButton(add_id.c_str())) {
+							state.nav_route.push_back(*pp);
+							state.nav_route_active = true;
+							state.nav_route_index = static_cast<int>(state.nav_route.size()) - 1;
+							ImGui::CloseCurrentPopup();
+						}
+					}
+					ImGui::Separator();
+					if (show > 0) {
+						if (ImGui::Button("Use Closest")) {
+							// use the first candidate as single-route
+							state.nav_route.clear();
+							state.nav_route.push_back(*cands[0].second);
+							state.nav_route_active = true;
+							state.nav_route_index = 0;
+							ImGui::CloseCurrentPopup();
+						}
+					}
+					if (ImGui::Button("Close")) ImGui::CloseCurrentPopup();
+					ImGui::EndPopup();
+				}
+				ImGui::SameLine();
+				// Show On Map: focus map on this record and highlight it
+				if (ImGui::SmallButton("Show On Map")) {
+					state.selected_planet = dp.planet;
+					state.update_selected_planet(dp.planet);
+					state.focus_point = dp;
+					state.focus_on_map = true;
+				}
+				ImGui::SameLine();
+				if (ImGui::SmallButton("Add To Nav")) {
+					state.nav_route.push_back(dp);
+					state.nav_route_active = true;
+					state.nav_route_index = static_cast<int>(state.nav_route.size()) - 1;
+				}
+				ImGui::SameLine();
+				if (ImGui::SmallButton("Copy Nav Details")) {
+					std::ostringstream cb;
+					cb << "resource : " << dp.material << "\n";
+					cb << "q : " << dp.quality_max << "\n";
+					cb << "server : " << dp.server << "\n";
+					cb << "location : " << dp.planet << "\n";
+					// If we can compute a nav line from current location, include nav summary
+					double dist_km = 0.0; double bearing_deg = 0.0;
+					if (state.selected_planet_obj && state.selected_planet_obj->zone_type == ZoneType::CelestialBody) {
+						auto cur = state.new_data.to_lat_lon_alt();
+						auto trg = dp.to_lat_lon_alt();
+						double rr = state.selected_planet_obj->planet_radius_km > 0.0 ? state.selected_planet_obj->planet_radius_km : cur.altitude;
+						compute_bearing_distance_km(cur, trg, rr, bearing_deg, dist_km);
+						cb << "nav : " << std::fixed << std::setprecision(2) << dist_km << " km, heading " << std::round(bearing_deg) << " deg\n";
+					} else {
+						double dx = dp.coord.x - state.new_data.coord.x; double dy = dp.coord.y - state.new_data.coord.y;
+						dist_km = std::sqrt(dx*dx + dy*dy);
+						bearing_deg = std::atan2(dy, dx) * 180.0 / 3.14159265358979323846;
+						if (bearing_deg < 0) bearing_deg += 360.0;
+						cb << "nav : " << std::fixed << std::setprecision(2) << dist_km << " km, heading " << std::round(bearing_deg) << " deg\n";
+					}
+					ImGui::SetClipboardText(cb.str().c_str());
 				}
 			}
 

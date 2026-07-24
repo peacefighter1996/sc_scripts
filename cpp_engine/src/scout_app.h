@@ -55,6 +55,12 @@ struct AppSettings {
 	double qt_threshold{ 100000.0 };
 	double qt_disable_duration_s{ 3.0 };
 	double tracking_min_core_distance_km{ 100.0 };
+
+	// Navigation UI settings
+	// If next waypoint latitude (abs) is greater than this, show bottom nav panel
+	double nav_show_min_lat_deg{ 0.0 };
+	// Distance (km) under which the route auto-advances to the next waypoint
+	double nav_auto_advance_distance_km{ 25.0 };
 };
 
 
@@ -114,6 +120,9 @@ struct AppState {
 	int quality_min{ kMinQuality };
 	int quality_max{ kMaxQuality };
 	DataPoint new_data{};
+	// Focused point requested by UI "Show On Map" button
+	DataPoint focus_point{};
+	bool focus_on_map{ false };
 	std::string loaded_texture;
 	GLuint loaded_texture_id{ 0 };
 	//std::unordered_map<std::string, GLuint> texture_cache;
@@ -127,11 +136,19 @@ struct AppState {
 
 	bool data_form_active{ false };
 	bool planets_form_active{ false };
+	std::chrono::steady_clock::time_point last_location_toggle{ std::chrono::steady_clock::now() };
 
 	// Travel Log (separate from the main data system)
 	TravelLog travel_log;
 	bool travel_log_active{ false };
 	bool travel_log_disabled_due_to_qt{ false };
+
+	// Navigation route: an ordered list of waypoints (DataPoint) for route following
+	std::vector<DataPoint> nav_route;
+	// Index of the current active waypoint within nav_route
+	int nav_route_index{ 0 };
+	// Whether the nav route is active and should be shown on the UI
+	bool nav_route_active{ false };
 
 	// OCR results pushed from worker thread are stored here for main-thread processing
 	std::mutex ocr_mutex;

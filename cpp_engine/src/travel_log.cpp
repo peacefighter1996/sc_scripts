@@ -295,6 +295,7 @@ bool TravelLog::feed_measurement(const double x, const double y, const double z,
                 p.coord.x = kf_x_[0]; p.coord.y = kf_x_[1]; p.coord.z = kf_x_[2];
                 p.time_info = iso_time_from_epoch_s(now_s);
                 tracked_points_.push_back(p);
+				last_point_ = &tracked_points_.back();
                 start_time_s_ = now_s;
                 last_time_s_ = now_s;
                 last_pos_ = p.coord;

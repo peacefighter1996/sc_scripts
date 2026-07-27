@@ -16,13 +16,20 @@
 static const int kMinQuality = 0;
 static const int kMaxQuality = 1000;
 
-
-
 int run_scout_app();
+
+void GetDistanceAndText(const AppState &state, const DataPoint &wp, double &dist_km, std::string &wp_direction_text);
 
 bool write_starmap_json(std::string &starmap_json_path);
 
 void popup_filter(std::string& filtertext, std::string& local_selected, const std::vector<std::string>& items, const std::string& app_selected_item, std::function<void(const std::string&)> on_select);
+
+struct NavInfoSettings {
+	double default_nav_auto_advance_distance_km{ 10.0 };
+	double mineral_nav_auto_advance_distance_km{ 2.0 };
+	double qt_persistent_nav_auto_advance_distance_km{ 30.0 };
+	
+};
 
 
 struct AppSettings {
@@ -49,18 +56,16 @@ struct AppSettings {
 	// Default: do not auto-start the travel log - user must enable it manually
 	bool tracking_enabled_on_start{ false };
 	double tracking_distance_threshold_km{ 5.0 };
-	double tracking_max_speed_mps{ 1500.0 };
-	double tracking_max_accel_mps2{ 30.0 * 9.80665 };
-	double kalman_max_life_s{ 10.0 };
+	double tracking_max_speed_mps{ 1500.0 }; //tracking max speed meters per second (mps) - default: 1500 m/s = 5400 km/h = 3354 mph
+	double tracking_max_accel_mps2{ 30.0 * 9.80665 }; // tracking max acceleration meters per second squared (m/s^2) - default: 30g = 30 * 9.80665 m/s^2
+	double kalman_max_life_s{ 10.0 }; // tracking Kalman filter max life in seconds (default: 10s)
 	double qt_threshold{ 100000.0 };
 	double qt_disable_duration_s{ 3.0 };
 	double tracking_min_core_distance_km{ 100.0 };
 
 	// Navigation UI settings
-	// If next waypoint latitude (abs) is greater than this, show bottom nav panel
-	double nav_show_min_lat_deg{ 0.0 };
-	// Distance (km) under which the route auto-advances to the next waypoint
-	double nav_auto_advance_distance_km{ 25.0 };
+	NavInfoSettings route_nav_info_settings;
+	
 };
 
 
@@ -93,10 +98,13 @@ struct AppState {
 	std::unique_ptr<ISyncService> sync_service;
 	ScoutOcr::SubscriptionId ocr_subscription_id;
 
-	double x;
-	double y;
-	double z;
-	double grid_spacing{ 100.0 };
+	Vector3 position{ 0.0, 0.0, 0.0 };
+	Vector3 velocity{ 0.0, 0.0, 0.0 };
+	Vector3 VelocityHistory[5];
+	double VelocityHistoryTime[5];
+ 	double grid_spacing{ 100.0 };
+	double PositionUpdateTime{ 0.0 };
+	double LastPostionUpdateTime{ 0.0 };
 
 	std::string selected_system;
 	std::string selected_planet;

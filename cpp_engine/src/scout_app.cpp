@@ -631,9 +631,47 @@ std::vector<double> AppState::process_ocr_results() {
 			&& result.y.has_value()
 			&& result.z.has_value()) {
 
-			x = result.x.value();
-			y = result.y.value();
-			z = result.z.value();
+
+			Vector3 previous = position;
+			LastPostionUpdateTime = PositionUpdateTime;
+			PositionUpdateTime = std::chrono::duration_cast<std::chrono::microseconds>(
+					 std::chrono::system_clock::now().time_since_epoch()).count() / 1'000'000.0;
+			position = Vector3{
+				result.x.value(),
+				result.y.value(),
+				result.z.value()
+			};
+			if (LastPostionUpdateTime == 0) {
+				velocity = Vector3{ 0, 0, 0 };
+			}
+			else{
+				VelocityHistory[4] = VelocityHistory[3];
+				VelocityHistory[3] = VelocityHistory[2];
+				VelocityHistory[2] = VelocityHistory[1];
+				VelocityHistory[1] = VelocityHistory[0];
+				// 1000 * (p_current - p_previose)/ ((PositionUpdateTime - LastPostionUpdateTime))
+				VelocityHistory[0] = (1000*(position - previous)) / ((PositionUpdateTime - LastPostionUpdateTime));
+				VelocityHistoryTime[4] = VelocityHistoryTime[3];
+				VelocityHistoryTime[3] = VelocityHistoryTime[2];
+				VelocityHistoryTime[2] = VelocityHistoryTime[1];
+				VelocityHistoryTime[1] = VelocityHistoryTime[0];
+				VelocityHistoryTime[0] = PositionUpdateTime - LastPostionUpdateTime;
+				{
+					double total_t = VelocityHistoryTime[0] + VelocityHistoryTime[1] + VelocityHistoryTime[2] + VelocityHistoryTime[3] + VelocityHistoryTime[4];
+					if (total_t > 0.0) {
+						Vector3 numer = VelocityHistory[0] * VelocityHistoryTime[0]
+							+ VelocityHistory[1] * VelocityHistoryTime[1]
+							+ VelocityHistory[2] * VelocityHistoryTime[2]
+							+ VelocityHistory[3] * VelocityHistoryTime[3]
+							+ VelocityHistory[4] * VelocityHistoryTime[4];
+						velocity = numer / total_t; // result is in m/s
+					}
+					else {
+						velocity = Vector3{ 0.0, 0.0, 0.0 };
+					}
+				}
+			}
+			
 
 			if (settings.auto_update_ocr_newpoint_enabled) {
 				new_data.coord.x = result.x.value();
@@ -642,8 +680,7 @@ std::vector<double> AppState::process_ocr_results() {
 			}
 
 			if (travel_log_active) {
-				const double ts_s = static_cast<double>(std::chrono::duration_cast<std::chrono::duration<double>>(std::chrono::system_clock::now().time_since_epoch()).count());
-				bool added = travel_log.feed_measurement(x, y, z, ts_s);
+				bool added = travel_log.feed_measurement(position, PositionUpdateTime);
 				if (travel_log.is_locked_due_to_qt()) {
 					travel_log_active = false;
 					travel_log_disabled_due_to_qt = true;
@@ -1065,7 +1102,8 @@ int run_scout_app() {
 
 				if (start_disabled_due_to_server) {
 					ImGui::EndDisabled();
-					ImGui::TextColored(ImVec4(0.8f, 0.8f, 0.8f, 1.0f), "Disabled for 'All' server");
+					const ImVec4 disabled(0.8f, 0.8f, 0.8f, 1.0f);
+					ImGui::TextColored(disabled, "Disabled for 'All' server");
 				}
 				ImGui::Separator();
 
@@ -1161,16 +1199,16 @@ int run_scout_app() {
 
 				ImGui::Checkbox("Auto updates new point coordinates", &state.settings.auto_update_ocr_newpoint_enabled);
 
-				float input_x = static_cast<float>(state.new_data.coord.x);
-				float input_y = static_cast<float>(state.new_data.coord.y);
-				float input_z = static_cast<float>(state.new_data.coord.z);
+				double input_x = static_cast<double>(state.new_data.coord.x);
+				double input_y = static_cast<double>(state.new_data.coord.y);
+				double input_z = static_cast<double>(state.new_data.coord.z);
 
 				if (!state.settings.auto_update_ocr_newpoint_enabled) {
-					ImGui::Text("Last OCR values: X=%.2f Y=%.2f Z=%.2f", state.x, state.y, state.z);
+					ImGui::Text("Last OCR values: X=%.2f Y=%.2f Z=%.2f", state.position.x, state.position.y, state.position.z);
 					if (ImGui::Button("Use Last OCR Values")) {
-						input_x = static_cast<float>(state.x);
-						input_y = static_cast<float>(state.y);
-						input_z = static_cast<float>(state.z);
+						input_x = static_cast<double>(state.position.x);
+						input_y = static_cast<double>(state.position.y);
+						input_z = static_cast<double>(state.position.z);
 					};
 				}
 
@@ -1203,9 +1241,9 @@ int run_scout_app() {
 					}
 				}
 
-				ImGui::InputFloat("X", &input_x);
-				ImGui::InputFloat("Y", &input_y);
-				ImGui::InputFloat("Z", &input_z);
+				ImGui::InputDouble("X", &input_x);
+				ImGui::InputDouble("Y", &input_y);
+				ImGui::InputDouble("Z", &input_z);
 				state.new_data.coord.x = input_x;
 				state.new_data.coord.y = input_y;
 				state.new_data.coord.z = input_z;
@@ -1256,7 +1294,7 @@ int run_scout_app() {
 								if (auto sqlite_backend = dynamic_cast<SqliteStore*>(state.store.get())) {
 									if (sqlite_backend->ensure_zone_contains_point(new_point.planet, new_point.coord.x, new_point.coord.y, state.settings.grid_spacing_km)) {
 										state.reload_planet_catalog();
-
+										renderer.reset_grid_cache(state.selected_planet);
 									}
 								}
 							}
@@ -1854,8 +1892,8 @@ int run_scout_app() {
 					auto pan = renderer.camera2d.getPan();
 					float sX = (*mouse_pos).first;
 					float sY = (*mouse_pos).second;
-					float wX = (sX - pan.first) / static_cast<float>(oldZoom) + pan.first;
-					float wY = (sY - pan.second) / static_cast<float>(oldZoom) + pan.second;
+					float wX = (sX - pan.x) / static_cast<float>(oldZoom) + pan.x;
+					float wY = (sY - pan.y) / static_cast<float>(oldZoom) + pan.y;
 					float denomX = 1.0f - static_cast<float>(newZoom);
 					if (std::abs(denomX) > 1e-6f) {
 						float newPanX = (sX - wX * static_cast<float>(newZoom)) / denomX;
@@ -1878,8 +1916,8 @@ int run_scout_app() {
 						double zoom = renderer.camera2d.getZoom();
 						float s0x = last_mouse_ndc.first;
 						float s0y = last_mouse_ndc.second;
-						float w0x = (s0x - pan.first) / static_cast<float>(zoom) + pan.first;
-						float w0y = (s0y - pan.second) / static_cast<float>(zoom) + pan.second;
+						float w0x = (s0x - pan.x) / static_cast<float>(zoom) + pan.x;
+						float w0y = (s0y - pan.y) / static_cast<float>(zoom) + pan.y;
 						// desired new screen position is current cursor NDC
 						float s1x = (*mouse_pos).first;
 						float s1y = (*mouse_pos).second;
@@ -2009,67 +2047,89 @@ int run_scout_app() {
 
 			// Navigation route overlay and controls
 			if (state.nav_route_active && !state.nav_route.empty()) {
-				int idx = std::clamp(state.nav_route_index, 0, static_cast<int>(state.nav_route.size()) - 1);
-				const DataPoint& wp = state.nav_route[idx];
-				// current location assumed to be state.new_data
-				double dist_km = 0.0; double bearing_deg = 0.0;
-				if (state.selected_planet_obj && state.selected_planet_obj->zone_type == ZoneType::CelestialBody) {
-					auto cur = state.new_data.to_lat_lon_alt();
-					auto trg = wp.to_lat_lon_alt();
-					double rr = state.selected_planet_obj->planet_radius_km > 0.0 ? state.selected_planet_obj->planet_radius_km : cur.altitude;
-					compute_bearing_distance_km_local(cur, trg, rr, bearing_deg, dist_km);
-				} else {
-					double dx = wp.coord.x - state.new_data.coord.x; double dy = wp.coord.y - state.new_data.coord.y;
-					dist_km = std::sqrt(dx*dx + dy*dy);
-					bearing_deg = std::atan2(dy, dx) * 180.0 / 3.14159265358979323846;
-					if (bearing_deg < 0) bearing_deg += 360.0;
-				}
-				// Auto-advance if within threshold
-				if (dist_km <= state.settings.nav_auto_advance_distance_km) {
-					if (idx < static_cast<int>(state.nav_route.size()) - 1) {
-						state.nav_route_index = idx + 1;
-						idx = state.nav_route_index;
-						// recompute for new idx
-						// (simple re-eval next loop)
-					}
-				}
-				// Next waypoint info (heading from this waypoint to the following one)
-				std::string next_info;
-				if (idx + 1 < static_cast<int>(state.nav_route.size())) {
-					const DataPoint& wp2 = state.nav_route[idx + 1];
-					double d2 = 0.0; double b2 = 0.0;
-					if (state.selected_planet_obj && state.selected_planet_obj->zone_type == ZoneType::CelestialBody) {
-						auto l1 = wp.to_lat_lon_alt();
-						auto l2 = wp2.to_lat_lon_alt();
-						double rr = state.selected_planet_obj->planet_radius_km > 0.0 ? state.selected_planet_obj->planet_radius_km : l1.altitude;
-						compute_bearing_distance_km_local(l1, l2, rr, b2, d2);
-					} else {
-						double dx = wp2.coord.x - wp.coord.x; double dy = wp2.coord.y - wp.coord.y;
-						d2 = std::sqrt(dx*dx + dy*dy);
-						b2 = std::atan2(dy, dx) * 180.0 / 3.14159265358979323846;
-						if (b2 < 0) b2 += 360.0;
-					}
-					char buf[256]; snprintf(buf, sizeof(buf), "Next: %d/%d - %.1f km, heading %.0f°", idx+2, (int)state.nav_route.size(), d2, b2);
-					next_info = buf;
+				int start_idx = std::clamp(state.nav_route_index -1 , 0, static_cast<int>(state.nav_route.size()) - 1);
+				int idx = state.nav_route_index;
+				int end_idx = std::clamp(state.nav_route_index + 1, 0, static_cast<int>(state.nav_route.size()) - 1);
+
+				DataPoint& wp = state.nav_route[idx];
+				std::string wp_direction_text;
+				double dist_km = 0.0;
+				GetDistanceAndText(state, wp, dist_km, wp_direction_text);
+				
+
+                // Auto-advance if within threshold
+				NavInfoSettings& nav_settings = state.settings.route_nav_info_settings;
+				bool auto_advance = false;
+				if (wp.poi_type == PoiType::Mineral && dist_km < nav_settings.mineral_nav_auto_advance_distance_km) {
+					auto_advance = true;
+				} else if (wp.qt_persistent && dist_km < nav_settings.qt_persistent_nav_auto_advance_distance_km) {
+					auto_advance = true;
+				} else if (dist_km < nav_settings.default_nav_auto_advance_distance_km) {
+					auto_advance = true;
 				}
 
-				// Decide whether to show bottom-center panel based on latitude threshold (if planetary)
-				bool show_bottom = true;
-				if (state.selected_planet_obj && state.selected_planet_obj->zone_type == ZoneType::CelestialBody && state.settings.nav_show_min_lat_deg > 0.0) {
-					auto lwp = wp.to_lat_lon_alt();
-					if (std::abs(lwp.latitude) < state.settings.nav_show_min_lat_deg) show_bottom = false;
+				if (auto_advance) {
+					if (state.nav_route_index + 1 < static_cast<int>(state.nav_route.size())) ++state.nav_route_index;
+					else state.nav_route_active = false; // reached end of route
+					idx = state.nav_route_index;
+					wp = state.nav_route[idx];
+					GetDistanceAndText(state, wp, dist_km, wp_direction_text);
 				}
-				if (show_bottom) {
+
+				
+
+				// Next waypoint info (heading from this waypoint to the following one)
+				std::vector<std::string> info_lines = {};
+				for (int i = start_idx; i <= end_idx; ++i) {
+					if (i >= 0 && i < static_cast<int>(state.nav_route.size())) {
+						const DataPoint& wp2 = state.nav_route[i];
+						bool has_prev = (i > 0);
+						const DataPoint& wp_prev = (has_prev ? state.nav_route[i-1] : wp2);
+						double dist2_km = 0.0; double bearing2_deg = 0.0;
+						std::string detail;
+						if (wp2.poi_type == PoiType::Mineral) {
+							char dbuf[128];
+							snprintf(dbuf, sizeof(dbuf), "ID:%d %s Q%d", wp2.id, wp2.material.c_str(), wp2.quality_max);
+							detail = dbuf;
+						} else {
+							detail = !wp2.note.empty() ? wp2.note : (wp2.material.empty() ? wp2.planet : wp2.material);
+						}
+
+						std::string wp2_direction_text;
+						GetDistanceAndText(state, wp2, dist2_km, wp2_direction_text);
+
+						std::string label;
+						if (i == idx) label = "Curr"; 
+						else if (i == idx + 1) label = "Next"; 
+						else label = "Prev";
+
+						if (has_prev) {
+							char ibuf[256];
+							snprintf(ibuf, sizeof(ibuf), "%d/%d %s: %s : %s", i+1, (int)state.nav_route.size(), label.c_str(), wp2_direction_text.c_str(), detail.c_str());
+							info_lines.push_back(ibuf);
+						} else {
+							char ibuf[256];
+							snprintf(ibuf, sizeof(ibuf), "%d/%d %s: %s", i+1, (int)state.nav_route.size(), label.c_str(), detail.c_str());
+							info_lines.push_back(ibuf);
+						}
+						
+					}
+				}
+				
+
+				// Decide whether to show bottom-center panel based on latitude threshold (if planetary)
+				if (state.nav_route_active && !state.nav_route.empty()) {
 					// bottom-center small window
 					ImGui::SetNextWindowBgAlpha(0.45f);
 					ImGuiWindowFlags wf = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings;
-					float win_w = 420.0f;
+					float win_w = 550.0f;
 					ImGui::SetNextWindowSize(ImVec2(win_w, 0), ImGuiCond_Always);
-					ImGui::SetNextWindowPos(ImVec2((float)width * 0.5f - win_w * 0.5f, (float)height - 110.0f), ImGuiCond_Always);
+					ImGui::SetNextWindowPos(ImVec2((float)width * 0.5f - win_w * 0.5f, (float)height - 150.0f), ImGuiCond_Always);
 					if (ImGui::Begin("Nav Panel", nullptr, wf)) {
-						ImGui::Text("Waypoint %d/%d: %.1f km, heading %.0f°", idx+1, (int)state.nav_route.size(), dist_km, bearing_deg);
-						if (!next_info.empty()) ImGui::TextUnformatted(next_info.c_str());
+						
+						for (const auto &line : info_lines) ImGui::TextUnformatted(line.c_str());
 						ImGui::Separator();
+						
 						// Show waypoint identification (note or mineral id/resource/quality)
 						std::string wp_id_str;
 						if (wp.poi_type == PoiType::Mineral) {
@@ -2080,6 +2140,7 @@ int run_scout_app() {
 							if (!wp.note.empty()) wp_id_str = wp.note; else wp_id_str = wp.material.empty() ? wp.planet : wp.material;
 						}
 						ImGui::TextUnformatted(wp_id_str.c_str());
+						ImGui::Text("Waypoint %d/%d: %s", idx + 1, (int)state.nav_route.size(), wp_direction_text.c_str());
 
 						// Prev/Next controls
 						if (ImGui::Button("Prev")) {
@@ -2292,6 +2353,26 @@ int run_scout_app() {
 	ocr_timer.join();
 
 	return 0;
+}
+
+void GetDistanceAndText(const AppState &state, const DataPoint &wp, double &dist_km, std::string &wp_direction_text)
+{
+    if (state.selected_planet_obj && state.selected_planet_obj->zone_type == ZoneType::CelestialBody)
+    {
+        LatLonAlt cur = to_lat_lon_alt(state.position);
+        LatLonAlt trg = wp.to_lat_lon_alt();
+        double rr = state.selected_planet_obj->planet_radius_km > 0.0 ? state.selected_planet_obj->planet_radius_km : cur.altitude;
+        double bearing_deg = 0.0;
+        compute_bearing_distance_km_local(cur, trg, rr, bearing_deg, dist_km);
+		wp_direction_text = std::format("{:.1f} km, heading {:.1f}°", dist_km, bearing_deg);
+    }
+    else
+    {
+        Vector3 dp = wp.coord - state.position;
+		dist_km = lenght(dp);
+		double velocity = lenght(state.velocity);
+		wp_direction_text = std::format("{:.1f} km, x={:.1f}, y={:.1f}, z={:.1f}\nVelocity: {:.1f} dx={:.1f}, dy={:.1f}, dz={:.1f}", dist_km, dp.x, dp.y, dp.z, velocity, state.velocity.x, state.velocity.y, state.velocity.z);
+    }
 }
 
 bool write_starmap_json(std::string& starmap_json_path)

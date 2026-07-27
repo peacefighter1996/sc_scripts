@@ -205,9 +205,7 @@ void TravelLog::start(const std::string& zone_name, ZoneType zone_type, std::str
     zone_name_ = zone_name;
     zone_type_ = zone_type;
     server_ = server;
-    zone_center_x_km_ = 0.0;
-    zone_center_y_km_ = 0.0;
-    zone_center_z_km_ = 0.0;
+	zone_center_km_ = { 0.0, 0.0, 0.0 }; // Reset zone center; can be set externally if needed  
 	travel_log_file_name.clear();
     
     // Default fresh start
@@ -218,7 +216,7 @@ void TravelLog::start(const std::string& zone_name, ZoneType zone_type, std::str
     start_time_s_ = 0.0;
     last_time_s_ = 0.0;
     last_speed_mps_ = 0.0;
-    last_x_ = last_y_ = last_z_ = 0.0;
+    last_pos_ = { 0.0, 0.0, 0.0 };
     qt_exceed_start_ = std::chrono::steady_clock::time_point();
     kf_initialized_ = false;
     last_kf_time_s_ = 0.0;
@@ -232,7 +230,7 @@ void TravelLog::restart() {
     start_time_s_ = 0.0;
     last_time_s_ = 0.0;
     last_speed_mps_ = 0.0;
-    last_x_ = last_y_ = last_z_ = 0.0;
+	last_pos_ = { 0.0, 0.0, 0.0 };
     qt_exceed_start_ = std::chrono::steady_clock::time_point();
     kf_initialized_ = false;
     last_kf_time_s_ = 0.0;
@@ -266,8 +264,11 @@ bool TravelLog::is_locked_due_to_qt() const {
     std::lock_guard<std::mutex> lk(mutex_);
     return locked_;
 }
-
-bool TravelLog::feed_measurement(double x, double y, double z, double timestamp_s) {
+bool TravelLog::feed_measurement(const Vector3& pos, const double timestamp_s) {
+    return feed_measurement(pos.x, pos.y, pos.z, timestamp_s);
+}
+bool TravelLog::feed_measurement(const double x, const double y, const double z, const double timestamp_s) {
+    const Vector3 pos{ x, y, z };
     std::lock_guard<std::mutex> lk(mutex_);
     if (!active_ || locked_) return false;
 
@@ -278,10 +279,7 @@ bool TravelLog::feed_measurement(double x, double y, double z, double timestamp_
         // For first sample, optionally add if passes core-distance gating
         double core_dist = 0.0;
         if (zone_type_ == ZoneType::CelestialBody) {
-            const double dx0 = x - zone_center_x_km_;
-            const double dy0 = y - zone_center_y_km_;
-            const double dz0 = z - zone_center_z_km_;
-            core_dist = std::sqrt(dx0*dx0 + dy0*dy0 + dz0*dz0);
+			core_dist = lenght(pos - zone_center_km_);
         }
 
         if (travel_log_file_name.empty()) {
@@ -299,13 +297,14 @@ bool TravelLog::feed_measurement(double x, double y, double z, double timestamp_
                 tracked_points_.push_back(p);
                 start_time_s_ = now_s;
                 last_time_s_ = now_s;
-                last_x_ = p.coord.x; last_y_ = p.coord.y; last_z_ = p.coord.z;
+                last_pos_ = p.coord;
                 last_speed_mps_ = 0.0;
                 return true;
             }
             // if inside core zone, do not add but keep filter initialized
             last_time_s_ = now_s;
-            last_x_ = x; last_y_ = y; last_z_ = z;
+            //last_x_ = x; last_y_ = y; last_z_ = z;
+			last_pos_ = pos;
             return false;
         }
     }
@@ -330,68 +329,64 @@ bool TravelLog::feed_measurement(double x, double y, double z, double timestamp_
     }
 
     // Use filtered position for progression
-    const double fx = kf_x_[0], fy = kf_x_[1], fz = kf_x_[2];
-    const double dx = fx - last_x_;
-    const double dy = fy - last_y_;
-    const double dz = fz - last_z_;
-    const double dist_km = std::sqrt(dx*dx + dy*dy + dz*dz);
+	const Vector3 filtered_pos{ kf_x_[0], kf_x_[1], kf_x_[2] };
 
-	const DataPoint& last_point = tracked_points_.empty() ? DataPoint{} : tracked_points_.back();
+    const Vector3 filtered_distance = filtered_pos - last_pos_;
+	const double dist_km = lenght(filtered_distance);
 
-	const double last_dx = fx - last_point.coord.x;
-	const double last_dy = fy - last_point.coord.y;
-    const double last_dz = fz - last_point.coord.z;
-    
-    const double dist_km_lastnode = std::sqrt(last_dx*last_dx + last_dy*last_dy + last_dz*last_dz);
+	const DataPoint& last_point = tracked_points_.empty() ? DataPoint{} : *last_point_;
 
+	const Vector3 last_delta = filtered_pos - last_point.coord;
+    const double dist_km_lastnode = lenght(last_delta);
+
+    // Compute implied speed from filter velocity
+    //const double vx = kf_x_[3], vy = kf_x_[4], vz = kf_x_[5];
+    const Vector3 velocity_kmps{ kf_x_[3], kf_x_[4], kf_x_[5] };
+    const double speed_mps = lenght(velocity_kmps) * 1000.0; // km/s -> m/s
+
+
+	bool reject = false;
     // Enforce core-distance gating for celestial bodies
     if (zone_type_ == ZoneType::CelestialBody) {
-        const double cx = fx - zone_center_x_km_;
-        const double cy = fy - zone_center_y_km_;
-        const double cz = fz - zone_center_z_km_;
-        const double core_dist = std::sqrt(cx*cx + cy*cy + cz*cz);
+		const Vector3 c = filtered_pos - zone_center_km_;
+		const double core_dist = lenght(c);
         if (core_dist < cfg_.min_core_distance_km) {
             // do not add points inside core exclusion
-            last_time_s_ = now_s;
-            last_x_ = fx; last_y_ = fy; last_z_ = fz;
-            last_kf_time_s_ = now_s;
-            return false;
+            reject = true;
         }
     }
 
-    // Compute implied speed from filter velocity
-    const double vx = kf_x_[3], vy = kf_x_[4], vz = kf_x_[5];
-    const double speed_mps = std::sqrt(vx*vx + vy*vy + vz*vz) * 1000.0; // km/s -> m/s
-
     // Motion gating: reject if speed too high
     if (speed_mps > cfg_.max_speed_mps) {
-        last_time_s_ = now_s;
-        last_x_ = fx; last_y_ = fy; last_z_ = fz;
-        last_kf_time_s_ = now_s;
+        reject = true;
+    }
+
+	// minimum distance for new point from last node
+    if (dist_km_lastnode <= cfg_.distance_threshold_km) {
+		reject = true;
+    }
+
+    if (reject) {
         last_speed_mps_ = speed_mps;
+        last_time_s_ = now_s;
+        last_pos_ = filtered_pos;
+        last_kf_time_s_ = now_s;
         return false;
     }
 
-    if (dist_km_lastnode >= cfg_.distance_threshold_km) {
-        DataPoint p{};
-        p.id = next_id_++;
-        p.coord.x = fx; p.coord.y = fy; p.coord.z = fz;
-        p.time_info = iso_time_from_epoch_s(now_s);
-        tracked_points_.push_back(p);
-		last_point_ = &tracked_points_.back();
-        last_speed_mps_ = speed_mps;
-        last_time_s_ = now_s;
-        last_x_ = fx; last_y_ = fy; last_z_ = fz;
-        last_kf_time_s_ = now_s;
-        return true;
-    }
-
-    // Update last state for future calculations
+    DataPoint p{};
+    p.id = next_id_++;
+	p.coord = filtered_pos;
+    p.time_info = iso_time_from_epoch_s(now_s);
+    tracked_points_.push_back(p);
+    last_point_ = &tracked_points_.back();
     last_speed_mps_ = speed_mps;
     last_time_s_ = now_s;
-    last_x_ = fx; last_y_ = fy; last_z_ = fz;
+    last_pos_ = filtered_pos;
     last_kf_time_s_ = now_s;
-    return false;
+    return true;
+    // Update last state for future calculations
+    
 }
 
 const std::vector<DataPoint>& TravelLog::get_tracked_points() const {
@@ -563,9 +558,7 @@ bool TravelLog::load_from_file_locked(const std::filesystem::path& full_path) {
         // set timing and last state from loaded data
         start_time_s_ = parse_iso_time_to_epoch_s(tracked_points_.front().time_info);
         last_time_s_ = parse_iso_time_to_epoch_s(tracked_points_.back().time_info);
-        last_x_ = tracked_points_.back().coord.x;
-        last_y_ = tracked_points_.back().coord.y;
-        last_z_ = tracked_points_.back().coord.z;
+        last_pos_ = tracked_points_.back().coord;
         last_speed_mps_ = 0.0;
     }
 

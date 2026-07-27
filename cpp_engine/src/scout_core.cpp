@@ -11,9 +11,6 @@
 #include <unordered_map>
 #include <regex>
 
-const double rad_to_deg = 180.0 / 3.14159265358979323846;
-const double deg_to_rad = 3.14159265358979323846 / 180.0;
-
 const LatLonAlt DataPoint::get_lat_lon_alt() const {
     if (lat_lon_alt_cache_.altitude != 0.0) {
         return lat_lon_alt_cache_;

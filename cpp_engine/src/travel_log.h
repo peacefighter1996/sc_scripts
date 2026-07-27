@@ -42,7 +42,8 @@ struct TravelLog {
 
     // Feed a raw measurement (x,y,z in kilometers, timestamp in seconds)
     // Returns true if a new tracked point was created.
-    bool feed_measurement(double x, double y, double z, double timestamp_s);
+    bool feed_measurement(const Vector3& pos, const double timestamp_s);
+    bool feed_measurement(const double x, const double y, const double z, const double timestamp_s);
 
     const std::vector<DataPoint>& get_tracked_points() const;
     // Return a thread-safe copy of tracked points for rendering/UI
@@ -69,7 +70,8 @@ private:
     int next_id_ = 1;
     double start_time_s_ = 0.0;
     double last_time_s_ = 0.0;
-    double last_x_ = 0.0, last_y_ = 0.0, last_z_ = 0.0;
+    //double last_x_ = 0.0, last_y_ = 0.0, last_z_ = 0.0;
+	Vector3 last_pos_ = { 0.0, 0.0, 0.0 };
     double last_speed_mps_ = 0.0;
     std::chrono::steady_clock::time_point qt_exceed_start_;
     std::filesystem::path repo_root_;
@@ -77,7 +79,7 @@ private:
     std::string server_;
     std::string zone_name_;
     ZoneType zone_type_ = ZoneType::CelestialBody;
-    double zone_center_x_km_ = 0.0, zone_center_y_km_ = 0.0, zone_center_z_km_ = 0.0;
+    Vector3 zone_center_km_ = {0.0, 0.0, 0.0};
 
     // Simple Kalman filter for position+velocity (x,y,z,vx,vy,vz) in km and km/s
     bool kf_initialized_ = false;

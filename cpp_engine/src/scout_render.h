@@ -12,16 +12,15 @@
 #include "camera.h"
 
 struct zone_label {
-    double ndc_x;
-    double ndc_y;
+    Vector2 ndc;
     std::string label;
 };
 
 inline Vector2 uv_to_ndc(const Vector2& uv) {
-    return { (uv.x * 2.0) - 1.0, (uv.y * 2.0) - 1.0 };
+    return { (uv.x * 2.0) - 1.0, (-uv.y * 2.0) + 1.0 };
 }
 inline Vector2 ndc_to_uv(const Vector2& ndc) {
-    return { (ndc.x + 1.0) * 0.5, (ndc.y + 1.0) * 0.5 };
+    return { ndc.x * 0.5 + 0.5 , 0.5f -ndc.y * 0.5f };
 }
 // Convert lat/lon to UV coordinates in [0,1] range. Latitude is expected in [-90,90], longitude in [-180,180].
 inline Vector2 uv_to_latlon(const Vector2& uv) {
@@ -116,6 +115,7 @@ public:
     // Render a single marker at normalized device coords (x,y in [-1,1]).
     // (Declaration with Camera2D is provided later near uniform fields.)
     void render_marker(float x, float y, float r, float g, float b, float a, float size = 5.0f);
+	void reset_grid_cache(const std::string& selected_zone);
 
 private:
     // Convert a point (either asteroid-field XY or lat/lon) to normalized device coords [-1,1]
@@ -127,7 +127,7 @@ private:
     // Excel-style column label helper (A..Z, AA..ZZ, etc.)
     std::string excel_column_label(int index);
     // Compute sector label for a point in the selected zone (e.g. "B12")
-    std::string sector_label_for_point(const DisplayMode dpm, const Planet* selected_zone, double a, double b, double grid_spacing_km);
+    //std::string sector_label_for_point(const DisplayMode dpm, const Planet* selected_zone, double a, double b, double grid_spacing_km);
     // Render cached sector labels for a rectangular grid defined by start, cols, rows.
     void render_sector_labels_grid(const DisplayMode dpm, const Planet* selected_zone, double start_x, double start_y, int cols, int rows, double grid_spacing_x_km, double grid_spacing_y_km, bool coords_are_latlon = false);
     GLuint compile_shader(GLenum type, const char* src);
@@ -178,7 +178,6 @@ private:
     GLuint last_bound_texture_unit0_ = 0;
     bool last_bound_texture_unit0_valid_ = false;
     // Cache for computed column labels and per-zone cell labels
-    std::unordered_map<int, std::string> col_label_cache_;
     std::unordered_map<std::string, std::vector<zone_label>> zone_label_cache_;
 };
 

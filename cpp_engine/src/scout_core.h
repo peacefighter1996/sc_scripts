@@ -12,6 +12,9 @@
 #include <onnxruntime_cxx_api.h>
 #endif
 
+const double rad_to_deg = 180.0 / 3.14159265358979323846;
+const double deg_to_rad = 3.14159265358979323846 / 180.0;
+
 std::string trim(const std::string& value);
 std::string to_lower(std::string value);
 std::vector<std::string> vector_to_lower(const std::vector<std::string>& values);
@@ -194,6 +197,29 @@ inline Vector3 operator*(const Vector3& v, double scalar) {
 inline Vector3 operator*(double scalar, const Vector3& v) {
 	return v * scalar;
 }
+
+inline Vector3 dot(const Vector3& a, const Vector3& b) {
+	return { a.x * b.x, a.y * b.y, a.z * b.z };
+}
+
+inline Vector3 cross(const Vector3& a, const Vector3& b) {
+	return {
+		a.y * b.z - a.z * b.y,
+		a.z * b.x - a.x * b.z,
+		a.x * b.y - a.y * b.x
+	};
+}
+
+inline double lenght(const Vector3& v) {
+	return std::sqrt(v.x * v.x + v.y * v.y + v.z * v.z);
+}
+
+inline Vector3 normalized(const Vector3& v) {
+	double length = lenght(v);
+	if (length == 0.0) return { 0.0, 0.0, 0.0 };
+	return { v.x / length, v.y / length, v.z / length };
+}
+
 inline Vector3 operator/(const Vector3& v, double scalar) {
 	return { v.x / scalar, v.y / scalar, v.z / scalar };
 }
@@ -208,7 +234,24 @@ inline Vector2 operator+(const Vector2& a, const Vector2& b) {
 	return { a.x + b.x, a.y + b.y };
 }
 
+inline Vector2 operator*(const Vector2& v, double scalar) {
+	return { v.x * scalar, v.y * scalar };
+}
+inline Vector2 operator*(double scalar, const Vector2& v) {
+	return v * scalar;
+}
+
 const Vector3 origin_vector3{ 0.0, 0.0, 0.0 };
+
+inline LatLonAlt to_lat_lon_alt(const Vector3& v) {
+	// Convert Cartesian coordinates to latitude, longitude, and altitude
+	double radius = std::sqrt(v.x * v.x + v.y * v.y + v.z * v.z);
+	double latitude = std::asin(v.z / radius) * rad_to_deg; // in degrees
+	double longitude = std::atan2(v.y, v.x) * rad_to_deg; // in degrees
+	double altitude = radius; // Assuming the origin is at sea level
+
+	return { latitude, longitude, altitude };
+}
 
 const LatLonAlt origin_latlonalt{ 0.0, 0.0, 0.0 };
 

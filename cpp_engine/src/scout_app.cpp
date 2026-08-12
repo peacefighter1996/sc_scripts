@@ -2054,7 +2054,7 @@ int run_scout_app() {
 				DataPoint& wp = state.nav_route[idx];
 				std::string wp_direction_text;
 				double dist_km = 0.0;
-				GetDistanceAndText(state, wp, dist_km, wp_direction_text);
+				GetDistanceAndText(state, wp, dist_km, wp_direction_text, true);
 				
 
                 // Auto-advance if within threshold
@@ -2076,7 +2076,7 @@ int run_scout_app() {
 					else state.nav_route_active = false; // reached end of route
 					idx = state.nav_route_index;
 					wp = state.nav_route[idx];
-					GetDistanceAndText(state, wp, dist_km, wp_direction_text);
+					GetDistanceAndText(state, wp, dist_km, wp_direction_text, true);
 				}
 
 				
@@ -2358,7 +2358,7 @@ int run_scout_app() {
 	return 0;
 }
 
-void GetDistanceAndText(const AppState &state, const DataPoint &wp, double &dist_km, std::string &wp_direction_text, bool include_velocity = true)
+void GetDistanceAndText(const AppState &state, const DataPoint &wp, double &dist_km, std::string &wp_direction_text, bool include_velocity)
 {
     if (state.selected_planet_obj && state.selected_planet_obj->zone_type == ZoneType::CelestialBody)
     {

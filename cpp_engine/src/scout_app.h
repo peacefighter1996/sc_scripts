@@ -18,7 +18,7 @@ static const int kMaxQuality = 1000;
 
 int run_scout_app();
 
-void GetDistanceAndText(const AppState &state, const DataPoint &wp, double &dist_km, std::string &wp_direction_text);
+void GetDistanceAndText(const AppState &state, const DataPoint &wp, double &dist_km, std::string &wp_direction_text, bool include_velocity = true);
 
 bool write_starmap_json(std::string &starmap_json_path);
 

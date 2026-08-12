@@ -2064,7 +2064,10 @@ int run_scout_app() {
 					auto_advance = true;
 				} else if (wp.qt_persistent && dist_km < nav_settings.qt_persistent_nav_auto_advance_distance_km) {
 					auto_advance = true;
-				} else if (dist_km < nav_settings.default_nav_auto_advance_distance_km) {
+				} else if (
+					!(wp.poi_type == PoiType::Mineral || wp.qt_persistent) 
+					&& dist_km < nav_settings.default_nav_auto_advance_distance_km) 
+				{
 					auto_advance = true;
 				}
 
@@ -2096,7 +2099,7 @@ int run_scout_app() {
 						}
 
 						std::string wp2_direction_text;
-						GetDistanceAndText(state, wp2, dist2_km, wp2_direction_text);
+						GetDistanceAndText(state, wp2, dist2_km, wp2_direction_text, false);
 
 						std::string label;
 						if (i == idx) label = "Curr"; 
@@ -2122,7 +2125,7 @@ int run_scout_app() {
 					// bottom-center small window
 					ImGui::SetNextWindowBgAlpha(0.45f);
 					ImGuiWindowFlags wf = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings;
-					float win_w = 550.0f;
+					float win_w = 700.0f;
 					ImGui::SetNextWindowSize(ImVec2(win_w, 0), ImGuiCond_Always);
 					ImGui::SetNextWindowPos(ImVec2((float)width * 0.5f - win_w * 0.5f, (float)height - 150.0f), ImGuiCond_Always);
 					if (ImGui::Begin("Nav Panel", nullptr, wf)) {
@@ -2355,7 +2358,7 @@ int run_scout_app() {
 	return 0;
 }
 
-void GetDistanceAndText(const AppState &state, const DataPoint &wp, double &dist_km, std::string &wp_direction_text)
+void GetDistanceAndText(const AppState &state, const DataPoint &wp, double &dist_km, std::string &wp_direction_text, bool include_velocity = true)
 {
     if (state.selected_planet_obj && state.selected_planet_obj->zone_type == ZoneType::CelestialBody)
     {
@@ -2369,9 +2372,13 @@ void GetDistanceAndText(const AppState &state, const DataPoint &wp, double &dist
     else
     {
         Vector3 dp = wp.coord - state.position;
-		dist_km = lenght(dp);
-		double velocity = lenght(state.velocity);
-		wp_direction_text = std::format("{:.1f} km, x={:.1f}, y={:.1f}, z={:.1f}\nVelocity: {:.1f} dx={:.1f}, dy={:.1f}, dz={:.1f}", dist_km, dp.x, dp.y, dp.z, velocity, state.velocity.x, state.velocity.y, state.velocity.z);
+		dist_km = length(dp);
+		if (include_velocity) {
+			double velocity = length(state.velocity);
+			wp_direction_text = std::format("{:.1f} km, x={:.1f}, y={:.1f}, z={:.1f}\nVelocity: {:.1f} dx={:.1f}, dy={:.1f}, dz={:.1f}", dist_km, dp.x, dp.y, dp.z, velocity, state.velocity.x, state.velocity.y, state.velocity.z);
+		} else {
+			wp_direction_text = std::format("{:.1f} km, x={:.1f}, y={:.1f}, z={:.1f}", dist_km, dp.x, dp.y, dp.z);
+		}
     }
 }
 

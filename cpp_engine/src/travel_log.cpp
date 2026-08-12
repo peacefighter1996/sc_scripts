@@ -279,7 +279,7 @@ bool TravelLog::feed_measurement(const double x, const double y, const double z,
         // For first sample, optionally add if passes core-distance gating
         double core_dist = 0.0;
         if (zone_type_ == ZoneType::CelestialBody) {
-			core_dist = lenght(pos - zone_center_km_);
+			core_dist = length(pos - zone_center_km_);
         }
 
         if (travel_log_file_name.empty()) {
@@ -333,24 +333,24 @@ bool TravelLog::feed_measurement(const double x, const double y, const double z,
 	const Vector3 filtered_pos{ kf_x_[0], kf_x_[1], kf_x_[2] };
 
     const Vector3 filtered_distance = filtered_pos - last_pos_;
-	const double dist_km = lenght(filtered_distance);
+	const double dist_km = length(filtered_distance);
 
 	const DataPoint& last_point = tracked_points_.empty() ? DataPoint{} : *last_point_;
 
 	const Vector3 last_delta = filtered_pos - last_point.coord;
-    const double dist_km_lastnode = lenght(last_delta);
+    const double dist_km_lastnode = length(last_delta);
 
     // Compute implied speed from filter velocity
     //const double vx = kf_x_[3], vy = kf_x_[4], vz = kf_x_[5];
     const Vector3 velocity_kmps{ kf_x_[3], kf_x_[4], kf_x_[5] };
-    const double speed_mps = lenght(velocity_kmps) * 1000.0; // km/s -> m/s
+    const double speed_mps = length(velocity_kmps) * 1000.0; // km/s -> m/s
 
 
 	bool reject = false;
     // Enforce core-distance gating for celestial bodies
     if (zone_type_ == ZoneType::CelestialBody) {
 		const Vector3 c = filtered_pos - zone_center_km_;
-		const double core_dist = lenght(c);
+		const double core_dist = length(c);
         if (core_dist < cfg_.min_core_distance_km) {
             // do not add points inside core exclusion
             reject = true;

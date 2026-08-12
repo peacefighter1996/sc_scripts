@@ -210,12 +210,12 @@ inline Vector3 cross(const Vector3& a, const Vector3& b) {
 	};
 }
 
-inline double lenght(const Vector3& v) {
+inline double length(const Vector3& v) {
 	return std::sqrt(v.x * v.x + v.y * v.y + v.z * v.z);
 }
 
 inline Vector3 normalized(const Vector3& v) {
-	double length = lenght(v);
+	double length = length(v);
 	if (length == 0.0) return { 0.0, 0.0, 0.0 };
 	return { v.x / length, v.y / length, v.z / length };
 }
